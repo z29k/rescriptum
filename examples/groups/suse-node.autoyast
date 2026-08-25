@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE profile>
+<!--
+  AutoYaST (SUSE, openSUSE). XML merges by element name, pairing siblings on a
+  discriminating attribute where one exists. `config:type="list"` is honoured, so a
+  machine file replaces a partitioning list rather than appending to it.
+
+  This server understands no AutoYaST schema. Render the result and validate it:
+    rescriptum render --query "mac=52:54:00:11:22:33" > profile.xml
+    xmllint --noout profile.xml
+-->
+<profile xmlns="http://www.suse.com/1.0/yast2ns" xmlns:config="http://www.suse.com/1.0/configns">
+  <!-- Stripped before the installer sees it. -->
+  <answer-meta>
+    <member>52:54:00:11:22:33</member>
+  </answer-meta>
+
+  <language>
+    <language>fr_FR</language>
+    <languages>fr_FR</languages>
+  </language>
+
+  <keyboard>
+    <keymap>french</keymap>
+  </keyboard>
+
+  <timezone>
+    <hwclock>UTC</hwclock>
+    <timezone>Europe/Paris</timezone>
+  </timezone>
+
+  <partitioning config:type="list">
+    <drive>
+      <device>/dev/sda</device>
+      <use>all</use>
+    </drive>
+  </partitioning>
+
+  <services-manager>
+    <default_target>multi-user</default_target>
+  </services-manager>
+</profile>

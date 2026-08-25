@@ -1,0 +1,13 @@
+# One Ubuntu machine, carrying only what differs from its group.
+#
+# It is claimed by `ubuntu-web.yaml` through that group's `match` block, and layered on
+# top of it: this hostname wins, everything else is inherited. Naming a file after a MAC
+# is the most specific claim there is, so it always beats a selector.
+#
+# Every layer of one answer must be the same format — this is YAML because its group is.
+
+identity:
+  hostname: web-01
+storage:
+  layout:
+    name: direct

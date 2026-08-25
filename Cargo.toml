@@ -1,0 +1,47 @@
+[package]
+name = "rescriptum"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "Serves each machine its own install config, composed from layers a whole rack can share. Proxmox, Debian, RHEL, Ubuntu, SUSE, Windows."
+repository = "https://github.com/z29k/rescriptum"
+license = "MIT"
+readme = "README.md"
+# What people will actually search for — the name says nothing about the domain.
+keywords = ["proxmox", "kickstart", "preseed", "autoinstall", "pxe"]
+categories = ["network-programming", "command-line-utilities"]
+
+# One dependency, and the bar for a second is high. `httparse` is the request parser
+# hyper uses: it has zero transitive dependencies and costs ~3 KB on armv7. Parsing
+# hostile bytes is the one part of this server worth not hand-rolling; everything else
+# (listener, worker pool, timeouts, response writing) stays std. No async runtime.
+[dependencies]
+http-body-util = "0.1.5"
+hyper = { version = "1.11.0", features = ["server", "http1"] }
+hyper-util = { version = "0.1.20", features = ["tokio", "server"] }
+quick-xml = "0.41.0"
+rusqlite = { version = "0.40.2", features = ["bundled"], optional = true }
+serde_json = "1.0.151"
+serde_yaml_ng = "0.10.0"
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "net", "time", "io-util", "signal", "macros"] }
+toml_edit = "0.25.13"
+
+[features]
+default = ["sqlite"]
+# SQLite backs the admin API. Turn it off for the smallest possible binary when the
+# answers directory is all you need: `cargo build --no-default-features`.
+sqlite = ["dep:rusqlite"]
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true
+
+[dev-dependencies]
+rusqlite = { version = "0.40.2", features = ["bundled"] }
+
+# `panic = "abort"` is deliberately ABSENT. With one thread per connection, unwinding
+# means a panic kills only the connection that caused it; aborting would take down the
+# whole server — and with it a PXE install in flight. Measured cost of keeping unwind on
+# armv7: +2416 bytes (+0.8%). Robustness wins that trade. Do not add it back.

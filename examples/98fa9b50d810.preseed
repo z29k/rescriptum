@@ -1,0 +1,10 @@
+# The same machine as the TOML next to it, but installed as Debian instead.
+#
+# Reached at http://SERVER:8000/debian/preseed — the endpoint asks for preseed, so only
+# preseed documents are candidates and the Proxmox answer for this machine is never
+# considered.
+#
+# answer: extends base
+
+d-i netcfg/get_hostname string node01
+d-i partman-auto/method string regular

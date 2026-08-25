@@ -1,0 +1,39 @@
+# Debian preseed.
+#
+# Claimed by an explicit list, written as a directive because preseed has no structure to
+# hold one. Separator style does not matter. Ordinary comments are served; `# answer:`
+# lines are not.
+#
+#   auto=true priority=critical url=http://SERVER:8000/preseed
+#
+# answer: member 00:11:22:33:44:55, 00:11:22:33:44:56
+
+d-i debian-installer/locale string fr_FR.UTF-8
+d-i keyboard-configuration/xkb-keymap select fr
+
+d-i netcfg/choose_interface select auto
+d-i netcfg/get_hostname string unassigned-hostname
+d-i netcfg/get_domain string example.com
+
+d-i mirror/country string manual
+d-i mirror/http/hostname string deb.debian.org
+d-i mirror/http/directory string /debian
+
+d-i clock-setup/utc boolean true
+d-i time/zone string Europe/Paris
+d-i clock-setup/ntp boolean true
+
+# mkpasswd -m sha-512
+d-i passwd/root-login boolean false
+d-i passwd/user-fullname string Ops
+d-i passwd/username string ops
+d-i passwd/user-password-crypted password $6$rounds=656000$REPLACE$ME
+
+d-i partman-auto/method string lvm
+d-i partman-lvm/device_remove_lvm boolean true
+d-i partman-auto/choose_recipe select atomic
+d-i partman/confirm boolean true
+d-i partman/confirm_nooverwrite boolean true
+
+tasksel tasksel/first multiselect standard, ssh-server
+d-i finish-install/reboot_in_progress note

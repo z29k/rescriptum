@@ -1,0 +1,42 @@
+# A group: everything a set of machines has in common, in one file.
+#
+# `members` lists the machines this group answers for — separator style does not
+# matter, same as filenames. A listed machine needs no file of its own unless it has
+# something to override, in which case add `<mac>.toml` next to this directory and put
+# only the difference in it.
+#
+# `members` and `extends` are this server's keys, not Proxmox's. They are stripped from
+# what the installer receives.
+#
+# A group may `extends` another group, so what every rack shares lives in one file and
+# per-rack differences in another. Layers apply lowest to highest — group chain first,
+# machine file last — so the machine always wins. Arrays replace, they do not append.
+#
+# Serving a group with no machine overrides costs no parsing at all: it is rendered
+# once when the directory is read. That is the fast path, and the usual one at scale.
+
+# extends = "base"
+
+members = [
+  "98:fa:9b:50:d8:10",
+  "98:fa:9b:50:d8:11",
+  "98:fa:9b:50:d8:12",
+]
+
+[global]
+keyboard = "fr"
+country = "fr"
+mailto = "ops@example.com"
+timezone = "Europe/Paris"
+root-password-hashed = "$6$rounds=656000$REPLACE$ME"
+root-ssh-keys = ["ssh-ed25519 AAAA...REPLACE ops@example.com"]
+reboot-on-error = false
+
+[network]
+source = "from-dhcp"
+
+[disk-setup]
+filesystem = "zfs"
+zfs.raid = "raid1"
+# Every node in this rack has the same two system disks.
+disk-list = ["sda", "sdb"]

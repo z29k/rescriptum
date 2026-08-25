@@ -1,0 +1,65 @@
+# One machine's answer file.
+#
+# The filename is what matches: name it after the machine's MAC address, in any
+# separator style — `98-fa-9b-50-d8-10.toml`, `98:fa:9b:50:d8:10.toml` and
+# `98fa9b50d810.toml` all match the same machine. Both sides are lowercased and
+# stripped of non-alphanumerics before comparing.
+#
+# If this machine belongs to a group (see groups/), keep only the keys that differ from
+# the group here — the rest is inherited, and this file wins wherever they disagree.
+#
+# Always validate the RENDERED result, not this fragment:
+#   rescriptum render 98:fa:9b:50:d8:10 > /tmp/answer.toml
+#   proxmox-auto-install-assistant validate-answer /tmp/answer.toml
+
+# Opt into a group this machine is not listed as a member of.
+# extends = "rack-a"
+
+[global]
+keyboard = "fr"                       # de, en-us, fr, fr-ch, it, es, … 
+country = "fr"                        # two-letter code
+fqdn = "node01.example.com"
+mailto = "ops@example.com"
+timezone = "Europe/Paris"
+
+# Prefer a hash over a cleartext password in a file you keep in git.
+root-password-hashed = "$6$rounds=656000$REPLACE$ME"
+# root-password = "cleartext-if-you-must"
+
+root-ssh-keys = ["ssh-ed25519 AAAA...REPLACE ops@example.com"]
+
+reboot-on-error = false               # leave the installer up to read the error
+reboot-mode = "reboot"                # or "power-off"
+# subscription-key = "pve1c-..."
+
+[network]
+source = "from-dhcp"                  # the usual choice when PXE-booting
+# Or pin it:
+# source = "from-answer"
+# cidr = "192.168.1.11/24"
+# gateway = "192.168.1.1"
+# dns = "192.168.1.1"
+# Pick the NIC by udev property rather than by name, which can change:
+# filter.ID_NET_NAME_MAC = "*98fa9b50d810"
+
+[disk-setup]
+filesystem = "zfs"                    # ext4, xfs, zfs, btrfs
+zfs.raid = "raid1"                    # raid0, raid1, raid10, raidz-1/-2/-3
+disk-list = ["sda", "sdb"]
+# Or select disks by property instead of by name:
+# filter.ID_SERIAL_SHORT = "S1234*"
+# filter-match = "any"                # or "all"
+# zfs.ashift = 12
+# zfs.compress = "on"
+
+# Run something once the node is up.
+# [first-boot]
+# source = "from-url"
+# ordering = "fully-up"               # before-network | network-online | fully-up
+# url = "https://config.example.com/first-boot.sh"
+# cert-fingerprint = "AB:CD:..."
+
+# Tell something that the install finished.
+# [post-installation-webhook]
+# url = "https://hooks.example.com/pve-installed"
+# auth-token = "REPLACE"

@@ -1,0 +1,33 @@
+{
+  "_comment": [
+    "Ignition (Flatcar, Fedora CoreOS). JSON, so this merges structurally: objects key",
+    "by key, arrays replaced rather than appended.",
+    "",
+    "Author it in Butane and transpile, rather than writing Ignition by hand:",
+    "  butane --pretty --strict < node.bu > flatcar-node.ign",
+    "then add the `members` or `match` key to the result.",
+    "",
+    "`members` and `match` are this server's keys and are stripped before serving."
+  ],
+  "members": ["52:54:00:89:d8:10"],
+
+  "ignition": { "version": "3.4.0" },
+  "passwd": {
+    "users": [
+      {
+        "name": "core",
+        "sshAuthorizedKeys": ["ssh-ed25519 AAAA...REPLACE ops@example.com"]
+      }
+    ]
+  },
+  "storage": {
+    "files": [
+      {
+        "path": "/etc/hostname",
+        "mode": 420,
+        "overwrite": true,
+        "contents": { "source": "data:,flatcar-node%0A" }
+      }
+    ]
+  }
+}

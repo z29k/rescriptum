@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  An XML answer under the generic `.xml` extension.
+
+  `.autoyast` and `.unattend` are XML too; they exist as separate extensions so a store
+  holding both a SUSE profile and a Windows unattend can keep them apart, and so
+  /suse/profile never hands a Windows file to YaST. Plain `.xml` answers /xml/ — and,
+  because it is XML, /suse/ and /windows/ as well. That is fine right up until you have
+  both, at which point use the specific extension.
+
+    GET /xml/profile?mac=52:54:00:aa:00:06
+
+  Merging is by element name plus a discriminating attribute (name, id, key, alias,
+  pass). Declarations, doctypes, namespaces and attributes survive; original indentation
+  and comment placement do not.
+-->
+<profile xmlns="http://www.suse.com/1.0/yast2ns" xmlns:config="http://www.suse.com/1.0/configns">
+  <answer-meta>
+    <!-- Matched by filename; a <match> block would go here instead. -->
+  </answer-meta>
+
+  <language>
+    <language>fr_FR</language>
+    <languages>fr_FR</languages>
+  </language>
+
+  <networking>
+    <dns>
+      <hostname>node-{{ machine }}</hostname>
+    </dns>
+  </networking>
+
+  <users config:type="list">
+    <user>
+      <username>root</username>
+      <user_password>$6$rounds=656000$REPLACE$ME</user_password>
+      <encrypted config:type="boolean">true</encrypted>
+    </user>
+  </users>
+</profile>

@@ -1,0 +1,41 @@
+# Ubuntu autoinstall (subiquity) — a group claimed by hardware rather than by a list.
+#
+# `match` is tested against the facts of the request: query parameters, and the fields
+# of a POSTed JSON body. A key is matched wherever it appears in that body, so `product`
+# finds it under `dmi.system.product` without this file having to know that path.
+#
+# Prepare the ISO to fetch this, and iPXE will fill in the identity:
+#   autoinstall ds=nocloud-net;s=http://SERVER:8000/autoinstall/?mac=${net0/mac}
+#
+# cloud-init will fetch BOTH /user-data and /meta-data from that URL and skip the
+# datasource if either is missing — which is why the `file` selector is here.
+#
+# Validate what this server actually renders, not this fragment:
+#   rescriptum render --query "mac=aa:bb:cc:dd:ee:ff" > user-data
+#   (then check it against your Ubuntu release's autoinstall reference)
+
+match:
+  # cloud-init fetches several named files from one URL; this is the one that carries
+  # the install. See ubuntu-meta.yaml for the other required half.
+  file: "user-data"
+  product: "PowerEdge R6*"
+
+version: 1
+locale: fr_FR.UTF-8
+keyboard:
+  layout: fr
+identity:
+  hostname: web-node
+  username: ops
+  # mkpasswd --method=SHA-512
+  password: "$6$rounds=656000$REPLACE$ME"
+ssh:
+  install-server: true
+  allow-pw: false
+  authorized-keys:
+    - "ssh-ed25519 AAAA...REPLACE ops@example.com"
+storage:
+  layout:
+    name: lvm
+packages:
+  - qemu-guest-agent

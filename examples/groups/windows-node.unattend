@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Windows unattend.xml. Each <settings pass="..."> block is a distinct thing, so they are
+  paired by their `pass` and merged individually — a machine file that overrides one pass
+  leaves the others alone.
+
+  This server understands no unattend schema; render and inspect before deploying.
+-->
+<unattend xmlns="urn:schemas-microsoft-com:unattend">
+  <answer-meta>
+    <match manufacturer="Dell Inc." />
+  </answer-meta>
+
+  <settings pass="specialize">
+    <component name="Microsoft-Windows-Shell-Setup"
+               processorArchitecture="amd64"
+               publicKeyToken="31bf3856ad364e35"
+               language="neutral"
+               versionScope="nonSxS">
+      <ComputerName>*</ComputerName>
+      <TimeZone>Romance Standard Time</TimeZone>
+    </component>
+  </settings>
+
+  <settings pass="oobeSystem">
+    <component name="Microsoft-Windows-International-Core"
+               processorArchitecture="amd64"
+               publicKeyToken="31bf3856ad364e35"
+               language="neutral"
+               versionScope="nonSxS">
+      <InputLocale>fr-FR</InputLocale>
+      <SystemLocale>fr-FR</SystemLocale>
+      <UserLocale>fr-FR</UserLocale>
+    </component>
+  </settings>
+</unattend>

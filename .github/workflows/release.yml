@@ -1,0 +1,151 @@
+name: Release
+
+# Only a tag on `main` produces binaries. Pushing to `develop` publishes nothing.
+on:
+  push:
+    tags: ["v*"]
+  # Re-runnable by hand if a release job fails after a tag is already pushed.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to build (e.g. v0.1.0)"
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  verify:
+    name: Tag matches Cargo.toml
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - id: check
+        run: |
+          set -euo pipefail
+          TAG="${{ inputs.tag || github.ref_name }}"
+          CARGO=$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2)
+          echo "tag=$TAG cargo=$CARGO"
+          # A release whose binary reports a different version than its tag is a
+          # support problem that outlives the release.
+          if [ "$TAG" != "v$CARGO" ]; then
+            echo "::error::tag $TAG does not match Cargo.toml version $CARGO"
+            exit 1
+          fi
+          echo "version=$CARGO" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: ${{ matrix.target }}
+    needs: verify
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The DS416j this was written for.
+          - target: armv7-unknown-linux-musleabihf
+            os: ubuntu-latest
+            cross: true
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-latest
+            cross: true
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+            cross: true
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            cross: false
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            cross: false
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - name: Toolchain
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustup target add ${{ matrix.target }}
+
+      - name: Zig and cargo-zigbuild
+        if: matrix.cross
+        run: |
+          set -euo pipefail
+          ZIG=0.16.0
+          curl -fsSL "https://ziglang.org/download/${ZIG}/zig-x86_64-linux-${ZIG}.tar.xz" -o zig.tar.xz
+          mkdir -p "$HOME/zig" && tar -xf zig.tar.xz -C "$HOME/zig" --strip-components=1
+          echo "$HOME/zig" >> "$GITHUB_PATH"
+          cargo install cargo-zigbuild --locked
+
+      - name: Build
+        run: |
+          set -euo pipefail
+          if [ "${{ matrix.cross }}" = "true" ]; then
+            cargo zigbuild --release --target ${{ matrix.target }}
+          else
+            cargo build --release --target ${{ matrix.target }}
+          fi
+
+      - name: Package
+        run: |
+          set -euo pipefail
+          VERSION="${{ needs.verify.outputs.version }}"
+          NAME="rescriptum-${VERSION}-${{ matrix.target }}"
+          BIN="target/${{ matrix.target }}/release/rescriptum"
+          file "$BIN"
+          mkdir -p "dist/$NAME"
+          cp "$BIN" README.md README.fr.md LICENSE "dist/$NAME/"
+          tar -C dist -czf "dist/${NAME}.tar.gz" "$NAME"
+          # Checksums travel with the archive: whoever runs this as root on their
+          # hardware should be able to check what they downloaded.
+          ( cd dist && shasum -a 256 "${NAME}.tar.gz" > "${NAME}.tar.gz.sha256" )
+          ls -l dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: dist/*.tar.gz*
+          retention-days: 7
+
+  publish:
+    name: Publish the release
+    needs: [verify, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Collect
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          find artifacts -type f -name '*.tar.gz*' -exec cp {} dist/ \;
+          ls -l dist
+
+      - name: Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG="${{ inputs.tag || github.ref_name }}"
+          # `gh` is preinstalled on the runner, so this needs no third-party action.
+          gh release create "$TAG" dist/* \
+            --title "rescriptum $TAG" \
+            --generate-notes \
+            --verify-tag

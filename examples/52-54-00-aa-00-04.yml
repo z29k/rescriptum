@@ -1,0 +1,33 @@
+# Ubuntu autoinstall for one machine — spelled `.yml` rather than `.yaml`.
+#
+# Both are YAML and both are served by /ubuntu/, /autoinstall/, /cloudinit/ and
+# /nocloud/. But they are DIFFERENT KEYS: a `.yml` machine file will not layer onto a
+# `.yaml` group, because `extends` and merging resolve within one format. Pick one
+# spelling per fleet and stay with it; this file exists to show that the other is
+# accepted, not to recommend mixing them.
+#
+# Matched by its filename, so it needs no `match` block:
+#   GET /ubuntu/user-data?mac=52:54:00:aa:00:04
+
+version: 1
+locale: fr_FR.UTF-8
+keyboard:
+  layout: fr
+
+identity:
+  hostname: node-{{ machine }}
+  username: ops
+  # openssl passwd -6
+  password: "$6$rounds=656000$REPLACE$ME"
+
+ssh:
+  install-server: true
+  authorized-keys:
+    - "ssh-ed25519 AAAA...REPLACE ops@example.com"
+
+storage:
+  layout:
+    name: lvm
+
+late-commands:
+  - curtin in-target -- systemctl enable qemu-guest-agent

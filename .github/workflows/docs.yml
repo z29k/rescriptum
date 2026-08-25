@@ -1,0 +1,64 @@
+name: docs
+
+# Publish docs/ to GitHub Pages, rendered by notabene (`build --public`). The site and
+# base come from the `publish:` block in notabene.config.mjs.
+#
+# It runs on `main`, which — per the branching model — only receives release commits. So
+# documentation normally ships with a release; use workflow_dispatch to publish a docs
+# fix that should not wait.
+#
+# One-time repository setup: Settings → Pages → Source = GitHub Actions.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docs/**"
+      - "assets/**"
+      - "notabene.config.mjs"
+      - "package.json"
+      - "package-lock.json"
+      - ".github/workflows/docs.yml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Build and deploy
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      # The read-only public artifact: no review UI, no store data. `pagefind` is a dev
+      # dependency, so `npm ci` above is what gives the site full-text search.
+      - name: Build the public site
+        run: npx notabene build --public --out ./_site
+
+      # A dead link in published documentation is cheap to prevent. This checks every
+      # internal link against the routes the build actually emitted.
+      - name: No broken internal links
+        run: npx notabene lint
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: ./_site
+
+      - id: deployment
+        uses: actions/deploy-pages@v4

@@ -1,0 +1,17 @@
+# One machine, as Proxmox VE.
+#
+# Its sibling `98fa9b50d810.preseed` is the SAME hardware as Debian. A machine's answer
+# is specific to the operating system it is for, so the two are different answers to
+# different questions and both may exist at once — the extension is what tells them
+# apart, and the endpoint is what chooses between them:
+#
+#   http://SERVER:8000/proxmox/answer   -> this file
+#   http://SERVER:8000/debian/preseed   -> the other one
+#
+# It also joins the `example-rack` group, and carries only what differs from it.
+
+[global]
+fqdn = "node01.example.com"
+
+[disk-setup]
+zfs.raid = "raid10"

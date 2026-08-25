@@ -1,0 +1,14 @@
+# The other half of an Ubuntu autoinstall.
+#
+# cloud-init's NoCloud datasource fetches `user-data` AND `meta-data` from the seed URL,
+# and skips the datasource entirely if either is missing. This server answers on any
+# path, so without a `file` selector both requests would receive the same document and
+# the install would never start.
+#
+# `instance-id` is what cloud-init uses to decide whether it has already run on this
+# machine. Anything stable per machine works.
+
+match:
+  file: "meta-data"
+
+instance-id: iid-local01

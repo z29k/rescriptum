@@ -1,0 +1,34 @@
+{
+  "_comment": [
+    "Ignition for one machine, spelled `.json` rather than `.ign`.",
+    "",
+    "Both are JSON and both are served by /flatcar/, /coreos/, /ignition/ and /json/.",
+    "`.ign` is the more specific spelling and the one to prefer; `.json` is here because",
+    "a Butane transpile writes `.json` by default and there is no reason to make you",
+    "rename it.",
+    "",
+    "Like every JSON/YAML/TOML/XML answer this merges structurally: objects key by key,",
+    "arrays replaced rather than appended.",
+    "",
+    "  GET /json/config?mac=52:54:00:aa:00:05"
+  ],
+
+  "ignition": { "version": "3.4.0" },
+  "passwd": {
+    "users": [
+      {
+        "name": "core",
+        "sshAuthorizedKeys": ["ssh-ed25519 AAAA...REPLACE ops@example.com"]
+      }
+    ]
+  },
+  "storage": {
+    "files": [
+      {
+        "path": "/etc/hostname",
+        "mode": 420,
+        "contents": { "inline": "node-{{ machine }}\n" }
+      }
+    ]
+  }
+}

@@ -1,0 +1,150 @@
+name: CI
+
+# `develop` publishes nothing: it runs the gates and stops there. Binaries are produced
+# only by a `vX.Y.Z` tag on `main` — see release.yml.
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  # A failed provisioning run is expensive; a slow CI is not.
+  RUST_BACKTRACE: 1
+
+jobs:
+  gates:
+    name: Format, lint, tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt,clippy
+          rustup default stable
+          rustc --version && cargo --version
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: gates-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+
+      - name: Formatting
+        run: cargo fmt --all --check
+
+      - name: Lints
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Tests
+        run: cargo test --all-features
+
+      # The smallest build has to keep working, or the NAS target rots unnoticed.
+      - name: Build without SQLite
+        run: cargo build --release --no-default-features
+
+  docs:
+    name: Documentation
+    runs-on: ubuntu-latest
+    # The site is published from `main` by docs.yml; this only gates it. A dead link in
+    # published documentation is cheap to prevent and embarrassing to ship.
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Build the public site
+        run: npx notabene build --public --out ./_site
+
+      # `lint` checks every internal link against the routes the build actually emitted.
+      - name: No broken internal links
+        run: npx notabene lint
+
+  audit:
+    name: Dependency advisories
+    runs-on: ubuntu-latest
+    # The project's own rule is that adding a dependency needs a reason in the commit
+    # message, because this binary runs as root on other people's hardware. Checking those
+    # dependencies against the advisory database is the other half of it: a reason to add
+    # one is not a reason to keep it.
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ~/.cargo/bin
+          key: audit-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+
+      - name: cargo-audit
+        # Installed directly rather than through a third-party action, for the same reason
+        # Zig is below: this toolchain vets a binary people run as root.
+        run: command -v cargo-audit >/dev/null || cargo install cargo-audit --locked
+
+      # `--deny warnings` also fails on an unmaintained or yanked crate, not only on a
+      # vulnerability. The tree is clean under it today; when something appears that has no
+      # fix, add `--ignore RUSTSEC-…` here with a line saying why, rather than dropping the
+      # flag and losing the rest.
+      - name: Advisories
+        run: cargo audit --deny warnings
+
+  cross:
+    name: Cross-compile for the NAS
+    runs-on: ubuntu-latest
+    # This is where a C dependency breaks first: SQLite is compiled from source, and
+    # armv7-musl is the least forgiving target we ship. Catching it here beats catching
+    # it while cutting a release.
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustup target add armv7-unknown-linux-musleabihf
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ~/.cargo/bin
+            target
+          key: cross-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+
+      - name: Zig and cargo-zigbuild
+        run: |
+          set -euo pipefail
+          # Fetched directly rather than through a third-party action: this toolchain
+          # links the binary people will run as root on their hardware.
+          ZIG=0.16.0
+          curl -fsSL "https://ziglang.org/download/${ZIG}/zig-x86_64-linux-${ZIG}.tar.xz" -o zig.tar.xz
+          mkdir -p "$HOME/zig" && tar -xf zig.tar.xz -C "$HOME/zig" --strip-components=1
+          echo "$HOME/zig" >> "$GITHUB_PATH"
+          command -v cargo-zigbuild >/dev/null || cargo install cargo-zigbuild --locked
+
+      - name: Build
+        run: cargo zigbuild --release --target armv7-unknown-linux-musleabihf
+
+      - name: It must be static, or DSM will not run it
+        run: |
+          set -euo pipefail
+          BIN=target/armv7-unknown-linux-musleabihf/release/rescriptum
+          file "$BIN"
+          file "$BIN" | grep -q 'statically linked'
+          echo "size: $(stat -c%s "$BIN") bytes"

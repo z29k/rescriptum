@@ -1,0 +1,20 @@
+{
+  "name": "rescriptum-docs",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Documentation toolchain for rescriptum. The project itself is a Rust binary with no runtime; this package exists only so notabene can render docs/ and publish it to GitHub Pages.",
+  "type": "module",
+  "license": "MIT",
+  "scripts": {
+    "docs": "notabene dev",
+    "docs:build": "notabene build --public --out ./_site",
+    "docs:preview": "notabene preview",
+    "docs:lint": "notabene lint",
+    "docs:status": "notabene status",
+    "docs:stop": "notabene stop"
+  },
+  "devDependencies": {
+    "@z29k/notabene": "^0.15.3",
+    "pagefind": "^1.5.2"
+  }
+}
