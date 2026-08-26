@@ -8,7 +8,7 @@ sidebar:
 
 # Tests
 
-308 tests. `cargo test` les fait tous tourner en quelques secondes.
+309 tests. `cargo test` les fait tous tourner en quelques secondes.
 
 ```bash
 cargo test                                # tout
@@ -21,7 +21,7 @@ cargo test --all-features                 # ce que lance la CI
 
 | Suite | Cas | Pour |
 |---|---|---|
-| `tests/stores.rs` | 38 | **chaque comportement, contre les deux stores** |
+| `tests/stores.rs` | 39 | **chaque comportement, contre les deux stores** |
 | `tests/integration.rs` | 45 | le vrai binaire sur une vraie socket |
 | `src/select.rs` | 27 | normalisation, scoring, superposition, remplissage de templates |
 | `src/format/mod.rs` | 27 | parsing, fusion, clés de contrôle, alias d'endpoint |

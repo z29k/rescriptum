@@ -49,6 +49,16 @@ recevait un reset. Il draine maintenant brièvement d'abord, comme le faisait d�
 
 ## Sélection et formats
 
+**Un Mac qui édite le répertoire de réponses en SMB peut détourner la réponse d'une
+machine.** macOS écrit un fichier AppleDouble `._<nom>` à côté d'un fichier dont le système
+n'accepte pas les attributs étendus — `._98-fa-9b-50-d8-10.toml` a une extension *présente*
+dans la liste, et la normalisation retire le `._` de tête : il revendique donc la même
+identité que le vrai fichier, avec un contenu binaire. La machine qu'on configurait reçoit
+une erreur d'analyse au lieu de sa réponse, et `check` fait échouer le *groupe* avec elle.
+`.DS_Store` n'est inoffensif que par chance (son extension n'est pas dans la liste). Le store
+fichiers ignore désormais toute entrée dont le nom commence par `.` ; trouvé sur un vrai NAS,
+pas en lisant quoi que ce soit.
+
 **Normaliser un motif de sélecteur retire `*` et `?`** à moins d'utiliser `normalize_pattern`
 — ce qui transforme chaque glob en littéral, en silence.
 

@@ -609,7 +609,7 @@ strip = true
 
 ## Testing expectations
 
-308 tests. `docs/development/testing.md` has the per-suite table; the rules that decide where
+309 tests. `docs/development/testing.md` has the per-suite table; the rules that decide where
 a test goes:
 
 - **A behaviour belongs in `tests/stores.rs`**, which runs it against both stores and requires

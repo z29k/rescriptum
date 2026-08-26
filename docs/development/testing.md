@@ -8,7 +8,7 @@ sidebar:
 
 # Testing
 
-308 tests. `cargo test` runs all of them in a couple of seconds.
+309 tests. `cargo test` runs all of them in a couple of seconds.
 
 ```bash
 cargo test                                # everything
@@ -21,7 +21,7 @@ cargo test --all-features                 # what CI runs
 
 | Suite | Cases | For |
 |---|---|---|
-| `tests/stores.rs` | 38 | **every behaviour, against both stores** |
+| `tests/stores.rs` | 39 | **every behaviour, against both stores** |
 | `tests/integration.rs` | 45 | the real binary over a real socket |
 | `src/select.rs` | 27 | normalization, scoring, layering, template filling |
 | `src/format/mod.rs` | 27 | parsing, merging, control keys, endpoint aliases |
