@@ -100,10 +100,72 @@ du paquet, **avec les jetons qu'il contient**. Une réinstallation le reprend, c
 généralement ce qu'on veut. Si vous retirez rescriptum pour de bon et qu'il portait un
 jeton, supprimez `/volume1/@appconf/rescriptum` vous-même.
 
+## L'application de bureau
+
+Le paquet installe une application sur le bureau DSM — l'icône est dans le menu principal,
+et le bouton **Ouvrir** de Package Center y mène. C'est une vraie application DSM, bâtie sur
+le framework d'interface du bureau : elle est dans le thème DSM et dans la langue de DSM.
+Le français d'un DSM en français est aussi celui de l'application.
+
+Elle a trois onglets :
+
+- **Réglages** — chaque variable de configuration, sous forme de formulaire. Chaque champ
+  dit d'où vient sa valeur, et une valeur définie dans l'*environnement* est affichée mais
+  verrouillée, parce que modifier le fichier n'y changerait rien. Enregistrer écrit le
+  fichier et propose de redémarrer le paquet, le serveur ne lisant sa configuration qu'une
+  fois, au démarrage.
+- **État** — la version, si le paquet tourne, le dossier des réponses et s'il est vraiment
+  lisible *par l'utilisateur du service*, et la sortie de `check`.
+- **Journal** — les dernières lignes du journal des requêtes et de `startup.log`.
+
+Trois propriétés valent mieux d'être sues que découvertes :
+
+- **Elle édite le fichier, pas le serveur qui tourne.** Elle fonctionne donc encore quand le
+  serveur refuse de démarrer, c'est-à-dire précisément quand un panneau de réglages sert à
+  quelque chose. Une modification qui laisserait le serveur incapable de démarrer est
+  refusée avant toute écriture, avec la raison affichée.
+- **Elle ne vous montre jamais un jeton.** `RESCRIPTUM_ANSWER_TOKEN` et
+  `RESCRIPTUM_ADMIN_TOKEN` apparaissent comme *défini* ou *non défini*, et un champ vide
+  veut dire « n'y touche pas », jamais « efface-le ». En saisir un nouveau le remplace.
+- **Elle exige un administrateur DSM.** Être connecté à DSM ne suffit pas. Voir
+  [sécurité](./security.md#lapplication-de-bureau) pour pourquoi ce contrôle est toute la
+  porte.
+
+*Redémarrer maintenant* arrête et redémarre le paquet via DSM lui-même, donc **DSM ferme la
+fenêtre pendant ce temps** — rouvrez-la pour voir le nouvel état. L'application le dit à
+côté du bouton plutôt que de vous laisser la surprise.
+
+Elle demande **DSM 7.1 ou plus récent** (`os_min_ver="7.1-42661"`). Elle est bâtie sur le
+framework ExtJS de DSM, présent en 7.1.1 comme en 7.2.2 — les deux mesurés. DSM 7.2 embarque
+un framework Vue plus récent, et le guide actuel de Synology ne documente que celui-là ; mais
+le DS416j qui justifie ce projet plafonne en 7.1.1, où `Vue` n'existe pas. ExtJS couvre donc
+tous les DSM que ce paquet prend en charge plutôt que les seuls récents. Le 7.0 n'est pas
+revendiqué : rien n'y a jamais tourné.
+
 ## Le configurer
 
-DSM n'a pas de panneau de réglages pour un paquet, donc **le fichier d'environnement est
-l'interface de configuration** :
+L'application ci-dessus est la voie confortable. Tout ce qu'elle fait se fait aussi depuis
+un shell, et sur une machine où le bureau n'est pas à portée c'est plus rapide :
+
+```console
+$ sudo rescriptum-cli config
+env file: /var/packages/rescriptum/etc/rescriptum.env
+
+  RESCRIPTUM_STORE            files                             default
+  RESCRIPTUM_ANSWERS_DIR      /var/packages/rescriptum/shares/rescriptum/answers   file
+  RESCRIPTUM_LISTEN_ADDR      0.0.0.0:8000                      file
+  …
+
+$ sudo rescriptum-cli config set RESCRIPTUM_LOG=problems
+wrote /var/packages/rescriptum/etc/rescriptum.env
+```
+
+`config set` conserve les commentaires du fichier, décommente un réglage au lieu de le
+dupliquer, et **refuse une modification qui empêcherait le serveur de démarrer**. Son code
+de sortie dit si la configuration en est une sur laquelle le serveur démarrerait, ce qui le
+rend utilisable depuis un script.
+
+Dessous, c'est le même fichier, et l'éditer à la main reste parfaitement raisonnable :
 
 ```console
 $ sudo vi /var/packages/rescriptum/etc/rescriptum.env

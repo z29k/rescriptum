@@ -127,8 +127,15 @@ build_one() {
 # A `.spk` is a release format, not a build: the binary is already finished, and this only
 # wraps it for one platform's package manager. Which is why it is a flag here rather than a
 # second build system — see packaging/dsm/.
+#
+# **The armv7 row is glibc, and it was musl once.** When the ARMv7 target moved to
+# glibc — musl 1.2 cannot run on Synology's 3.10 kernels — this table was not moved with
+# it, so `./build.sh --spk armv7-unknown-linux-gnueabihf` built the binary and then quietly
+# produced no package at all, for the one machine this project exists for. The old name is
+# kept as an alias so an existing script does not start failing instead.
 spk_abi() {
   case "$1" in
+    armv7-unknown-linux-gnueabihf)  echo armv7 ;;
     armv7-unknown-linux-musleabihf) echo armv7 ;;
     aarch64-unknown-linux-musl)     echo aarch64 ;;
     x86_64-unknown-linux-musl)      echo x86_64 ;;
@@ -139,7 +146,7 @@ spk_abi() {
 package_one() {
   local target="$1" abi
   if ! abi=$(spk_abi "$target"); then
-    echo "    no DSM package for ${target:-this machine} — a .spk carries a Linux musl build" >&2
+    echo "    no DSM package for ${target:-this machine} — a .spk carries a Linux build" >&2
     return 0
   fi
   echo "==> packaging $abi for DSM"

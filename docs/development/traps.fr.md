@@ -213,6 +213,70 @@ l'inode sous un serveur qui continue d'écrire dans un fichier sans nom.
 
 **Un `.spk` dont le tar externe est gzippé est rejeté** avec « invalid file format » et rien
 de plus. Idem pour un qui embarque des membres `._` de macOS. `check-spk.sh` vérifie les
+
+## L'application de bureau DSM
+
+Sept choses, mesurées sur une machine virtuelle DSM 7.2.2 et sur un DS416j en 7.1.1, et
+aucune dans le guide du développeur.
+
+**Un CGI sous `/webman/3rdparty/<pkg>/` tourne sous le propriétaire du script.** Pas en
+`http`, et pas en root — sous celui qui possède le fichier. DSM attribue l'arborescence d'un
+paquet à l'utilisateur du paquet : le backend de l'application tourne donc en `rescriptum` et
+peut lire le fichier d'environnement en `0600` qu'il possède, ce qui est toute la raison pour
+laquelle la configuration reste modifiable pendant que le serveur est arrêté. Prouvé en
+attribuant le même script de deux façons et en regardant `id` changer. Un script resté
+possédé par root, lui, **tourne bien** en root là-bas : n'en laissez pas traîner.
+
+**Ce chemin n'est pas authentifié par DSM.** Une requête non authentifiée atteint le script
+et reçoit `200`. Ce qui garde le CGI d'un paquet, c'est le paquet qui l'a écrit — ici
+`authenticate.cgi` plus un contrôle `administrators`, et en perdre un serait silencieux.
+
+**`su` dans un CGI bloque la requête.** Sans `</dev/null`, il hérite du stdin du CGI — un
+tube venant du serveur web que rien ne fermera —, y lit, et ne revient jamais. La page d'état
+s'arrêtait simplement en plein milieu. Puis, une fois cela corrigé, il échouait quand même
+avec « Permission denied », un processus non root ne pouvant devenir personne. Les deux
+étaient du travail perdu : le script *est* déjà l'utilisateur en question, donc un simple
+`test -r` était la réponse depuis le début.
+
+**Le framework qu'un paquet peut utiliser, c'est la machine qui le décide, pas le guide de
+Synology.** DSM 7.2 embarque un framework Vue et le guide actuel ne documente que celui-là.
+Le DS416j plafonne en DSM 7.1.1, où `Vue` n'existe pas : une application bâtie dessus
+s'installe et donne à cette machine une icône qui n'ouvre rien. ExtJS est présent sur les
+deux (7.1.1 et 7.2.2 mesurés), d'où une seule application au lieu de deux.
+
+**L'exemple ExtJS du guide ne tourne pas.** Il déclare les classes avec `Ext.define` et
+enchaîne avec `callParent` ; face à `SYNO.SDS.AppInstance` cela lève
+`Cannot read properties of null (reading 'apply')` avant que la fenêtre n'apparaisse. C'est
+**ExtJS 3.4.1** avec une couche `Ext.define` par-dessus : utiliser `Ext.define` pour la
+déclaration — le lanceur de DSM trouve la classe ainsi, et `superclass` est bien posé — puis
+appeler `MaClasse.superclass.constructor.call(this, config)` plutôt que `callParent`.
+
+**La barre des tâches de DSM appelle `getWindowTitle()` sur la fenêtre.** Sans titre, elle
+lève une exception depuis le propre code de DSM, et l'application ne s'ouvre pas du tout —
+avec une trace qui accuse Synology et pas vous.
+
+**Ne jamais nommer une méthode `show`.** `Ext.Window.prototype.show()` est ce que DSM appelle
+pour afficher la fenêtre : un `show(which)` ajouté pour changer d'onglet l'a écrasé
+silencieusement. La fenêtre était construite, mise en page, capable de rendre une miniature
+correcte dans l'aperçu de la barre des tâches — et n'apparaissait jamais. **Rien ne levait
+d'exception**, sur aucune des deux versions de DSM, et c'est ce qui a coûté cher : trouvé en
+bisectant depuis l'exemple minimal du guide. Tout ce qu'on ajoute à ce prototype partage
+l'espace de noms de chaque méthode d'`Ext.Window`, qui est vaste.
+
+**`fieldLabel` est dessiné par la mise en page « form », pas par le champ.** Un
+`syno_displayfield` dans un `Ext.Panel` ordinaire affiche sa valeur et perd son libellé sans
+rien dire, ce qui transformait la page d'état en colonne de valeurs nues. Il faut
+`SYNO.ux.FormPanel`, ou `layout: 'form'`.
+
+**Builds reproductibles et caches de navigateur ne s'entendent pas, et c'est le navigateur
+qui gagne.** `make-spk.sh` fixe le mtime de chaque fichier empaqueté pour que les mêmes
+entrées produisent un `.spk` identique octet pour octet. nginx en fait un
+`Last-Modified: 2019` sans `Cache-Control`, et la fraîcheur heuristique d'un navigateur est
+un dixième de l'âge apparent du fichier — des années. Un paquet mis à jour a continué de
+faire tourner l'**ancien** JavaScript contre le nouveau backend, malgré une réinstallation et
+un rechargement forcé. Le fichier de l'application porte donc le numéro de version dans son
+nom, et tout ce qu'elle va chercher elle-même porte `?v=` ; `check-spk.sh` vérifie que le nom
+bouge toujours.
 deux.
 
 ## Changements de comportement à retenir

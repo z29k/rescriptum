@@ -50,8 +50,17 @@ note "$(cat /etc.defaults/VERSION 2>/dev/null | tr '\n' ' ')"
 note "platform: $(synogetkeyvalue /etc.defaults/synoinfo.conf unique 2>/dev/null)"
 note "arch: $(uname -m), kernel $(uname -r)"
 case "$(sed -n 's/^majorversion="\(.*\)"$/\1/p' /etc.defaults/VERSION 2>/dev/null)" in
-7 | 8 | 9) ok "DSM 7 or newer — os_min_ver=\"7.0-40000\" can install here" ;;
+7 | 8 | 9) ok "DSM 7 or newer" ;;
 *) bad "this is not DSM 7; nothing below applies" ; exit 1 ;;
+esac
+# The desktop application is built on DSM's ExtJS framework, present on 7.1.1 and 7.2.2.
+# Below 7.1 the package refuses to install at all and the checks that follow would be
+# misleading. **This gate said 7.2 for a while** — written when the application was still
+# built on DSM 7.2's Vue framework, and not moved when it went back to ExtJS. It would have
+# failed the DS416j, which is the one machine this rig exists to satisfy.
+case "$(sed -n 's/^productversion="\(.*\)"$/\1/p' /etc.defaults/VERSION 2>/dev/null)" in
+7.0*) bad "DSM $(sed -n 's/^productversion="\(.*\)"$/\1/p' /etc.defaults/VERSION) is below the package's os_min_ver of 7.1" ;;
+*) ok "at or above the 7.1 the desktop application needs" ;;
 esac
 
 # ── 1. install ─────────────────────────────────────────────────────────────────
@@ -218,6 +227,53 @@ section "what DSM generated for us (open questions, answered by looking)"
 run systemctl cat pkgctl-$PKG
 note "Restart= above decides whether DSM restarts the process if it dies."
 run sh -c "$ROOT/scripts/start-stop-status status; echo \"  exit=\$?\""
+
+# ── the desktop application ────────────────────────────────────────────────────
+# Only a machine can answer these: whether DSM made the symlink, whether it serves the
+# files, and — the one that matters — whether the backend's door is actually shut. That
+# path is **not** authenticated by DSM, measured here on 7.2.2, so an open CGI would be an
+# unauthenticated root-adjacent configuration editor on the network.
+section "the desktop application"
+
+LINK=/usr/syno/synoman/webman/3rdparty/rescriptum
+if [ -L "$LINK" ] && [ -d "$LINK" ]; then
+    ok "DSM linked $LINK to the package's ui/"
+else
+    bad "no $LINK — DSM did not pick up dsmuidir"
+fi
+
+JSFILE=$(sed -n 's/^[[:space:]]*"\([^"]*\.js\)"[[:space:]]*:.*/\1/p' "$LINK/config" 2>/dev/null | head -n 1)
+if [ -n "$JSFILE" ] && [ -f "$LINK/$JSFILE" ]; then
+    ok "the application is $JSFILE"
+else
+    bad "ui/config names no JavaScript that is there"
+fi
+
+# The CGI runs as the *owner of the script*, which for a package tree is the package user —
+# the same identity that owns the 0600 env file. If DSM ever changes that, everything the
+# application does stops working, and this is where it would show.
+if [ "$(stat -c '%U' "$LINK/api.cgi" 2>/dev/null)" = "$PKG" ]; then
+    ok "the backend is owned by $PKG, so it runs as $PKG"
+else
+    bad "api.cgi is owned by $(stat -c '%U' "$LINK/api.cgi" 2>/dev/null), not $PKG"
+fi
+
+# **The door.** No session, no answer.
+for path in "api.cgi?action=config" "api.cgi?action=status"; do
+    code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 "http://127.0.0.1:5000/webman/3rdparty/rescriptum/$path" 2>/dev/null)
+    if [ "$code" = "403" ]; then
+        ok "unauthenticated $path is refused ($code)"
+    else
+        bad "unauthenticated $path answered $code — that is an open configuration editor"
+    fi
+done
+
+# And the JavaScript itself is public by design; it must carry no secret and no placeholder.
+if grep -q '@VERSION@\|@JSFILE@' "$LINK/$JSFILE" "$LINK/config" 2>/dev/null; then
+    bad "the application still has a build placeholder in it"
+else
+    ok "no build placeholders left in the application"
+fi
 
 # ── 4. the CLI, as the package user ────────────────────────────────────────────
 section "the CLI on PATH"

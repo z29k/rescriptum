@@ -130,7 +130,8 @@ Chacun de ces points est un lien vers la
   `render --body`.
 - **[Assez petit pour un NAS](https://z29k.github.io/rescriptum/fr/guide/operations/synology)** —
   builds pour ARMv7, aarch64 et x86_64 — musl statique, sauf ARMv7 qui vise la glibc de DSM
-  parce que musl 1.2 ne tourne pas sur les noyaux 3.10 de Synology — plus un **paquet DSM 7** qui crée le
+  parce que musl 1.2 ne tourne pas sur les noyaux 3.10 de Synology — plus un **paquet DSM 7** qui pose
+  une **application de bureau** DSM pour la configuration, l'état et le journal, et qui crée le
   dossier partagé, enregistre le port auprès du pare-feu et démarre au boot. Partout
   ailleurs c'est une unité systemd ou un conteneur.
 

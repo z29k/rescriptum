@@ -8,7 +8,7 @@ sidebar:
 
 # Testing
 
-309 tests. `cargo test` runs all of them in a couple of seconds.
+333 tests. `cargo test` runs all of them in a couple of seconds.
 
 ```bash
 cargo test                                # everything
@@ -27,13 +27,13 @@ cargo test --all-features                 # what CI runs
 | `src/format/mod.rs` | 27 | parsing, merging, control keys, endpoint aliases |
 | `src/facts.rs` | 22 | query parsing, JSON flattening, globbing |
 | `tests/admin.rs` | 26 | the admin API end to end, formats included |
-| `tests/cli.rs` | 29 | `render`, `check`, `import`, `export`, and the env file — against the real binary |
+| `tests/cli.rs` | 39 | `render`, `check`, `import`, `export`, `config`, and the env file — against the real binary |
 | `src/log.rs` | 4 | level parsing, and the timestamp arithmetic |
 | `src/format/xml.rs` | 18 | the XML tree — pairing, entities, fidelity |
-| `src/config.rs` | 19 | the environment, and what refuses to start |
+| `src/config.rs` | 24 | the environment, what refuses to start, and which of the file and the environment wins |
 | `src/merge.rs` | 11 | the TOML deep merge |
 | `tests/guards.rs` | 7 | the answer token, and the lockout that deliberately is not there |
-| `src/envfile.rs` | 14 | the env-file parser, and what it refuses |
+| `src/envfile.rs` | 23 | the env-file parser and writer, and what each refuses |
 | `src/admin.rs`, `src/capture.rs`, `src/store/mod.rs` | 21 | unit-level behaviour |
 
 ## `tests/stores.rs` — the conformance suite
@@ -122,8 +122,8 @@ do, and each proves something the others cannot.
 
 | | Proves | Cost |
 |---|---|---|
-| [`packaging/dsm/check-spk.sh`](https://github.com/z29k/rescriptum/blob/main/packaging/dsm/check-spk.sh) | the archive is structurally what DSM expects — uncompressed outer tar, six `INFO` fields, an all-numeric version, 64×64 and 256×256 icons, executable scripts with no CRLF, and **the packaged binary's own `--version`** | seconds, **on every push** |
-| [`packaging/dsm/lifecycle-test.sh`](https://github.com/z29k/rescriptum/blob/main/packaging/dsm/lifecycle-test.sh) | everything the package's *scripts* decide, against a fake `/var/packages` tree: the env file written once and only once, the wizard's values **and their absence**, the service surviving its own start script and answering `/health`, the exit codes Package Center reads, an upgrade that must not touch a hand-edited configuration, an uninstall that must not touch the answers | seconds, **on every push** |
+| [`packaging/dsm/check-spk.sh`](https://github.com/z29k/rescriptum/blob/main/packaging/dsm/check-spk.sh) | the archive is structurally what DSM expects — uncompressed outer tar, six `INFO` fields, an all-numeric version, `os_min_ver` at least 7.1, 64×64 and 256×256 icons, executable scripts with no CRLF, **the packaged binary's own `--version`**, and the desktop application: `dsmappname` naming a class its `ui/config` actually declares, a JavaScript filename that carries the version, and a backend that still checks the DSM session and `administrators` | seconds, **on every push** |
+| [`packaging/dsm/lifecycle-test.sh`](https://github.com/z29k/rescriptum/blob/main/packaging/dsm/lifecycle-test.sh) | everything the package's *scripts* decide, against a fake `/var/packages` tree: the env file written once and only once, the wizard's values **and their absence**, the service surviving its own start script and answering `/health`, the exit codes Package Center reads, an upgrade that must not touch a hand-edited configuration, an uninstall that must not touch the answers — **and the desktop application's backend**, driven with a stubbed authenticator: refusing no session, refusing a non-administrator, refusing a write with no intent header, refusing one that would stop the server starting, and never handing a token to the browser | seconds, **on every push** |
 | [`packaging/dsm/vm/on-dsm.sh`](https://github.com/z29k/rescriptum/blob/main/packaging/dsm/vm/on-dsm.sh) | DSM's own machinery — the `data-share` worker and its ACL, the `port-config` worker, the generated systemd unit, logrotate against a live descriptor, whether Package Center accepts the archive — **and that a machine asking for its configuration gets one**: a POST with hardware in the body, answered by that machine's file merged over the group claiming it | minutes, on a DSM 7 VM — and then on the DS416j |
 
 ```bash

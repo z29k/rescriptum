@@ -84,6 +84,17 @@ check_one() {
     *) ok "version $version is all-numeric segments" ;;
     esac
 
+    # The desktop application is built on DSM's ExtJS framework, which was measured on 7.1.1
+    # and 7.2.2. 7.0 is not claimed because nothing has ever run there — and a package that
+    # installs on a DSM it has not been seen on gives that machine an icon and a gamble.
+    local osmin
+    osmin=$(info_value os_min_ver "$work/INFO")
+    case "$osmin" in
+    7.0-*) bad "os_min_ver=$osmin, but nothing has been verified below DSM 7.1" ;;
+    7.*) ok "os_min_ver=$osmin" ;;
+    *) bad "os_min_ver=\"$osmin\" is not a DSM 7 version" ;;
+    esac
+
     local arch bad_arch=""
     for arch in $(info_value arch "$work/INFO"); do
         grep -qw -- "$arch" <<<"$KNOWN_ARCH" || bad_arch="$bad_arch $arch"
@@ -198,6 +209,116 @@ check_one() {
     grep -q '^\[rescriptum\]' "$work/target/port_conf/rescriptum.sc" &&
         ok "port_conf/rescriptum.sc declares [rescriptum]" ||
         bad "port_conf/rescriptum.sc does not declare [rescriptum]"
+
+    # ── the desktop application ────────────────────────────────────────────────
+    local uidir appname
+    uidir=$(info_value dsmuidir "$work/INFO")
+    appname=$(info_value dsmappname "$work/INFO")
+    if [ -z "$uidir" ] || [ -z "$appname" ]; then
+        bad "INFO is missing dsmuidir or dsmappname — there would be no desktop icon"
+    else
+        ok "INFO declares the application ($appname in $uidir/)"
+    fi
+
+    if [ -n "$uidir" ] && [ ! -d "$work/target/$uidir" ]; then
+        bad "INFO says dsmuidir=\"$uidir\" and the payload has no such directory"
+    else
+        local ui="$work/target/$uidir"
+        for f in config style.css api.cgi texts/enu/strings texts/fre/strings; do
+            [ -f "$ui/$f" ] || bad "the application has no $f"
+        done
+
+        # The JavaScript is named after the version — see make-spk.sh for why — so the name
+        # is read out of `ui/config` rather than assumed. That also checks the substitution
+        # happened at all: an unreplaced @JSFILE@ would name a file that is not there.
+        local jsfile=""
+        if command -v python3 >/dev/null 2>&1 && [ -f "$ui/config" ]; then
+            jsfile=$(python3 -c 'import json,sys; print(next(iter(json.load(open(sys.argv[1])))))' "$ui/config" 2>/dev/null)
+        fi
+        case "$jsfile" in
+        '') bad "$uidir/config names no JavaScript file" ;;
+        *@*) bad "$uidir/config still has a placeholder in it: $jsfile" ;;
+        *) if [ -f "$ui/$jsfile" ]; then
+               ok "$uidir/config names $jsfile, and it is there"
+           else
+               bad "$uidir/config names $jsfile, which the payload does not have"
+           fi
+           # A browser caches this for years — the fixed mtime makes it look ancient — so
+           # the name has to move with the release or an upgrade changes nothing on screen.
+           case "$jsfile" in
+           *"$version"*) ok "and the name carries the version, so a browser cannot serve a stale one" ;;
+           *) bad "$jsfile does not carry version $version — an upgraded package would keep the cached application" ;;
+           esac
+           grep -q '@VERSION@' "$ui/$jsfile" 2>/dev/null &&
+               bad "$jsfile still contains @VERSION@"
+           ;;
+        esac
+        local size
+        for size in 16 32 64 128 256; do
+            [ -f "$ui/images/$size.png" ] || bad "the application has no images/$size.png"
+        done
+
+        # **`dsmappname` has to name a class that ui/config declares.** When it does not,
+        # the icon still appears and Package Center's "Open" button silently does nothing
+        # — there is no error anywhere, which is exactly why this is asserted here.
+        if command -v python3 >/dev/null 2>&1 && [ -f "$ui/config" ]; then
+            if ! python3 -c "import json,sys; json.load(open(sys.argv[1]))" "$ui/config" 2>/dev/null; then
+                bad "$uidir/config is not valid JSON"
+            elif python3 - "$ui/config" "$appname" <<'PY'
+import json, sys
+config, appname = json.load(open(sys.argv[1])), sys.argv[2]
+sys.exit(0 if any(appname in classes for classes in config.values()) else 1)
+PY
+            then
+                ok "$uidir/config declares $appname"
+            else
+                bad "$uidir/config does not declare $appname — the Open button would do nothing"
+            fi
+        fi
+
+        # The backend. It is served by DSM's own web server, it runs as root, and that
+        # path is *not* authenticated by DSM — measured on 7.2.2, not assumed. The call to
+        # authenticate.cgi is therefore the only thing standing in front of it, and losing
+        # it would be silent: everything would keep working, for everybody on the network.
+        if [ -f "$ui/api.cgi" ]; then
+            [ -x "$ui/api.cgi" ] || bad "$uidir/api.cgi is not executable — DSM would serve its source"
+            head -n 1 "$ui/api.cgi" | grep -q '^#!/bin/sh' || bad "$uidir/api.cgi does not start with #!/bin/sh"
+            grep -q $'\r' "$ui/api.cgi" && bad "$uidir/api.cgi has CRLF line endings"
+            sh -n "$ui/api.cgi" || bad "$uidir/api.cgi does not parse"
+
+            # **Grep the code, not the file.** The comment above this script explains the
+            # authentication at length, so grepping the whole file for "authenticate.cgi"
+            # passes even when the call has been deleted — which is a test reporting
+            # coverage it does not have, on the one guard that matters most here.
+            local code
+            code=$(grep -v '^[[:space:]]*#' "$ui/api.cgi")
+            printf '%s\n' "$code" | grep -q 'authenticate\.cgi' &&
+                ok "$uidir/api.cgi checks the DSM session" ||
+                bad "$uidir/api.cgi does not call authenticate.cgi — it would be open to anyone"
+            # The membership test itself, not the word: "administrators" also appears in
+            # the sentence shown to somebody who fails it, so grepping for the word alone
+            # stays green when the check is gone.
+            if printf '%s\n' "$code" | grep -q 'id -nG' &&
+                printf '%s\n' "$code" | grep -q 'administrators'; then
+                ok "$uidir/api.cgi requires an administrator"
+            else
+                bad "$uidir/api.cgi does not test administrators membership"
+            fi
+        fi
+
+        # A key present in one language and not the other renders as an empty label, and
+        # only somebody running DSM in that language would ever see it.
+        if [ -f "$ui/texts/enu/strings" ] && [ -f "$ui/texts/fre/strings" ]; then
+            local keys_en keys_fr
+            keys_en=$(grep -oE '^[a-zA-Z_]+ =' "$ui/texts/enu/strings" | sort)
+            keys_fr=$(grep -oE '^[a-zA-Z_]+ =' "$ui/texts/fre/strings" | sort)
+            if [ "$keys_en" = "$keys_fr" ]; then
+                ok "the English and French strings carry the same keys"
+            else
+                bad "the English and French strings have drifted apart"
+            fi
+        fi
+    fi
 
     # Not a re-read of the same string: this runs the binary that is actually in the
     # package. It only works where the ABI matches the host, which on CI is the x86_64 one.

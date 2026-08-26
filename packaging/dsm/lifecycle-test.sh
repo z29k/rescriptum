@@ -239,7 +239,87 @@ rm -f "$ENV_FILE"
 SYNOPKG_PKG_STATUS=UPGRADE sh "$ROOT/scripts/postupgrade" >/dev/null 2>&1
 diff -q "$WORK/env.handedited" "$ENV_FILE" >/dev/null && ok "restored" || bad "postupgrade did not restore the file"
 
-# ── 4. uninstall ───────────────────────────────────────────────────────────────
+# ── 4. the desktop application's backend ───────────────────────────────────────
+# The CGI DSM serves at /webman/3rdparty/rescriptum/api.cgi. Two things measured on a DSM
+# 7.2.2 machine make this section matter more than it looks: a CGI there runs as **root**,
+# and that path is **not authenticated by DSM** — an unauthenticated request reaches the
+# script and gets 200. So the checks inside it are the only door, and this is where they
+# are proved to be shut.
+section "the DSM application's CGI"
+
+CGI="$ROOT/target/ui/api.cgi"
+AUTH_STUB="$WORK/authenticate.cgi"
+MY_GROUP=$(id -gn)
+
+# DSM's own authenticator prints the logged-in user's name, and prints nothing at all when
+# there is no session. Both halves are what the real script keys on.
+signed_in_as() {
+    printf '#!/bin/sh\nprintf %%s "%s"\n' "$1" >"$AUTH_STUB"
+    chmod 755 "$AUTH_STUB"
+}
+
+# One request. Everything a client could actually influence — the method, the query, the
+# body, a header — goes in as CGI variables; everything else is the seam the harness needs.
+cgi() { # <method> <query> <body> <x-rescriptum> [admin-group]
+    REQUEST_METHOD="$1" QUERY_STRING="$2" CONTENT_LENGTH="${#3}" \
+        HTTP_X_RESCRIPTUM="$4" \
+        RESCRIPTUM_PKG_ROOT="$ROOT" RESCRIPTUM_AUTH_CGI="$AUTH_STUB" \
+        RESCRIPTUM_ADMIN_GROUP="${5:-$MY_GROUP}" \
+        sh "$CGI" <<CGIBODY
+$3
+CGIBODY
+}
+
+http_status() { sed -n 's/^Status: \([0-9]*\).*/\1/p' <<<"$1" | head -n 1; }
+
+[ -x "$CGI" ] && ok "the application's CGI shipped executable" || bad "$CGI is not executable — DSM would serve its source"
+
+signed_in_as ""
+out=$(cgi GET "action=config" "" "")
+[ "$(http_status "$out")" = "403" ] && ok "no DSM session is refused" || bad "an unauthenticated request got $(http_status "$out") — that path is open to the network"
+
+signed_in_as "someuser"
+out=$(cgi GET "action=config" "" "" "a-group-nobody-is-in")
+[ "$(http_status "$out")" = "403" ] && ok "a signed-in non-administrator is refused" || bad "a non-administrator got $(http_status "$out")"
+
+signed_in_as "$(id -un)"
+out=$(cgi GET "action=config" "" "")
+[ "$(http_status "$out")" = "200" ] && ok "an administrator is served" || bad "an administrator got $(http_status "$out"): $out"
+grep -q '"key":"RESCRIPTUM_STORE"' <<<"$out" && ok "and gets the configuration as JSON" || bad "the JSON does not carry the settings: $out"
+
+# The panel renders this. A token reaching it is a token in a browser and a screenshot.
+RESCRIPTUM_PKG_ROOT="$ROOT" "$ROOT/target/bin/rescriptum-cli" config set RESCRIPTUM_ANSWER_TOKEN=n0tf0rth3br0ws3r >/dev/null 2>&1
+out=$(cgi GET "action=config" "" "")
+grep -q 'n0tf0rth3br0ws3r' <<<"$out" && bad "a token reached the application" || ok "no token reaches the application"
+
+# Compared against the whole file rather than one value: an earlier section leaves its own
+# settings behind, and "it is still not X" proves nothing when it was never X.
+before=$(cat "$ENV_FILE")
+out=$(cgi POST "action=save" "RESCRIPTUM_MAX_CONNECTIONS=4096" "")
+[ "$(http_status "$out")" = "403" ] && ok "a write without X-Rescriptum is refused" || bad "the CSRF guard let a write through with $(http_status "$out")"
+[ "$(cat "$ENV_FILE")" = "$before" ] && ok "and changed nothing" || bad "the refused write was applied anyway"
+
+out=$(cgi POST "action=save" "RESCRIPTUM_MAX_CONNECTIONS=4096" "1")
+[ "$(http_status "$out")" = "200" ] && ok "a write from the application is applied" || bad "the write got $(http_status "$out"): $out"
+[ "$(value_of RESCRIPTUM_MAX_CONNECTIONS)" = "4096" ] && ok "and reached the env file" || bad "the env file says $(value_of RESCRIPTUM_MAX_CONNECTIONS)"
+
+# The refusal that matters: the panel is reached over the service this would stop.
+before=$(cat "$ENV_FILE")
+out=$(cgi POST "action=save" "RESCRIPTUM_ADMIN_ADDR=127.0.0.1:8001" "1")
+[ "$(http_status "$out")" = "409" ] && ok "a write that would stop the server starting is refused" || bad "an unauthenticated admin API was accepted with $(http_status "$out")"
+[ "$(cat "$ENV_FILE")" = "$before" ] && ok "and the file is untouched" || bad "the refused write still changed the file"
+
+out=$(cgi GET "action=nonsense" "" "")
+[ "$(http_status "$out")" = "400" ] && ok "an unknown action is refused" || bad "an unknown action got $(http_status "$out")"
+
+out=$(cgi GET "action=status" "" "")
+grep -q '^version: rescriptum' <<<"$out" && ok "status reports the version" || bad "status: $out"
+# It answers, rather than hanging: the first version of this asked `su` to become the
+# service's user, which read the CGI's stdin and waited on it forever. The CGI already
+# *is* that user, so a plain test is both possible and correct.
+grep -q '^answers_readable: yes' <<<"$out" && ok "and can tell that the answers folder is readable" || bad "status says the answers folder is unreadable: $out"
+
+# ── 5. uninstall ───────────────────────────────────────────────────────────────
 section "uninstall must leave the answers alone"
 unset SYNOPKG_TEMP_UPGRADE_FOLDER
 SYNOPKG_PKG_STATUS=UNINSTALL sh "$ROOT/scripts/preuninst" >/dev/null 2>&1

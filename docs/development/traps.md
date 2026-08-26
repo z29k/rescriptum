@@ -197,6 +197,67 @@ carries on writing to a file with no name.
 **A `.spk` whose outer tar is gzipped is rejected** with "invalid file format" and no
 further detail. So is one carrying macOS `._` members. `check-spk.sh` asserts both.
 
+## The DSM desktop application
+
+Seven things, measured on a DSM 7.2.2 virtual machine and on a DS416j running 7.1.1, and
+none of them in the developer guide.
+
+**A CGI under `/webman/3rdparty/<pkg>/` runs as the owner of the script.** Not as `http`,
+and not as root — as whoever owns the file. DSM chowns a package's tree to the package
+user, so the application's backend runs as `rescriptum` and can read the `0600` env file it
+owns, which is the entire reason the configuration can be edited while the server is
+stopped. Proven by chowning the same script two ways and watching `id` change. A script
+left owned by root **does** run as root there, so do not leave one lying about.
+
+**That path is not authenticated by DSM.** An unauthenticated request reaches the script
+and is answered `200`. Whatever guards a package's CGI, the package wrote it — here that is
+`authenticate.cgi` plus an `administrators` check, and losing either would be silent.
+
+**`su` in a CGI hangs the request.** Without `</dev/null` it inherits the CGI's stdin — a
+pipe from the web server that nothing will close — reads from it, and never returns. The
+status page simply stopped mid-answer. Then, once that was fixed, it failed anyway with
+"Permission denied", because a non-root process cannot become anybody. Both were wasted
+effort: the script already *is* the user in question, so a plain `test -r` was the answer
+all along.
+
+**The framework a package can use is the machine's choice, not Synology's guide's.** DSM
+7.2 ships a Vue UI framework and the current guide documents only that one. The DS416j is
+capped at DSM 7.1.1, where `Vue` is undefined — so an application built on it installs and
+gives that machine an icon that opens nothing. ExtJS is on both (7.1.1 and 7.2.2 measured),
+which is why there is one application rather than two.
+
+**The guide's own ExtJS example does not run.** It declares classes with `Ext.define` and
+chains with `callParent`; against `SYNO.SDS.AppInstance` that throws `Cannot read properties
+of null (reading 'apply')` before the window ever appears. This is **ExtJS 3.4.1** with an
+`Ext.define` shim over it: use `Ext.define` for the declaration — DSM's launcher finds the
+class that way and it does set `superclass` — and then call
+`MyClass.superclass.constructor.call(this, config)` rather than `callParent`.
+
+**DSM's taskbar calls `getWindowTitle()` on the window.** Without a title it throws from
+inside DSM's own taskbar bundle, and the application then fails to open at all — with a
+stack trace that names Synology's code and not yours.
+
+**Do not name a method `show`.** `Ext.Window.prototype.show()` is what DSM calls to display
+the window, so a `show(which)` added for switching tabs silently overrode it: the window was
+built, laid out, and rendered a correct thumbnail in the taskbar preview — and never
+appeared. **Nothing threw**, on either DSM version, which is what made it expensive: it was
+found by bisecting from the guide's minimal example upwards. Everything added to that
+prototype shares a namespace with every method of `Ext.Window`, and that is a large
+namespace.
+
+**`fieldLabel` is drawn by the form layout, not by the field.** A `syno_displayfield` in a
+plain `Ext.Panel` renders its value and silently drops its label, which turned the status
+page into a bare column of values with nothing saying what they were. `SYNO.ux.FormPanel`,
+or `layout: 'form'`.
+
+**Reproducible builds and browser caches disagree, and the browser wins.** `make-spk.sh`
+gives every packaged file a fixed mtime so the same inputs produce a byte-identical `.spk`.
+nginx turns that into `Last-Modified: 2019` with no `Cache-Control`, and a browser's
+heuristic freshness is a tenth of the file's apparent age — years. An upgraded package went
+on running the **old** JavaScript against the new backend, through a reinstall and a hard
+reload. The application's file is therefore named after the version and everything it
+fetches itself carries `?v=`; `check-spk.sh` asserts the name still moves.
+
 ## Behaviour changes worth remembering
 
 **Answer documents must now be valid.** Before merging they were served as opaque bytes, so

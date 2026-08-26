@@ -1,0 +1,51 @@
+/*
+ * Layout only.
+ *
+ * ExtJS already paints everything in the DSM theme — the window, the fields, the buttons —
+ * so there is very little for this file to do, and that is the point of using the DSM
+ * framework rather than a page of our own. What is left is the spacing around the two
+ * kinds of text ExtJS has no opinion about: an explanatory line under a field, and a block
+ * of log output.
+ *
+ * **Nothing here names a colour.** DSM ships a light theme and a dark one and switches
+ * between them without telling a package, so the banner tints `currentColor` — whatever
+ * the theme has already decided text should be. A palette of our own would look right in
+ * exactly one of the two.
+ */
+.rescriptum-banner {
+    display: block;
+    margin: 0 0 10px;
+    padding: 8px 10px;
+    border-radius: 4px;
+    border-left: 3px solid currentColor;
+    background: rgba(127, 127, 127, 0.12);
+}
+
+.rescriptum-envfile {
+    display: block;
+    padding-bottom: 12px;
+    opacity: 0.7;
+    word-break: break-all;
+}
+
+/* Sits under the field it explains, indented past the label column. */
+.rescriptum-help {
+    display: block;
+    padding: 0 0 12px 224px;
+    font-size: 12px;
+    opacity: 0.65;
+}
+
+/* A log is fixed-width text and stays fixed-width: wrapping it hides the column that says
+ * which machine asked. */
+.rescriptum-pre {
+    margin: 12px 0 0;
+    padding: 10px;
+    overflow: auto;
+    font-family: Menlo, Consolas, monospace;
+    font-size: 12px;
+    line-height: 1.45;
+    white-space: pre;
+    border-radius: 4px;
+    background: rgba(127, 127, 127, 0.10);
+}

@@ -120,6 +120,28 @@ cp "$BIN" "$PAYLOAD/bin/rescriptum"
 chmod 755 "$PAYLOAD/bin/rescriptum"
 cp -R "$HERE/payload/." "$PAYLOAD/"
 chmod 755 "$PAYLOAD/bin/rescriptum-cli"
+# The desktop application's backend. Said explicitly rather than trusted to survive a
+# checkout, an archive and a copy: a CGI that arrives without its execute bit is served to
+# the browser as source — which would mean publishing this script's contents rather than
+# running it.
+chmod 755 "$PAYLOAD/ui/api.cgi"
+
+# **The desktop application's JavaScript is named after the version, and that is a cache
+# fix rather than a nicety.** Every file in this payload gets a fixed mtime below, so that
+# the same inputs produce a byte-identical `.spk` — and nginx serves that to a browser as
+# `Last-Modified: 2019` with no `Cache-Control`. A browser's heuristic freshness is a tenth
+# of the file's apparent age, which is years: an upgraded package would go on running the
+# *old* application in the administrator's browser, against the new backend, until they
+# thought to clear their cache. A URL that changes with the version is what actually fixes
+# it. `ui/config` names the file, so the two are substituted together and check-spk.sh
+# asserts they still agree.
+JSFILE="rescriptum-$FULL_VERSION.js"
+mv "$PAYLOAD/ui/rescriptum.js" "$PAYLOAD/ui/$JSFILE"
+sed "s|@VERSION@|$FULL_VERSION|g" "$PAYLOAD/ui/$JSFILE" >"$PAYLOAD/ui/$JSFILE.new" &&
+    mv "$PAYLOAD/ui/$JSFILE.new" "$PAYLOAD/ui/$JSFILE"
+sed "s|@JSFILE@|$JSFILE|g" "$PAYLOAD/ui/config" >"$PAYLOAD/ui/config.new" &&
+    mv "$PAYLOAD/ui/config.new" "$PAYLOAD/ui/config"
+
 find "$PAYLOAD" -name '.DS_Store' -delete
 
 # Kilobytes of unpacked payload. Left unset, extractsize does not mean "unknown": it means

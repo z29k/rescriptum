@@ -94,10 +94,68 @@ the package is gone, **with whatever tokens are in it**. Reinstalling picks it b
 which is usually what you want. If you are removing rescriptum for good and it held a
 token, delete `/volume1/@appconf/rescriptum` yourself.
 
+## The desktop application
+
+The package installs an application on the DSM desktop — the icon is in the main menu, and
+Package Center's **Open** button leads to it. It is a real DSM application, built on the
+desktop's own UI framework, so it is in the DSM theme and in the DSM language; the French
+of a French DSM is the application's French too.
+
+It has three tabs:
+
+- **Settings** — every configuration variable, as a form. Each field says where its value
+  comes from, and a value the *environment* sets is shown but locked, because editing the
+  file would not change it. Saving writes the file and offers to restart the package,
+  since the server reads its configuration once, at startup.
+- **Status** — the version, whether the package is running, the answers folder and whether
+  it is really readable *by the service's own user*, and the output of `check`.
+- **Log** — the last lines of the request log and of `startup.log`.
+
+Three properties are worth knowing rather than discovering:
+
+- **It edits the file, not the running server.** So it still works when the server will not
+  start, which is exactly when a settings panel earns its place. A change that would leave
+  the server unable to start is refused before anything is written, with the reason shown.
+- **It never shows you a token.** `RESCRIPTUM_ANSWER_TOKEN` and `RESCRIPTUM_ADMIN_TOKEN`
+  appear as *set* or *not set*, and an empty box means "leave it alone" rather than "clear
+  it". Typing a new one replaces it.
+- **It requires a DSM administrator.** Being signed in to DSM is not enough. See
+  [security](./security.md#the-desktop-application) for why that check is the whole door.
+
+*Restart now* stops and starts the package through DSM itself, so **DSM closes the window
+while it does** — open it again to see the new state. The application says so next to the
+button rather than letting it surprise you.
+
+It needs **DSM 7.1 or newer** (`os_min_ver="7.1-42661"`). It is built on DSM's ExtJS
+framework, which is present on 7.1.1 and on 7.2.2 — both measured. DSM 7.2 ships a newer
+Vue framework and Synology's current guide documents only that one; the DS416j this project
+exists for is capped at 7.1.1, where `Vue` is undefined, so ExtJS is what covers every DSM
+this package supports rather than only the recent ones. 7.0 is not claimed because nothing
+has been run there.
+
 ## Configuring it
 
-DSM has no settings panel for a package, so **the env file is the configuration
-interface**:
+The application above is the comfortable way. Everything it does can also be done from a
+shell, and on a machine where the desktop is not to hand that is the faster route:
+
+```console
+$ sudo rescriptum-cli config
+env file: /var/packages/rescriptum/etc/rescriptum.env
+
+  RESCRIPTUM_STORE            files                             default
+  RESCRIPTUM_ANSWERS_DIR      /var/packages/rescriptum/shares/rescriptum/answers   file
+  RESCRIPTUM_LISTEN_ADDR      0.0.0.0:8000                      file
+  …
+
+$ sudo rescriptum-cli config set RESCRIPTUM_LOG=problems
+wrote /var/packages/rescriptum/etc/rescriptum.env
+```
+
+`config set` keeps the file's comments, uncomments a setting rather than duplicating it,
+and **refuses a change that would stop the server starting**. Its exit code says whether
+the configuration is one the server would start on, which makes it usable from a script.
+
+Underneath both is the same file, and editing it by hand is still perfectly reasonable:
 
 ```console
 $ sudo vi /var/packages/rescriptum/etc/rescriptum.env

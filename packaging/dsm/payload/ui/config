@@ -1,0 +1,21 @@
+{
+    "@JSFILE@": {
+        "SYNO.SDS.App.Rescriptum.AppInstance": {
+            "type": "app",
+            "title": "rescriptum",
+            "desc": "Serves unattended-installation answers, composed per machine.",
+            "icon": "images/{0}.png",
+            "allowMultiInstance": false,
+            "allUsers": false,
+            "hidden": false,
+            "appWindow": "SYNO.SDS.App.Rescriptum.AppWindow",
+            "depend": ["SYNO.SDS.App.Rescriptum.AppWindow"]
+        },
+        "SYNO.SDS.App.Rescriptum.AppWindow": {
+            "type": "lib",
+            "title": "rescriptum",
+            "icon": "images/{0}.png",
+            "texts": "texts"
+        }
+    }
+}

@@ -126,7 +126,8 @@ go deep only where you are curious.
 - **[Small enough for a NAS](https://z29k.github.io/rescriptum/guide/operations/synology)** —
   builds for ARMv7, aarch64 and x86_64 — static musl, except ARMv7, which targets DSM's own
   glibc because musl 1.2 cannot run on Synology's 3.10 kernels — plus a **DSM 7 package** that creates
-  the shared folder, registers the port with the firewall and starts at boot. Everywhere
+  the shared folder, registers the port with the firewall, starts at boot, and puts a
+  **desktop application** on DSM for the configuration, the status and the log. Everywhere
   else it is a systemd unit or a container.
 
 ## Install

@@ -1,0 +1,76 @@
+# DSM's own internationalisation. The desktop picks the directory matching the user's
+# language and hands these to `$i18n(section, key)`; there is no string table inside the
+# JavaScript, so a translation is a file rather than a code change.
+#
+# The English here is the source and the French beside it is the translation, which is the
+# same rule the documentation follows. Note the variable labels and help are translated
+# *here* rather than taken from the server's own `--json` output: the server's strings are
+# English by project rule, and a half-French window would be worse than either.
+
+[app]
+description = "Serve unattended-installation answers, composed per machine."
+
+[ui]
+settings = "Settings"
+status = "Status"
+log = "Log"
+save = "Save"
+reload = "Reload"
+close = "Close"
+restart = "Restart now"
+restart_needed = "Saved. The server reads its configuration once, at startup, so these take effect when the package restarts."
+restarted = "The package was restarted."
+restart_closes = "DSM closes this window while the package stops. Open it again to see the new state."
+saved = "Saved."
+nothing_changed = "Nothing was changed."
+would_not_start = "The server would not start:"
+read_only = "This configuration file cannot be written, so nothing here can be saved."
+env_file = "Configuration file:"
+env_file_none = "none"
+from_environment = "Set in the environment, which overrides this file — editing it here would change nothing."
+secret_set = "unchanged — type to replace it"
+secret_unset = "not set"
+
+[label]
+RESCRIPTUM_STORE = "Answer store"
+RESCRIPTUM_ANSWERS_DIR = "Answers folder"
+RESCRIPTUM_DB_PATH = "Database file"
+RESCRIPTUM_LISTEN_ADDR = "Listen address"
+RESCRIPTUM_WORKERS = "Worker threads"
+RESCRIPTUM_MAX_CONNECTIONS = "Maximum connections"
+RESCRIPTUM_TIMEOUT_SECS = "Timeout (seconds)"
+RESCRIPTUM_LOG = "Log level"
+RESCRIPTUM_LOG_FILE = "Log file"
+RESCRIPTUM_CAPTURE_DIR = "Capture folder"
+RESCRIPTUM_ANSWER_TOKEN = "Installer token"
+RESCRIPTUM_ADMIN_ADDR = "Write API address"
+RESCRIPTUM_ADMIN_TOKEN = "Write API token"
+
+[help]
+RESCRIPTUM_STORE = "Where answers come from: a folder of documents, or a database."
+RESCRIPTUM_ANSWERS_DIR = "The folder of answer documents, when the store is files."
+RESCRIPTUM_DB_PATH = "The SQLite database, when the store is sqlite."
+RESCRIPTUM_LISTEN_ADDR = "Where installers reach the answer endpoint."
+RESCRIPTUM_WORKERS = "Runtime threads. Not a connection limit; the default is the CPU count."
+RESCRIPTUM_MAX_CONNECTIONS = "Connections in flight before a burst is refused rather than queued."
+RESCRIPTUM_TIMEOUT_SECS = "How long a slow client may hold a connection."
+RESCRIPTUM_LOG = "all keeps every request; problems drops the ones that worked."
+RESCRIPTUM_LOG_FILE = "A file to append to, or stdout or stderr."
+RESCRIPTUM_CAPTURE_DIR = "Record what installers actually send, for when nothing is answered."
+RESCRIPTUM_ANSWER_TOKEN = "Required of installers that have one to offer. Off by default."
+RESCRIPTUM_ADMIN_ADDR = "The write API's own listener. Keep it on loopback and reach it over SSH."
+RESCRIPTUM_ADMIN_TOKEN = "At least 16 characters, and required whenever the write API is on."
+
+[status]
+version = "Version"
+package = "Package"
+answers = "Answers folder"
+answers_readable = "Readable by the service"
+
+[value]
+running = "running"
+stopped = "stopped"
+crashed = "crashed, and it left its pidfile behind"
+unknown = "unknown"
+yes = "yes"
+no = "no"

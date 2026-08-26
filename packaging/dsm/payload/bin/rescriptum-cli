@@ -13,6 +13,13 @@
 # And the diagnostic that actually proves the share's permissions is
 #     sudo -u rescriptum rescriptum-cli check
 # Run as root it succeeds whatever the ACL says, which makes success meaningless.
-RESCRIPTUM_ENV_FILE="${RESCRIPTUM_ENV_FILE:-/var/packages/rescriptum/etc/rescriptum.env}"
+#
+# The package root is the same seam the lifecycle scripts and the application's CGI use,
+# with the same real default — it is what lets a harness drive all three against a tree it
+# can write to. It is never derived from $0 or $SYNOPKG_PKGDEST: /var/packages/rescriptum/
+# target is a symlink into /volume1/@appstore, so following it lands beside the binary and
+# nowhere near etc/.
+RESCRIPTUM_PKG_ROOT="${RESCRIPTUM_PKG_ROOT:-/var/packages/rescriptum}"
+RESCRIPTUM_ENV_FILE="${RESCRIPTUM_ENV_FILE:-$RESCRIPTUM_PKG_ROOT/etc/rescriptum.env}"
 export RESCRIPTUM_ENV_FILE
-exec /var/packages/rescriptum/target/bin/rescriptum "$@"
+exec "$RESCRIPTUM_PKG_ROOT/target/bin/rescriptum" "$@"

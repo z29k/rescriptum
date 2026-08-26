@@ -1,0 +1,70 @@
+# La traduction française des chaînes de « enu/strings ». L'anglais est la source : une
+# clé ajoutée là-bas et absente ici s'affiche vide, alors que l'inverse ne se voit pas.
+
+[app]
+description = "Sert à chaque machine sa réponse d'installation, composée pour elle."
+
+[ui]
+settings = "Réglages"
+status = "État"
+log = "Journal"
+save = "Enregistrer"
+reload = "Recharger"
+close = "Fermer"
+restart = "Redémarrer maintenant"
+restart_needed = "Enregistré. Le serveur lit sa configuration une seule fois, au démarrage : ces valeurs prendront effet au redémarrage du paquet."
+restarted = "Le paquet a été redémarré."
+restart_closes = "DSM ferme cette fenêtre pendant l'arrêt du paquet. Rouvrez-la pour voir le nouvel état."
+saved = "Enregistré."
+nothing_changed = "Aucune modification."
+would_not_start = "Le serveur ne démarrerait pas :"
+read_only = "Ce fichier de configuration n'est pas accessible en écriture : rien ne peut être enregistré ici."
+env_file = "Fichier de configuration :"
+env_file_none = "aucun"
+from_environment = "Défini dans l'environnement, qui l'emporte sur ce fichier — le modifier ici ne changerait rien."
+secret_set = "inchangé — saisir pour le remplacer"
+secret_unset = "non défini"
+
+[label]
+RESCRIPTUM_STORE = "Source des réponses"
+RESCRIPTUM_ANSWERS_DIR = "Dossier des réponses"
+RESCRIPTUM_DB_PATH = "Fichier de base de données"
+RESCRIPTUM_LISTEN_ADDR = "Adresse d'écoute"
+RESCRIPTUM_WORKERS = "Fils d'exécution"
+RESCRIPTUM_MAX_CONNECTIONS = "Connexions maximales"
+RESCRIPTUM_TIMEOUT_SECS = "Délai d'attente (secondes)"
+RESCRIPTUM_LOG = "Niveau de journalisation"
+RESCRIPTUM_LOG_FILE = "Fichier de journal"
+RESCRIPTUM_CAPTURE_DIR = "Dossier de capture"
+RESCRIPTUM_ANSWER_TOKEN = "Jeton des installateurs"
+RESCRIPTUM_ADMIN_ADDR = "Adresse de l'API d'écriture"
+RESCRIPTUM_ADMIN_TOKEN = "Jeton de l'API d'écriture"
+
+[help]
+RESCRIPTUM_STORE = "D'où viennent les réponses : un dossier de documents, ou une base de données."
+RESCRIPTUM_ANSWERS_DIR = "Le dossier des documents de réponse, quand la source est « files »."
+RESCRIPTUM_DB_PATH = "La base SQLite, quand la source est « sqlite »."
+RESCRIPTUM_LISTEN_ADDR = "Là où les installateurs joignent le point d'accès des réponses."
+RESCRIPTUM_WORKERS = "Fils du runtime. Ce n'est pas une limite de connexions ; par défaut, le nombre de cœurs."
+RESCRIPTUM_MAX_CONNECTIONS = "Connexions en cours avant qu'une rafale soit refusée plutôt que mise en file."
+RESCRIPTUM_TIMEOUT_SECS = "Combien de temps un client lent peut retenir une connexion."
+RESCRIPTUM_LOG = "« all » garde chaque requête ; « problems » écarte celles qui ont fonctionné."
+RESCRIPTUM_LOG_FILE = "Un fichier où écrire à la suite, ou « stdout » ou « stderr »."
+RESCRIPTUM_CAPTURE_DIR = "Enregistre ce que les installateurs envoient vraiment, pour quand rien n'est servi."
+RESCRIPTUM_ANSWER_TOKEN = "Exigé des installateurs qui en présentent un. Désactivé par défaut."
+RESCRIPTUM_ADMIN_ADDR = "L'écouteur propre à l'API d'écriture. À garder en loopback, joignable par SSH."
+RESCRIPTUM_ADMIN_TOKEN = "Au moins 16 caractères, et obligatoire dès que l'API d'écriture est active."
+
+[status]
+version = "Version"
+package = "Paquet"
+answers = "Dossier des réponses"
+answers_readable = "Lisible par le service"
+
+[value]
+running = "en cours d'exécution"
+stopped = "arrêté"
+crashed = "planté, en laissant son fichier de pid"
+unknown = "inconnu"
+yes = "oui"
+no = "non"

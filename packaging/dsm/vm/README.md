@@ -159,16 +159,32 @@ removed configuration). Run the machine.
    $ packaging/dsm/vm/on-dsm.sh rigadmin@127.0.0.1 -p 2222 -i ~/.ssh/rescriptum-rig
    ```
 
-4. **Read the `·` lines, not only the `✓`.** They are where the machine tells you things no
+4. **Open the application, with your eyes.** No script can assert that a window renders.
+   Sign in to DSM, open the main menu, and click **rescriptum**:
+
+   - the icon is there, and the window opens;
+   - the labels are words, not `ui:settings` — that is the sign the text files loaded;
+   - **Réglages** shows this machine's real configuration, **État** says the package is
+     running and the answers folder is readable, **Journal** shows actual log lines;
+   - change one value, *Enregistrer*, then *Redémarrer maintenant* — DSM closes the window
+     while it restarts, which is expected. Reopen it and the value is still there;
+   - after an **upgrade**, check the labels again. If the window looks like the previous
+     version's, the JavaScript is being served from the browser's cache and the versioned
+     filename has stopped working.
+
+   `SYNO.SDS.AppLaunch('SYNO.SDS.App.Rescriptum.Instance', {}, false, null, null)` in the
+   browser console opens it without the menu, which is quicker when iterating.
+
+5. **Read the `·` lines, not only the `✓`.** They are where the machine tells you things no
    assertion covers: which directory the firewall entry landed in, what the generated unit
    says, whether a worker ran before or after `postinst`.
 
-5. **A failure is a question, not a verdict.** Three of the six things that have gone red
+6. **A failure is a question, not a verdict.** Three of the six things that have gone red
    here were the rig's own fault — checking a resource worker before its window opened, a
    canary file that was a valid answer document, `find` not following a symlink. Read
    `/var/log/packages/rescriptum.log` and `startup.log` before changing the package.
 
-6. **Green on the VM is not green.** It is x86_64 and says nothing about the ARMv7 binary.
+7. **Green on the VM is not green.** It is x86_64 and says nothing about the ARMv7 binary.
    `on-dsm.sh admin@nas` against the DS416j is the verdict, and nothing is released without
    it.
 

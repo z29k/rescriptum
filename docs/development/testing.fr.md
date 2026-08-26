@@ -8,7 +8,7 @@ sidebar:
 
 # Tests
 
-309 tests. `cargo test` les fait tous tourner en quelques secondes.
+333 tests. `cargo test` les fait tous tourner en quelques secondes.
 
 ```bash
 cargo test                                # tout
@@ -27,13 +27,13 @@ cargo test --all-features                 # ce que lance la CI
 | `src/format/mod.rs` | 27 | parsing, fusion, clés de contrôle, alias d'endpoint |
 | `src/facts.rs` | 22 | parsing de query, aplatissement JSON, globbing |
 | `tests/admin.rs` | 26 | l'API d'administration de bout en bout, formats compris |
-| `tests/cli.rs` | 29 | `render`, `check`, `import`, `export` et le fichier d'environnement — contre le vrai binaire |
+| `tests/cli.rs` | 39 | `render`, `check`, `import`, `export`, `config` et le fichier d'environnement — contre le vrai binaire |
 | `src/log.rs` | 4 | lecture des niveaux, et l'arithmétique d'horodatage |
 | `src/format/xml.rs` | 18 | l'arbre XML — appariement, entités, fidélité |
-| `src/config.rs` | 19 | l'environnement, et ce qui refuse de démarrer |
+| `src/config.rs` | 24 | l'environnement, ce qui refuse de démarrer, et qui l'emporte du fichier ou de l'environnement |
 | `src/merge.rs` | 11 | la fusion profonde TOML |
 | `tests/guards.rs` | 7 | le jeton de réponse, et le verrouillage qui délibérément n'existe pas |
-| `src/envfile.rs` | 14 | le parseur du fichier d'environnement, et ce qu'il refuse |
+| `src/envfile.rs` | 23 | le parseur et l'écrivain du fichier d'environnement, et ce que chacun refuse |
 | `src/admin.rs`, `src/capture.rs`, `src/store/mod.rs` | 21 | comportement unitaire |
 
 ## `tests/stores.rs` — la suite de conformité
@@ -129,8 +129,8 @@ harnais s'en chargent, et chacun prouve ce que les autres ne peuvent pas.
 
 | | Prouve | Coût |
 |---|---|---|
-| [`packaging/dsm/check-spk.sh`](https://github.com/z29k/rescriptum/blob/main/packaging/dsm/check-spk.sh) | l'archive est structurellement ce que DSM attend — tar externe non compressé, les six champs d'`INFO`, une version tout en segments numériques, icônes 64×64 et 256×256, scripts exécutables sans CRLF, et **le `--version` du binaire empaqueté** | des secondes, **à chaque push** |
-| [`packaging/dsm/lifecycle-test.sh`](https://github.com/z29k/rescriptum/blob/main/packaging/dsm/lifecycle-test.sh) | tout ce que les *scripts* du paquet décident, contre un faux arbre `/var/packages` : le fichier d'environnement écrit une fois et une seule, les valeurs de l'assistant **et leur absence**, le service qui survit à son propre script de démarrage et répond à `/health`, les codes de sortie que lit Package Center, une mise à jour qui ne doit pas toucher une configuration éditée à la main, une désinstallation qui ne doit pas toucher aux réponses | des secondes, **à chaque push** |
+| [`packaging/dsm/check-spk.sh`](https://github.com/z29k/rescriptum/blob/main/packaging/dsm/check-spk.sh) | l'archive est structurellement ce que DSM attend — tar externe non compressé, les six champs d'`INFO`, une version tout en segments numériques, `os_min_ver` au moins 7.1, icônes 64×64 et 256×256, scripts exécutables sans CRLF, **le `--version` du binaire empaqueté**, et l'application de bureau : un `dsmappname` nommant une classe que son `ui/config` déclare vraiment, un nom de fichier JavaScript qui porte la version, et un backend qui vérifie toujours la session DSM et `administrators` | des secondes, **à chaque push** |
+| [`packaging/dsm/lifecycle-test.sh`](https://github.com/z29k/rescriptum/blob/main/packaging/dsm/lifecycle-test.sh) | tout ce que les *scripts* du paquet décident, contre un faux arbre `/var/packages` : le fichier d'environnement écrit une fois et une seule, les valeurs de l'assistant **et leur absence**, le service qui survit à son propre script de démarrage et répond à `/health`, les codes de sortie que lit Package Center, une mise à jour qui ne doit pas toucher une configuration éditée à la main, une désinstallation qui ne doit pas toucher aux réponses — **et le backend de l'application de bureau**, piloté avec un authentificateur bouchonné : refuser l'absence de session, refuser un non-administrateur, refuser une écriture sans en-tête d'intention, refuser celle qui empêcherait le serveur de démarrer, et ne jamais livrer un jeton au navigateur | des secondes, **à chaque push** |
 | [`packaging/dsm/vm/on-dsm.sh`](https://github.com/z29k/rescriptum/blob/main/packaging/dsm/vm/on-dsm.sh) | la machinerie propre à DSM — le worker `data-share` et son ACL, le worker `port-config`, l'unité systemd générée, logrotate contre un descripteur vivant, si Package Center accepte l'archive — **et qu'une machine qui demande sa configuration en reçoit une** : un POST avec le matériel dans le corps, auquel répond le fichier de cette machine fusionné par-dessus le groupe qui la revendique | des minutes, sur une VM DSM 7 — puis sur le DS416j |
 
 ```bash
