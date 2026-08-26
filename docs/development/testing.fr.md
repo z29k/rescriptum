@@ -8,7 +8,7 @@ sidebar:
 
 # Tests
 
-308 tests. `cargo test` les fait tous tourner en quelques secondes.
+333 tests. `cargo test` les fait tous tourner en quelques secondes.
 
 ```bash
 cargo test                                # tout
@@ -21,19 +21,19 @@ cargo test --all-features                 # ce que lance la CI
 
 | Suite | Cas | Pour |
 |---|---|---|
-| `tests/stores.rs` | 38 | **chaque comportement, contre les deux stores** |
+| `tests/stores.rs` | 39 | **chaque comportement, contre les deux stores** |
 | `tests/integration.rs` | 45 | le vrai binaire sur une vraie socket |
 | `src/select.rs` | 27 | normalisation, scoring, superposition, remplissage de templates |
 | `src/format/mod.rs` | 27 | parsing, fusion, clés de contrôle, alias d'endpoint |
 | `src/facts.rs` | 22 | parsing de query, aplatissement JSON, globbing |
 | `tests/admin.rs` | 26 | l'API d'administration de bout en bout, formats compris |
-| `tests/cli.rs` | 29 | `render`, `check`, `import`, `export` et le fichier d'environnement — contre le vrai binaire |
+| `tests/cli.rs` | 39 | `render`, `check`, `import`, `export`, `config` et le fichier d'environnement — contre le vrai binaire |
 | `src/log.rs` | 4 | lecture des niveaux, et l'arithmétique d'horodatage |
 | `src/format/xml.rs` | 18 | l'arbre XML — appariement, entités, fidélité |
-| `src/config.rs` | 19 | l'environnement, et ce qui refuse de démarrer |
+| `src/config.rs` | 24 | l'environnement, ce qui refuse de démarrer, et qui l'emporte du fichier ou de l'environnement |
 | `src/merge.rs` | 11 | la fusion profonde TOML |
 | `tests/guards.rs` | 7 | le jeton de réponse, et le verrouillage qui délibérément n'existe pas |
-| `src/envfile.rs` | 14 | le parseur du fichier d'environnement, et ce qu'il refuse |
+| `src/envfile.rs` | 23 | le parseur et l'écrivain du fichier d'environnement, et ce que chacun refuse |
 | `src/admin.rs`, `src/capture.rs`, `src/store/mod.rs` | 21 | comportement unitaire |
 
 ## `tests/stores.rs` — la suite de conformité
@@ -122,6 +122,43 @@ travaillé de chaque format, et c'est le seul endroit où ils sont montrés en t
 composer ensemble. Deux d'entre eux ont attrapé de vrais bugs — un doctype manquant et un
 attribut `pass` non apparié. Gardez-les fonctionnels.
 
+## Le paquet aussi est testé, à trois endroits
+
+`cargo test` ne touche pas au paquet DSM, parce que rien là-dedans n'est du Rust. Trois
+harnais s'en chargent, et chacun prouve ce que les autres ne peuvent pas.
+
+| | Prouve | Coût |
+|---|---|---|
+| [`packaging/dsm/check-spk.sh`](https://github.com/z29k/rescriptum/blob/main/packaging/dsm/check-spk.sh) | l'archive est structurellement ce que DSM attend — tar externe non compressé, les six champs d'`INFO`, une version tout en segments numériques, `os_min_ver` au moins 7.1, icônes 64×64 et 256×256, scripts exécutables sans CRLF, **le `--version` du binaire empaqueté**, et l'application de bureau : un `dsmappname` nommant une classe que son `ui/config` déclare vraiment, un nom de fichier JavaScript qui porte la version, et un backend qui vérifie toujours la session DSM et `administrators` | des secondes, **à chaque push** |
+| [`packaging/dsm/lifecycle-test.sh`](https://github.com/z29k/rescriptum/blob/main/packaging/dsm/lifecycle-test.sh) | tout ce que les *scripts* du paquet décident, contre un faux arbre `/var/packages` : le fichier d'environnement écrit une fois et une seule, les valeurs de l'assistant **et leur absence**, le service qui survit à son propre script de démarrage et répond à `/health`, les codes de sortie que lit Package Center, une mise à jour qui ne doit pas toucher une configuration éditée à la main, une désinstallation qui ne doit pas toucher aux réponses — **et le backend de l'application de bureau**, piloté avec un authentificateur bouchonné : refuser l'absence de session, refuser un non-administrateur, refuser une écriture sans en-tête d'intention, refuser celle qui empêcherait le serveur de démarrer, et ne jamais livrer un jeton au navigateur | des secondes, **à chaque push** |
+| [`packaging/dsm/vm/on-dsm.sh`](https://github.com/z29k/rescriptum/blob/main/packaging/dsm/vm/on-dsm.sh) | la machinerie propre à DSM — le worker `data-share` et son ACL, le worker `port-config`, l'unité systemd générée, logrotate contre un descripteur vivant, si Package Center accepte l'archive — **et qu'une machine qui demande sa configuration en reçoit une** : un POST avec le matériel dans le corps, auquel répond le fichier de cette machine fusionné par-dessus le groupe qui la revendique | des minutes, sur une VM DSM 7 — puis sur le DS416j |
+
+```bash
+packaging/dsm/lifecycle-test.sh                     # le premier .spk de dist/ qui tourne ici
+docker compose -f packaging/dsm/vm/docker-compose.yml up -d   # une machine DSM 7.2
+packaging/dsm/vm/on-dsm.sh admin@<hôte> -p 2222     # contre elle
+packaging/dsm/vm/on-dsm.sh admin@nas                # le verdict
+```
+
+La VM, c'est `vdsm/virtual-dsm`, qui installe la Virtual DSM officielle de Synology — aucune
+image de loader à trouver. KVM la rend rapide, pas possible : sans `/dev/kvm` elle émule, dix
+fois plus lentement, et c'est à ça que sert `docker-compose.emulated.yml`. En revanche elle
+veut **14 Gio libres** pour son stockage, en dur dans l'image.
+
+Le dernier est **destructeur exprès** — il met à jour par-dessus un fichier d'environnement
+édité à la main et un canary dans le dossier partagé, puis désinstalle, puis vérifie que les
+deux ont survécu. Ces deux gardes sont les choses les plus coûteuses à rater dans ce paquet,
+et le premier `.spk` publié est celui dont les scripts de désinstallation tourneront pendant
+la première mise à jour de tout le monde.
+[`packaging/dsm/vm/README.md`](https://github.com/z29k/rescriptum/blob/main/packaging/dsm/vm/README.md)
+décrit le banc d'essai : ce dont il est une preuve, et ce dont il ne l'est pas.
+
+La même règle que partout ailleurs vaut pour eux : **cassez ce qu'ils gardent et
+regardez-les virer au rouge.** Annuler la garde de `postinst` à la mise à jour, faire
+supprimer le partage par `postuninst`, renvoyer `1` pour un paquet arrêté et refuser
+`prestart` transforme 33 vérifications vertes en 25 vertes et 8 rouges — c'est ainsi qu'on
+sait que le harnais teste quelque chose.
+
 ## CI
 
 `.github/workflows/ci.yml`, à chaque push sur `main` et `develop` et à chaque pull request :
@@ -131,7 +168,7 @@ attribut `pass` non apparié. Gardez-les fonctionnels.
 | **gates** | `cargo fmt --all --check`, `cargo clippy --all-targets --all-features -D warnings`, `cargo test --all-features`, `cargo build --release --no-default-features` |
 | **docs** | construit le site public et lance `notabene lint` |
 | **audit** | `cargo audit --deny warnings` sur l'arbre de dépendances |
-| **cross** | un build ARMv7-musl complet, puis affirme que le binaire est bien `statically linked` |
+| **cross** | un build ARMv7-musl complet, puis affirme que le binaire est bien `statically linked`, puis assemble les deux `.spk`, les contrôle structurellement et déroule le cycle de vie du paquet |
 
 Le job cross n'est pas redondant. **SQLite est compilé depuis les sources, et `armv7-musl` est
 la cible la moins indulgente qui soit livrée** — c'est là qu'une dépendance C casse en premier.

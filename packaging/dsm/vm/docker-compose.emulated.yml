@@ -1,0 +1,51 @@
+# The same DSM machine, without KVM — for a host that cannot provide it: a Mac, or any ARM
+# machine running an x86_64 guest.
+#
+#   docker compose -f packaging/dsm/vm/docker-compose.emulated.yml up -d
+#
+# QEMU emulates instead of accelerating, which the image's own words put at "about 10 times
+# slower". That is a first boot measured in tens of minutes rather than minutes — long, but
+# it is the same DSM, and the package's install/upgrade/uninstall are not benchmarks.
+#
+# It binds no /dev/kvm, because on such a host there is none to bind. KVM=N is set anyway:
+# on an ARM host the image would work it out for itself — init.sh sees ARCH=arm64 against a
+# TARGET of amd64, disables acceleration and carries on — but saying it out loud keeps the
+# warning in the log honest rather than surprising.
+#
+# **It wants 14 GiB free where the storage lives, and that number is hardcoded**
+# (`minSpace` in the image's install.sh): lowering DISK_SIZE does not lower it.
+#
+# Hence the default here is a **named volume** rather than a directory on the host, which is
+# not a detail on a Mac. A bind mount goes through gRPC-FUSE — the image warns about it, and
+# it is a second tax on top of emulation — and it spends free space on the host disk. A named
+# volume lives inside Docker's own disk image, which is already allocated: `docker builder
+# prune` gives that space back *there*, so the machine fits without the host disk moving at
+# all. Point DSM_STORAGE at a path when you do want it visible from the host:
+#
+#   DSM_STORAGE=./storage docker compose -f docker-compose.emulated.yml up -d
+#
+# Everything else — the wizard at :5000, enabling SSH — is as in docker-compose.yml. The
+# snapshot is `docker run --rm -v dsm-storage:/from -v "$PWD":/to alpine tar cf /to/dsm.tar
+# -C /from .` when the storage is a named volume, or a copy of the directory when it is not.
+services:
+  dsm:
+    container_name: rescriptum-dsm
+    image: vdsm/virtual-dsm
+    environment:
+      DISK_SIZE: "16G"
+      RAM_SIZE: "2G"
+      CPU_CORES: "4"
+      KVM: "N"
+    cap_add:
+      - NET_ADMIN
+    ports:
+      - ${DSM_WEB_PORT:-5000}:5000
+      - ${DSM_SSH_PORT:-2222}:22
+      - ${DSM_APP_PORT:-8000}:8000
+    volumes:
+      - ${DSM_STORAGE:-dsm-storage}:/storage
+    restart: "no"
+    stop_grace_period: 2m
+
+volumes:
+  dsm-storage:

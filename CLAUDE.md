@@ -51,7 +51,7 @@ These are deliberate design decisions, not oversights. Do not "improve" them wit
   both were overridden deliberately once the requirement became "absorb a professional
   provisioning burst". Direct deps: `tokio`, `hyper` (server + http1), `hyper-util`,
   `http-body-util`, plus `toml_edit`, `serde_json`, `serde_yaml_ng` and `quick-xml` for
-  answer documents — 64 crates, 2.4 MB static on armv7 (1.3 MB without SQLite). Still **no
+  answer documents — 64 crates, 2.4 MB on armv7 (1.3 MB without SQLite). Still **no
   `serde` derive anywhere**.
 - **hyper directly, not axum.** axum gives no way to set a header-read timeout, which is
   precisely the slowloris guard that motivated going async. Routing here is one `if` on method
@@ -94,13 +94,21 @@ These are deliberate design decisions, not oversights. Do not "improve" them wit
 - `src/format/` — one interface per document format. `xml.rs` holds the XML tree and its
   merge rules.
 - `src/merge.rs` — the TOML merge, used by `format`.
-- `src/cli.rs` — the `render`, `check`, `import` and `export` subcommands.
+- `src/cli.rs` — the `render`, `check`, `import`, `export` and `config` subcommands.
+  `config` is dispatched **before** `Config::from_env` and `validate`, unlike every other
+  one: a file that will not parse and a token one character short are the states people run
+  it to get *out* of, so it loads the file itself and reports rather than dying.
 - `src/admin.rs` — the write API: its own listener, the constant-time token, the failure
   guard, and the rollback that keeps a write from breaking the answer set.
 - `src/capture.rs` — recording request bodies (`RESCRIPTUM_CAPTURE_DIR`).
 - `src/config.rs` — environment configuration. `Config::from_lookup` takes a lookup closure so
   tests never touch the process environment.
-- `src/envfile.rs` — the optional file of defaults `RESCRIPTUM_ENV_FILE` names. Never
+- `src/envfile.rs` — the optional file of defaults `RESCRIPTUM_ENV_FILE` names, and the
+  writer behind `config set`: `rewrite()` edits lines where they stand, **uncommenting** a
+  commented setting rather than appending a duplicate, because on a packaged install those
+  comments are the only documentation the configuration has. `write_atomic()` preserves the
+  file's **owner** as well as its mode — a root-owned rewrite of a `0600` file the service
+  owns is a server that stops starting one restart later. Never
   discovered, only named (this runs as root; a `./.env` would hand the admin token to
   whoever could write in the working directory), the real environment wins over it, and a
   file that was asked for and cannot be read is a startup error.
@@ -124,6 +132,8 @@ These are deliberate design decisions, not oversights. Do not "improve" them wit
   `render … > answer.toml` work; both are contracts, not conveniences.
 - `docs/` — the documentation site (see *Documentation* below). Nothing in `src/` knows it
   exists.
+- `packaging/dsm/` — the Synology package (see *The DSM package* below). Nothing in `src/`
+  knows it exists either, and that is the whole design.
 
 ## Selecting a machine
 
@@ -555,6 +565,7 @@ Local development (once the crate exists):
 ```bash
 cargo build
 cargo run -- check               # validate an answers directory
+cargo run -- config              # show the configuration and where each value comes from
 cargo run -- render <mac>        # print one machine's composed answer
 cargo test                       # all tests
 cargo test <name>                # single test by name substring
@@ -571,15 +582,26 @@ npm run docs:build               # the public artifact into ./_site
 npm run docs:lint                # no broken internal links (CI gate)
 ```
 
-Cross-compile for the NAS (ARMv7 hard-float, static musl):
+Cross-compile for the NAS (ARMv7 hard-float — **glibc, not musl**, see below):
 
 ```bash
-cargo zigbuild --release --target armv7-unknown-linux-musleabihf
+cargo zigbuild --release --target armv7-unknown-linux-gnueabihf.2.17
 ```
+
+**armv7 is the one target that is not static musl, and it is not a preference.** Synology's
+ARMv7 kernels are 3.10 and answer the *time64* syscalls with `EINVAL` rather than `ENOSYS`;
+musl 1.2 falls back to the 32-bit syscalls only on `ENOSYS`, so every `clock_gettime`,
+`clock_nanosleep` and timed futex fails. Measured on a DS416j: the musl build installs,
+answers `--version`, and panics at `time.rs:131` with `Os { code: 22, kind: InvalidInput }`
+the moment it wants a timestamp. glibc on 32-bit uses time32, DSM ships 2.20 on
+`armada38x`, and glibc is backward compatible — so the floor is **2.17** and the same binary
+still runs on newer ARMv7 Linux. x86_64 and aarch64 are 64-bit, have no time32/time64 split,
+and stay static musl. What CI asserts for armv7 is therefore *not* "static" but "needs no
+glibc newer than 2.17".
 
 `cargo-zigbuild` uses Zig as the linker, avoiding a full cross toolchain. The toolchain is
 **installed and verified**: Rust 1.93, targets `aarch64-apple-darwin` +
-`armv7-unknown-linux-musleabihf`, `cargo-zigbuild` 0.23.0, Zig 0.16.0. A scratch crate built
+`armv7-unknown-linux-gnueabihf`, `cargo-zigbuild` 0.23.0, Zig 0.16.0. A scratch crate built
 with the release profile below produced `ELF 32-bit LSB executable, ARM, EABI5, statically
 linked, stripped` at 296 KB — so the chain works end to end.
 
@@ -607,10 +629,159 @@ codegen-units = 1
 strip = true
 ```
 
+## The DSM package
+
+`packaging/dsm/` wraps an already-built binary as a DSM 7 `.spk`. It is a **release
+format**, exactly like the `.tar.gz` archives — no DSM-specific build, no feature flag,
+nothing in `src/`. The three places DSM pressed back are answered in packaging: log rotation
+by a `copytruncate` stanza, a CLI that cannot find its configuration by a three-line wrapper
+(`rescriptum-cli`, which names `RESCRIPTUM_ENV_FILE`), and no settings panel by the desktop
+application below. If this ever seems to need a `#[cfg]`, the design has gone wrong.
+
+```bash
+./build.sh --spk x86_64-unknown-linux-musl   # build, then wrap
+packaging/dsm/make-spk.sh armv7              # wrap an existing build
+packaging/dsm/check-spk.sh                   # structural check          ⎫ both run
+packaging/dsm/lifecycle-test.sh              # drive the scripts         ⎭ by ci.yml
+packaging/dsm/vm/on-dsm.sh admin@nas         # what only DSM can answer
+```
+
+**The package is tested in three places, and none of it is Rust** — `cargo test` does not
+touch it. `check-spk.sh` asserts the archive's shape; `lifecycle-test.sh` unpacks an `.spk`
+into a fake `/var/packages` tree and drives the real scripts through install (with a wizard
+and without), start, `/health`, the exit codes, an upgrade over a hand-edited env file and
+a canary — with `etc/` surviving and with it wiped — and an uninstall; both run on every
+push. `vm/on-dsm.sh` runs the rest on a DSM 7 VM and then on the DS416j: `data-share`'s
+ACL, `port-config`, the generated unit, `logrotate -f` against a live descriptor, and
+whether Package Center accepts the archive at all. **Nothing ships on VM evidence alone**,
+and `lifecycle-test.sh` was watched failing — breaking four guards turns 33 green into 25
+green and 8 red.
+
+### The desktop application
+
+`packaging/dsm/payload/ui/` is a **real DSM application** — `SYNO.SDS.AppWindow`,
+`syno_formpanel`, `syno_textfield`, `syno_combobox`, `syno_button` — not a page of ours in a
+frame. `dsmuidir="ui"` makes DSM symlink it into
+`/usr/syno/synoman/webman/3rdparty/rescriptum`, and `dsmappname` names the class `ui/config`
+declares. It manages the server's configuration, shows its status and tails its log.
+
+**ExtJS, not Vue, and the machine decided that.** DSM 7.2 ships a Vue framework and
+Synology's current guide documents only that one — the first version of this was written
+against it. The DS416j is capped at **DSM 7.1.1**, where `Vue` is undefined. ExtJS is on both
+(7.1.1 and 7.2.2, measured), so one application covers every DSM this package supports;
+`os_min_ver` is **7.1**, and 7.0 is not claimed because nothing has run there. The API is
+documented in the ExtJS reference Synology generated for DSM, mirrored at
+<https://github.com/DigitalBox98/SimpleExtJSApp> as `docs/synoextjsdocs.tar.gz`.
+
+The design rule holds: nothing in `src/` knows any of this exists. What the server gained is
+a *generic* `config` subcommand, and the application's backend — `ui/api.cgi` — is a hundred
+lines of shell that authenticate and then shell out to `rescriptum-cli config`. The env-file
+semantics stay in Rust where they are tested rather than being written a second time in `sh`.
+
+**Four things were measured on the machine and every one of them is load-bearing. None is in
+the developer guide** (they are in `docs/development/traps.md` at length):
+
+- **A CGI there runs as the owner of the script**, which for a package tree is the package
+  user. Not `http`, not root. That is what lets it read the `0600` env file it owns, and why
+  it cannot start or stop anything — restarting goes through DSM's own
+  `SYNO.Core.Package.Control`, from the application, with the administrator's session.
+- **DSM does not authenticate that path.** An unauthenticated request gets `200`. So
+  `authenticate.cgi` plus an `administrators` check *is* the door, and a write additionally
+  needs a header a cross-origin page cannot make a browser send. Losing any of them would be
+  silent, which is why `check-spk.sh` greps for them **with the comments stripped** — the
+  first version of that check passed because the word appeared in a comment.
+- **No `su`, ever.** It hangs a CGI outright without `</dev/null` (it reads the web server's
+  stdin and waits forever) and then fails anyway as a non-root process. The script already is
+  the user in question.
+- **The JavaScript is named after the version.** `make-spk.sh` fixes every mtime for
+  reproducibility, nginx serves that as `Last-Modified: 2019`, and a browser's heuristic
+  freshness is then years: an upgraded package kept running the old application through a
+  reinstall and a hard reload. Everything the app fetches itself carries `?v=` for the same
+  reason.
+- **The guide's own ExtJS example does not run**: `Ext.define` + `callParent` throws against
+  `SYNO.SDS.AppInstance`. Declare with `Ext.define` (DSM's launcher finds the class that way)
+  and chain with `superclass.constructor.call`. It is ExtJS **3.4.1** under an `Ext.define`
+  shim.
+- **Never add a method named `show` to the window.** `Ext.Window.prototype.show()` is what
+  DSM calls to display it, so a tab-switching `show()` silently overrode it — the window
+  built, laid out, rendered its taskbar thumbnail, and never appeared, **without throwing on
+  either DSM version**. It cost a bisect from the guide's minimal example upwards. The same
+  hazard applies to every other name on that prototype. Also: the taskbar requires
+  `getWindowTitle()`, and `fieldLabel` only renders inside a form layout.
+
+Bilingual through **DSM's own** text files (`ui/texts/{enu,fre}/strings`, `_S('lang')`
+choosing) — but the app loads them itself, because DSM does not load them for a package
+built without Synology's toolchain. The format and the locale directories stay Synology's;
+only the loading is ours. `ui/config`'s `title` and `desc` are literals for the same reason:
+an unresolved `section:key` renders as that literal text under the icon.
+
+**Verified on a DSM 7.2.2 machine** (`vdsm/virtual-dsm` under emulation — `packaging/dsm/vm/`),
+which found two bugs no fake-tree harness could: `ROOT` derived from `SYNOPKG_PKGDEST` (a
+symlink target, so the env file landed where nothing reads it and the service never started),
+and a *fresh* install restoring a removed installation's configuration out of a stale
+`$SYNOPKG_TEMP_UPGRADE_FOLDER`. 24 checks green end to end. **The DS416j run has since happened too**, and found what the
+VM could not: the ARMv7 musl build cannot run on Synology's 3.10 kernels (hence the glibc
+target), and a Mac editing the answers share over SMB drops AppleDouble files that hijack a
+machine's answer (hence hidden entries being skipped).
+
+Load-bearing, and each one is a trap somebody has paid for:
+
+- **`postinst` runs on an upgrade too.** It writes the env file **only when absent** —
+  guarding on the file, not only on `SYNOPKG_PKG_STATUS` — and `preupgrade`/`postupgrade`
+  carry it through `$SYNOPKG_TEMP_UPGRADE_FOLDER` as well. Unguarded, the obvious
+  implementation replaces the user's port and tokens with defaults on every upgrade.
+- **`postuninst` touches the package tree only.** Never the share, never the database,
+  under any status — it runs during an upgrade as well. DSM deliberately does not remove
+  the share; we do not do its restraint for it.
+- **The scripts are not root.** `run-as: package` governs the scripts, not only the
+  service. That is why the `0600` env file comes out owned correctly for free, and equally
+  why the package cannot chown a user-supplied answers directory or call `synopkghelper`.
+- **`start-stop-status` answers every verb.** `prestart` runs at boot and a non-zero exit
+  stops the package from ever starting — the symptom is "works by hand, never after a
+  reboot". `status` returns **3** for stopped; `1` means "crashed, stale pidfile".
+- **The share does not exist during `postinst`** (`data-share` runs at package *start*), so
+  creating the answers directory inside it belongs in `start`, and may never abort it.
+- **`arch` takes family names.** `x86_64` covers every Intel platform, including ones
+  Synology has not shipped; the family shorthand does *not* reach the Marvell ARMv7
+  platforms, so the DS416j is `armada38x` by name. Widen only after the binary has run on
+  an ABI's oldest-kernel member.
+- **The outer tar is uncompressed**, `ustar`, with fixed mtimes and `0:0` ownership; the
+  inner `package.tgz` is the gzipped part. A gzipped outer archive is rejected with
+  "invalid file format" and nothing else.
+- **`SYNOPKG_PKGDEST` resolves to `/volume1/@appstore/<pkg>`**, so the package root is the
+  fixed `/var/packages/<pkg>`, never `dirname "$SYNOPKG_PKGDEST"`. `RESCRIPTUM_PKG_ROOT` is
+  the seam that lets `lifecycle-test.sh` drive the scripts against a writable tree.
+- **`etc/` and `var/` survive an uninstall** (they are symlinks into `@appconf`/`@appdata`),
+  so the env file and its tokens outlive the package — said plainly in the Synology page.
+- **`$SYNOPKG_TEMP_UPGRADE_FOLDER` outlives its upgrade**, so restoring from it requires
+  `SYNOPKG_PKG_STATUS = UPGRADE` or a fresh install resurrects a removed configuration.
+- **The firewall directory is `/usr/local/etc/services.d/`** (plural; the guide is wrong),
+  and `port-config` acquires *after* `postinst` — the wizard's port does reach it. Both
+  `port-config` and `usr-local-linker` acquire when the package is **enabled**, not at
+  `postinst`.
+- **The generated unit has no `Restart=`**: DSM does not restart the process if it dies.
+
+**Changing anything under `packaging/dsm/` means running the machine**, not just the local
+harness — the procedure is in `packaging/dsm/vm/README.md` (*Changing the package? This is
+the procedure*), and `AGENTS.md` points at it. A DSM 7.2.2 VM already exists in Docker on
+the maintainer's machine with a `clean` snapshot; `bootstrap.sh` sets one up from scratch,
+`on-dsm.sh` drives it, and the run is destructive on purpose. It asks the server for a real
+answer — a machine file merged over the group that claims it — rather than settling for
+`/health`.
+
+The harnesses catch a broken archive and broken scripts; only Package Center catches a
+broken package. **A tag must not be the first time an `.spk` meets a DSM machine** — the
+rig is `packaging/dsm/vm/`: `docker-compose.yml` runs Synology's own Virtual DSM (DSM 7.2,
+close to the DS416j's 7.2.1). KVM makes it fast, not possible — without `/dev/kvm` the image
+falls back to emulation on its own, about ten times slower, which is what
+`docker-compose.emulated.yml` is for. What does stop a host is **14 GiB free**, hardcoded in
+the image and not derived from `DISK_SIZE`. `run-vm.sh` is the loader-image fallback.
+
 ## Testing expectations
 
-308 tests. `docs/development/testing.md` has the per-suite table; the rules that decide where
-a test goes:
+333 tests, plus the package's own harnesses (see *The DSM package*, and note that
+`cargo test` does not run those). `docs/development/testing.md` has the per-suite table;
+the rules that decide where a test goes:
 
 - **A behaviour belongs in `tests/stores.rs`**, which runs it against both stores and requires
   the identical outcome. One that covers a single backend proves half of what it claims, and
@@ -702,14 +873,18 @@ SemVer tags. Keep PRs focused.
 
 What does **not** carry over from notabene: it is an npm package and publishes prereleases to
 an `@dev` dist-tag. This project ships a **compiled binary**, so the release artifact is a
-GitHub Release with cross-compiled binaries attached, built by a CI matrix. A DSM community
-package may follow later.
+GitHub Release with cross-compiled binaries attached, built by a CI matrix, plus a `.spk`
+per Linux ABI from the `package-dsm` job. A `spk_build` dispatch input ships a
+packaging-only fix as `0.1.0-2` without a new tag. Submission to SynoCommunity may follow
+later; a package source that Package Center could poll deliberately will not — there are no
+update notifications, and the documentation says so.
 
 CI gates on every push: **gates** (fmt, clippy, tests, the no-SQLite build), **docs** (public
 build plus `notabene lint`), **audit** (`cargo audit --deny warnings`, which fails on an
 unmaintained or yanked crate as well as a vulnerability — an unfixable one gets
 `--ignore RUSTSEC-…` with a reason, not the flag removed), and **cross** (ARMv7-musl, then
-asserting the binary is statically linked). Every action is an official `actions/*`; Zig and
+asserting it needs no glibc newer than the floor DSM has, then assembling both `.spk`s and checking them
+structurally). Every action is an official `actions/*`; Zig and
 `cargo-audit` are installed directly, because this toolchain vets and links a binary people
 run as root.
 
@@ -720,7 +895,7 @@ Release target matrix (settled):
 
 | Target | For |
 |---|---|
-| `armv7-unknown-linux-musleabihf` | the DS416j, the reason this project exists |
+| `armv7-unknown-linux-gnueabihf` (floor 2.17) | the DS416j, the reason this project exists |
 | `aarch64-unknown-linux-musl` | modern ARM NAS / Raspberry Pi |
 | `x86_64-unknown-linux-musl` | most other Linux hosts |
 | `aarch64-apple-darwin` | local development |

@@ -1,0 +1,41 @@
+# The SPK's metadata, before substitution. `make-spk.sh` fills @VERSION@, @ARCH@ and
+# @EXTRACTSIZE@ in and drops every `#` line, so what ships is key="value" and nothing
+# else — DSM's own parser is not something to try comments on.
+#
+# Six fields are required: package, version, os_min_ver, description, arch, maintainer.
+# Most of the optional ones are deliberately absent:
+#
+#   startable   deprecated after DSM 6.1-14907, replaced by ctl_stop
+#   ctl_stop    already defaults to "yes"; it exists to *forbid* stopping
+#   thirdparty  DSM 4.0-4.3 only
+#   adminport   sends Package Center's "Open" button at a URL on a port. This package has a
+#               desktop *application* instead, which `dsmappname` below already points that
+#               button at — and adminport would still drag in checkport, refusing to install
+#               over a collision on a port the user is free to change afterwards
+#   os_max_ver  a ceiling written today would be wrong within a year; if a future DSM
+#               breaks the package, the answer is a new release
+package="rescriptum"
+version="@VERSION@"
+# **7.1, and it is the two machines that decided it rather than a guide.** The desktop
+# application is built on DSM's ExtJS framework, which is present on 7.1.1 and on 7.2.2 —
+# both measured. DSM 7.2's *Vue* framework would have been the modern choice and was the
+# first attempt, until the DS416j this project exists for turned out to be capped at 7.1.1,
+# where `Vue` is undefined. 7.0 is not claimed because nothing has run there.
+os_min_ver="7.1-42661"
+displayname="rescriptum"
+description="Serves unattended-installation answers, composed per machine, to whichever installer asks."
+maintainer="z29k"
+maintainer_url="https://github.com/z29k/rescriptum"
+arch="@ARCH@"
+helpurl="https://z29k.github.io/rescriptum/"
+# The desktop application. `dsmuidir` is a path inside the payload, which DSM symlinks to
+# /usr/syno/synoman/webman/3rdparty/rescriptum on install; `dsmappname` must match a class
+# name declared in `ui/config`, and is what Package Center's "Open" button launches. A
+# mismatch between the two breaks that button and nothing else complains, which is why
+# check-spk.sh compares them.
+dsmuidir="ui"
+dsmappname="SYNO.SDS.App.Rescriptum.AppInstance"
+# Kilobytes, measured from the unpacked payload. Left unset this does not mean "unknown":
+# it means "the SPK's own byte size", which understates a compressed payload — a wrong
+# number rather than a missing one.
+extractsize="@EXTRACTSIZE@"

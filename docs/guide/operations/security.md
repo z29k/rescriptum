@@ -119,6 +119,47 @@ The admin API is the one place where this matters by default: it speaks plain HT
 the token crosses the network in the clear. On loopback that is moot. Anywhere else, put a
 TLS-terminating proxy in front.
 
+## The desktop application
+
+Only on Synology, and only there — the [DSM application](./synology.md#the-desktop-application)
+is part of the package, not of the server. Its backend is a CGI that DSM serves from
+`/webman/3rdparty/rescriptum/`, and two things about that path decide its whole security
+model. **Both were measured on a DSM 7.2.2 machine rather than read in a guide, which does
+not mention either:**
+
+1. **A CGI there runs as the owner of the script.** DSM chowns a package's files to the
+   package user, so the backend runs as `rescriptum` — the same identity that owns the
+   `0600` env file and the log. That is what lets the application edit the configuration
+   and read the log *while the server itself is stopped*, which is exactly when a settings
+   panel earns its place. It is not root, and it cannot become anybody: it has no
+   privilege to start or stop the package, which is why restarting goes through DSM's own
+   API with the administrator's session instead. (A script left owned by root **does** run
+   as root there. Worth knowing, and worth never doing.)
+2. **DSM does not authenticate that path.** An unauthenticated request reaches the script
+   and is answered. DSM protects its own pages; a package's are the package's problem.
+
+Put together: the checks inside the script are the only thing in front of it, so it makes
+three, in this order, before it touches anything.
+
+- **A DSM session.** It runs DSM's own `authenticate.cgi`, which prints the signed-in
+  user's name and prints nothing at all when there is no session.
+- **An administrator.** Being signed in is not enough; the user must be in
+  `administrators`. Anything less would let any account on the NAS set the root password of
+  every machine it installs.
+- **Intent, for a write.** A write must carry a header the application sends and a form on
+  another site cannot: a browser will not send an invented header cross-origin without a
+  preflight first, and this script answers no preflight. DSM's own `SynoToken` is sent
+  along too, which is what keeps the application working with DSM's cross-site request
+  forgery protection switched on.
+
+`check-spk.sh` asserts that the first two are still in the script, and `lifecycle-test.sh`
+drives the script with a stubbed authenticator to prove all three actually refuse. They
+were watched failing: removing the session check turns four green into four red.
+
+The application never receives a token. `RESCRIPTUM_ANSWER_TOKEN` and
+`RESCRIPTUM_ADMIN_TOKEN` reach it as *set* or *not set* and nothing more — the command it
+calls will not print a credential, whatever it is asked.
+
 ## Known and accepted
 
 - **Per-address rate limiting does not stop an attacker with many addresses.** The admin

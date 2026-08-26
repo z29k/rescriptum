@@ -86,6 +86,19 @@ fn answer_entry(entry: &fs::DirEntry, path: &Path) -> Option<(String, String)> {
     if !is_file {
         return None;
     }
+
+    // A hidden file is never somebody's answer, and one kind of hidden file is actively
+    // dangerous: macOS writes an AppleDouble `._<name>` beside a file whose extended
+    // attributes the filesystem will not take, and `._98-fa-9b-50-d8-10.toml` normalizes to
+    // the same identity as the real `98-fa-9b-50-d8-10.toml`. It therefore claims the same
+    // machine, with a body that is binary — so the machine it was meant to configure gets a
+    // parse error instead of its answer. Found on a real NAS whose answers directory was
+    // being edited over SMB from a Mac.
+    let name = entry.file_name();
+    if name.to_str().is_none_or(|n| n.starts_with('.')) {
+        return None;
+    }
+
     let ext = path.extension()?.to_str()?.to_ascii_lowercase();
     Kind::for_extension(&ext)?;
     Some((path.file_stem()?.to_str()?.to_string(), ext))

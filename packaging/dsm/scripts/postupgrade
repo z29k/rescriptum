@@ -1,0 +1,26 @@
+#!/bin/sh
+# rescriptum — after an upgrade has installed the new version.
+#
+# Puts the env file back if it did not survive. If it did, it is left exactly as it was:
+# the user's file wins over the copy, always.
+
+set -u
+
+PKG="rescriptum"
+# See start-stop-status: the package root is a fixed path, not dirname of SYNOPKG_PKGDEST.
+ROOT="${RESCRIPTUM_PKG_ROOT:-/var/packages/${SYNOPKG_PKGNAME:-$PKG}}"
+ETC="$ROOT/etc"
+ENV_FILE="$ETC/$PKG.env"
+SAVED="${SYNOPKG_TEMP_UPGRADE_FOLDER:-}/etc/$PKG.env"
+
+if [ -f "$ENV_FILE" ]; then
+    exit 0
+fi
+
+if [ -n "${SYNOPKG_TEMP_UPGRADE_FOLDER:-}" ] && [ -f "$SAVED" ]; then
+    mkdir -p "$ETC"
+    cp -p "$SAVED" "$ENV_FILE" && chmod 600 "$ENV_FILE" &&
+        echo "$PKG: restored your configuration"
+fi
+
+exit 0

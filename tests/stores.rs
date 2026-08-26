@@ -375,6 +375,47 @@ fn matching_is_deterministic_whatever_the_store_order() {
 // ---------------------------------------------------------------------------
 
 #[test]
+fn the_file_store_ignores_what_a_mac_leaves_in_a_shared_folder() {
+    // An answers directory edited over SMB from a Mac collects two kinds of litter.
+    // `.DS_Store` is harmless — its extension is not on the allowlist. `._<name>.toml` is
+    // not: macOS writes that AppleDouble beside a file whose extended attributes the
+    // filesystem will not take, its extension *is* on the allowlist, and normalization
+    // strips the leading `._` — so it claims the very machine the real file is for, with a
+    // body that is binary. The machine that was being configured then gets a parse error
+    // instead of its answer. Found on a real NAS.
+    let dir = scratch("appledouble");
+    fs::create_dir_all(dir.join("groups")).unwrap();
+    fs::write(
+        dir.join("98-fa-9b-50-d8-10.toml"),
+        "[global]\nfqdn = \"m\"\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.join("groups/rack.toml"),
+        "members = [\"98:fa:9b:50:d8:10\"]\n\n[global]\nkeyboard = \"fr\"\n",
+    )
+    .unwrap();
+    fs::write(dir.join(".DS_Store"), b"Mac OS X\x00\x02binary").unwrap();
+    fs::write(
+        dir.join("._98-fa-9b-50-d8-10.toml"),
+        b"Mac OS X\x00\x02binary",
+    )
+    .unwrap();
+    fs::write(dir.join("groups/._rack.toml"), b"Mac OS X\x00\x02binary").unwrap();
+
+    let store = FileStore::new(&dir);
+    let snapshot = store.snapshot().unwrap();
+    let names: Vec<_> = snapshot.machines.iter().map(|m| m.id.as_str()).collect();
+    assert_eq!(
+        names,
+        ["98-fa-9b-50-d8-10"],
+        "hidden files were taken for answer documents"
+    );
+    assert_eq!(snapshot.groups.len(), 1, "hidden files reached the groups");
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn the_file_store_writes_atomically_and_leaves_no_scratch_files() {
     let dir = scratch("atomic");
     let store = FileStore::new(&dir);

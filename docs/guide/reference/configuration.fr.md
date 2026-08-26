@@ -125,6 +125,17 @@ par défaut — mauvais répertoire de réponses, pas de jeton admin — sans un
 
 Les avertissements nomment les clés et les chemins, jamais les valeurs.
 
+## Le lire et le modifier
+
+`rescriptum config` affiche chaque variable, sa valeur, et **qui du fichier ou de
+l'environnement l'y a mise** — la distinction qui compte, puisque le fichier fournit des
+valeurs par défaut et que l'environnement réel l'emporte. `config set` modifie le fichier
+comme on voudrait qu'il le soit : commentaires conservés, réglage commenté décommenté sur
+place plutôt que dupliqué, et refus avant toute écriture d'une modification qui laisserait
+un serveur incapable de démarrer. C'est documenté dans la
+[référence de la ligne de commande](./cli.md#config), et c'est ce que
+l'[application DSM](../operations/synology.md#lapplication-de-bureau) pilote dessous.
+
 ## Valeurs invalides
 
 | Cas | Ce qui se passe |

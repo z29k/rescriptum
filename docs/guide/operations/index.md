@@ -14,8 +14,8 @@ nothing outside the store you point it at. Running it well is mostly about decid
 it is allowed to serve and to whom.
 
 - **[Deployment](./deployment.md)** — a systemd unit, a container, or nothing at all.
-- **[Synology DSM 7](./synology.md)** — the original target: no systemd, so autostart is
-  a Task Scheduler entry.
+- **[Synology DSM 7](./synology.md)** — the original target: a Package Center install
+  that creates the share, registers the port and starts at boot.
 - **[Security](./security.md)** — the two tokens, why they behave differently, and what
   neither of them protects.
 - **[Capturing requests](./capture.md)** — record what machines actually send, and replay

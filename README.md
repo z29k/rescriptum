@@ -124,14 +124,19 @@ go deep only where you are curious.
 - **[Request capture](https://z29k.github.io/rescriptum/guide/operations/capture)** —
   record what machines actually send, replay it offline with `render --body`.
 - **[Small enough for a NAS](https://z29k.github.io/rescriptum/guide/operations/synology)** —
-  static musl builds for ARMv7, aarch64 and x86_64. Synology DSM 7 has no systemd, so it
-  gets a page of its own; everywhere else it is a systemd unit or a container.
+  builds for ARMv7, aarch64 and x86_64 — static musl, except ARMv7, which targets DSM's own
+  glibc because musl 1.2 cannot run on Synology's 3.10 kernels — plus a **DSM 7 package** that creates
+  the shared folder, registers the port with the firewall, starts at boot, and puts a
+  **desktop application** on DSM for the configuration, the status and the log. Everywhere
+  else it is a systemd unit or a container.
 
 ## Install
 
 Download a binary from the [releases page](https://github.com/z29k/rescriptum/releases) —
 `armv7`, `aarch64` and `x86_64` Linux (musl, static), plus macOS — check its SHA-256, and
 run it. There is nothing to install.
+
+On a Synology, take the `.spk` instead and use **Package Center → Manual Install**.
 
 ```console
 $ RESCRIPTUM_ANSWERS_DIR=/srv/answers ./rescriptum

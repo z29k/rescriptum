@@ -10,6 +10,14 @@ on:
       tag:
         description: "Tag to build (e.g. v0.1.0)"
         required: true
+      # An SPK version is all-numeric segments, and its last one is a package build
+      # number. `verify` requires the tag to equal Cargo.toml, so v0.1.0 can only ever
+      # produce 0.1.0-1: a packaging-only fix has no tag to stand on. Bumping this and
+      # dispatching by hand attaches rescriptum-0.1.0-2-<abi>.spk to the same Release.
+      spk_build:
+        description: "SPK build number (bump for a packaging-only repack)"
+        required: false
+        default: "1"
 
 permissions:
   contents: write
@@ -50,8 +58,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # The DS416j this was written for.
-          - target: armv7-unknown-linux-musleabihf
+          # The DS416j this was written for. glibc, not musl, and the version is
+          # deliberate: Synology's 3.10 kernels answer the time64 syscalls with EINVAL
+          # rather than ENOSYS, so musl 1.2 never falls back and every clock call fails.
+          - target: armv7-unknown-linux-gnueabihf
+            zig_target: armv7-unknown-linux-gnueabihf.2.17
             os: ubuntu-latest
             cross: true
           - target: aarch64-unknown-linux-musl
@@ -92,7 +103,8 @@ jobs:
         run: |
           set -euo pipefail
           if [ "${{ matrix.cross }}" = "true" ]; then
-            cargo zigbuild --release --target ${{ matrix.target }}
+            # zig_target carries the glibc floor where the Rust target cannot.
+            cargo zigbuild --release --target "${{ matrix.zig_target || matrix.target }}"
           else
             cargo build --release --target ${{ matrix.target }}
           fi
@@ -118,9 +130,56 @@ jobs:
           path: dist/*.tar.gz*
           retention-days: 7
 
+  package-dsm:
+    name: Synology packages
+    needs: [verify, build]
+    runs-on: ubuntu-latest
+    # Nothing is compiled here: the binaries are already built and statically linked, and
+    # an .spk is a release format — the same artifact, wrapped for one platform's package
+    # manager. See packaging/dsm/ for why we assemble it ourselves rather than through
+    # pkgscripts-ng.
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+          # The SPK's CHANGELOG is generated from git log between the previous tag and
+          # this one, and Package Center is the only place a DSM user ever sees it.
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Assemble
+        run: |
+          set -euo pipefail
+          VERSION="${{ needs.verify.outputs.version }}"
+          SPK_BUILD="${{ inputs.spk_build || '1' }}"
+          mkdir -p bins
+          # One .spk per *build*; the arch line inside each covers the platforms that
+          # build serves. aarch64 (arch="armv8") joins this list once the binary has been
+          # run on one of its platforms — make-spk.sh already knows the mapping.
+          for pair in "x86_64:x86_64-unknown-linux-musl" "armv7:armv7-unknown-linux-musleabihf"; do
+            abi="${pair%%:*}"; target="${pair#*:}"
+            tar -xzf "artifacts/$target/rescriptum-$VERSION-$target.tar.gz" -C bins
+            packaging/dsm/make-spk.sh "$abi" \
+              --bin "bins/rescriptum-$VERSION-$target/rescriptum" \
+              --version "$VERSION" --spk-build "$SPK_BUILD"
+          done
+          ls -l dist
+
+      - name: Check them structurally
+        run: packaging/dsm/check-spk.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dsm-packages
+          path: dist/*.spk*
+          retention-days: 7
+
   publish:
     name: Publish the release
-    needs: [verify, build]
+    needs: [verify, build, package-dsm]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -135,7 +194,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p dist
-          find artifacts -type f -name '*.tar.gz*' -exec cp {} dist/ \;
+          find artifacts -type f \( -name '*.tar.gz*' -o -name '*.spk*' \) -exec cp {} dist/ \;
           ls -l dist
 
       - name: Release
@@ -145,7 +204,15 @@ jobs:
           set -euo pipefail
           TAG="${{ inputs.tag || github.ref_name }}"
           # `gh` is preinstalled on the runner, so this needs no third-party action.
-          gh release create "$TAG" dist/* \
-            --title "rescriptum $TAG" \
-            --generate-notes \
-            --verify-tag
+          #
+          # A dispatch that repacks — a packaging-only fix shipping as spk_build=2, or a
+          # re-run after a job failed — meets a Release that already exists. Uploading
+          # into it is the documented path for that, and `gh release create` would fail.
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/* --clobber
+          else
+            gh release create "$TAG" dist/* \
+              --title "rescriptum $TAG" \
+              --generate-notes \
+              --verify-tag
+          fi

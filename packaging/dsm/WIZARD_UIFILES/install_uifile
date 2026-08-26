@@ -1,0 +1,51 @@
+[
+  {
+    "step_title": "rescriptum",
+    "items": [
+      {
+        "type": "singleselect",
+        "desc": "Where do the answers live?",
+        "subitems": [
+          {
+            "key": "pkgwizard_answers_share",
+            "desc": "In the shared folder this package creates (recommended). DSM creates a 'rescriptum' share, grants this package read/write access to it, and the answers go in its 'answers' subfolder.",
+            "defaultValue": true
+          },
+          {
+            "key": "pkgwizard_answers_custom",
+            "desc": "Somewhere else. The package runs unprivileged, so it cannot grant itself access to a folder you name here: give the 'rescriptum' user read access yourself, or the server will start and answer nothing.",
+            "defaultValue": false,
+            "subitems": [
+              {
+                "key": "pkgwizard_answers_path",
+                "desc": "Full path",
+                "defaultValue": "/volume1/netboot/answers",
+                "validator": {
+                  "allowBlank": false
+                }
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "type": "textfield",
+        "desc": "Which port does it listen on? Registering the port makes rescriptum selectable by name in the DSM firewall — it does not open it. Changing it later means editing the env file (and one SSH command to move the firewall entry).",
+        "subitems": [
+          {
+            "key": "pkgwizard_port",
+            "desc": "Port",
+            "defaultValue": "8000",
+            "validator": {
+              "allowBlank": false,
+              "regex": {
+                "expr": "/^[0-9]{1,5}$/",
+                "errorText": "A port number, 1024 or above — the package does not run as root."
+              }
+            }
+          }
+        ]
+      }
+    ]
+  }
+]

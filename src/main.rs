@@ -37,6 +37,12 @@ fn main() -> ExitCode {
     // Answered before the configuration is even read: `--help` is what you reach for when
     // something is wrong, so a broken RESCRIPTUM_ENV_FILE must not be what stops you
     // reading it.
+    //
+    // `config` is here for a stronger version of the same reason. Every other subcommand
+    // is handed a configuration that `Config::from_env` built and `validate` accepted —
+    // and a file that will not parse, or a token one character short, are precisely the
+    // states somebody runs `config` to get *out* of. Dispatching it below would make the
+    // diagnostic tool the first casualty of the thing it diagnoses.
     match args.first().map(String::as_str) {
         Some("--help" | "-h" | "help") => {
             print!("{}", cli::USAGE);
@@ -46,6 +52,7 @@ fn main() -> ExitCode {
             println!("rescriptum {}", env!("CARGO_PKG_VERSION"));
             return ExitCode::SUCCESS;
         }
+        Some("config") => return cli::config(&args[1..]),
         _ => {}
     }
 

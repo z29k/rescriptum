@@ -1,0 +1,19 @@
+{
+  "data-share": {
+    "shares": [
+      {
+        "name": "rescriptum",
+        "permission": { "rw": ["rescriptum"] }
+      }
+    ]
+  },
+  "port-config": {
+    "protocol-file": "port_conf/rescriptum.sc"
+  },
+  "syslog-config": {
+    "logrotate-relpath": "logrotate/rescriptum"
+  },
+  "usr-local-linker": {
+    "bin": ["bin/rescriptum-cli"]
+  }
+}

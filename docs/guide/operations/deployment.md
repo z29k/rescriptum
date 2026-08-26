@@ -91,7 +91,7 @@ EXPOSE 8000
 ENTRYPOINT ["/rescriptum"]
 ```
 
-Use the musl build for the right architecture — it is statically linked, which is what
+Use the build for the right architecture — the musl ones are statically linked, which is what
 makes `FROM scratch` work. Mount the answers directory read-only.
 
 ## Sizing it
@@ -121,7 +121,7 @@ $ ./deploy.sh admin@nas /volume1/netboot        # a different remote directory
 
 What it does, in order:
 
-1. **Builds** for the target (`TARGET`, default `armv7-unknown-linux-musleabihf`).
+1. **Builds** for the target (`TARGET`, default `armv7-unknown-linux-gnueabihf`).
 2. **Checks the local answers** with `rescriptum check` and refuses to continue if
    anything fails — shipping a broken answer set is worse than not deploying.
 3. **Copies the binary under a temporary name**, then renames it into place. Replacing a
@@ -132,7 +132,7 @@ What it does, in order:
 
 | Environment | Default |
 |---|---|
-| `TARGET` | `armv7-unknown-linux-musleabihf` |
+| `TARGET` | `armv7-unknown-linux-gnueabihf` |
 | `ANSWERS` | `<remote-dir>/answers` |
 | `PORT` | `8000` |
 

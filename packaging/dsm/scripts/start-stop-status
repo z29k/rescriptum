@@ -1,0 +1,242 @@
+#!/bin/sh
+# rescriptum — DSM 7 service control.
+#
+# DSM drives this through systemd, as pkgctl-rescriptum.service, and calls it with more
+# verbs than start/stop/status. `prestart` decides at boot whether the package may start
+# at all — precheckstartstop defaults to "yes", so it is called whether or not we thought
+# about it — which is why the case at the bottom answers every verb it is given and never
+# falls through to a failure. An unrecognised verb exiting non-zero would stop the package
+# from ever starting after a reboot, with a symptom ("works when I start it by hand, never
+# after a reboot") that looks like anything but a missing case arm.
+#
+# Everything here runs as the package user: conf/privilege sets run-as "package", and that
+# governs the scripts, not only the service.
+
+set -u
+
+PKG="rescriptum"
+# **ROOT is not derived from SYNOPKG_PKGDEST.** On a real DSM that variable resolves to
+# /volume1/@appstore/<package> — /var/packages/<package>/target is only a symlink to it — so
+# `dirname "$SYNOPKG_PKGDEST"` is /volume1/@appstore, and everything hung off it (etc/, var/,
+# shares/) lands somewhere nobody reads. The package root is a fixed path; only DEST is not.
+#
+# RESCRIPTUM_PKG_ROOT is a seam for lifecycle-test.sh, which drives these scripts against a
+# fake tree it can write to — the same trick as Config::from_lookup on the Rust side, and
+# the reason this bug survived local testing until a real DSM found it.
+ROOT="${RESCRIPTUM_PKG_ROOT:-/var/packages/${SYNOPKG_PKGNAME:-$PKG}}"
+DEST="${SYNOPKG_PKGDEST:-$ROOT/target}"
+VAR="${SYNOPKG_PKGVAR:-$ROOT/var}"
+ETC="$ROOT/etc"
+
+BIN="$DEST/bin/$PKG"
+ENV_FILE="$ETC/$PKG.env"
+PID_FILE="$VAR/$PKG.pid"
+# Where the service's own stdout and stderr go. Not the request log — that is
+# RESCRIPTUM_LOG_FILE, which the server opens itself — but the things said before the
+# server knows where its log lives: a configuration error, a malformed env file, a panic.
+OUT_FILE="$VAR/startup.log"
+
+# How long `stop` stays polite. A stop that waits forever on a wedged process hangs the
+# Package Center UI, and DSM's own timeout is not a thing to rely on.
+STOP_WAIT=20
+
+say() { echo "$PKG: $*"; }
+
+alive() {
+    case "${1:-}" in
+        '' | *[!0-9]*) return 1 ;;
+    esac
+    kill -0 "$1" 2>/dev/null
+}
+
+# Read one key out of the env file. The file is not a shell and must not be sourced; this
+# is the only value the script itself needs.
+value_of() {
+    [ -f "$ENV_FILE" ] || return 0
+    q="'"
+    sed -n "s/^[[:space:]]*\(export[[:space:]][[:space:]]*\)\{0,1\}${1}[[:space:]]*=[[:space:]]*//p" "$ENV_FILE" |
+        tail -n 1 |
+        sed "s/[[:space:]]*$//; s/^\"\(.*\)\"\$/\1/; s/^${q}\(.*\)${q}\$/\1/"
+}
+
+# ps flavours differ between busybox and procps; all of them print the command line, and
+# the binary's path is absolute and unique to this package.
+find_pid() {
+    { ps -eo pid=,args= 2>/dev/null || ps ax 2>/dev/null || ps 2>/dev/null; } |
+        grep -F "$BIN" | grep -v grep | awk '{ print $1 }' | head -n 1
+}
+
+start() {
+    if [ -f "$PID_FILE" ] && alive "$(cat "$PID_FILE" 2>/dev/null)"; then
+        say "already running (pid $(cat "$PID_FILE"))"
+        return 0
+    fi
+    # A pidfile whose process is gone is yesterday's, not a failure.
+    rm -f "$PID_FILE"
+
+    if [ ! -x "$BIN" ]; then
+        say "missing $BIN — reinstall the package"
+        return 1
+    fi
+
+    mkdir -p "$VAR" 2>/dev/null
+
+    # data-share runs in the FROM_ENABLE_TO_POSTUNINST window: the share exists by the
+    # time this runs, and did not exist when postinst did. DSM creates the *share*; the
+    # answers directory inside it is ours, and the server deliberately never creates its
+    # own. Nothing here may abort the start — an encrypted shared folder that has not been
+    # unlocked yet is a transient condition, and the server's own startup warning already
+    # names the directory.
+    answers=$(value_of RESCRIPTUM_ANSWERS_DIR)
+    if [ -n "$answers" ]; then
+        if [ ! -d "$answers" ] && ! mkdir -p "$answers" 2>/dev/null; then
+            say "could not create $answers — if its volume is encrypted, unlock it and restart the package"
+        elif [ ! -r "$answers" ]; then
+            say "$answers is not readable by $(id -u -n 2>/dev/null || echo "$PKG") — check the shared folder's permissions"
+        fi
+    fi
+
+    RESCRIPTUM_ENV_FILE="$ENV_FILE"
+    export RESCRIPTUM_ENV_FILE
+
+    # The script runs inside the unit's cgroup, so a plain `&` can be reaped when the
+    # script exits. setsid gives the server a session of its own; nohup is the fallback
+    # where setsid is not installed.
+    if command -v setsid >/dev/null 2>&1; then
+        setsid "$BIN" >>"$OUT_FILE" 2>&1 &
+    else
+        nohup "$BIN" >>"$OUT_FILE" 2>&1 &
+    fi
+    pid=$!
+    echo "$pid" >"$PID_FILE"
+
+    # Everything fatal — an unreadable env file, an admin token under 16 characters, a
+    # store that cannot be opened — happens in the first moments and exits. Reporting
+    # success for a process that is already gone is what would make that hard to see.
+    sleep 1
+    if ! alive "$pid"; then
+        # setsid forks when it is already a process-group leader, in which case the pid we
+        # recorded was setsid's rather than the server's. Look for the real one before
+        # concluding anything.
+        found=$(find_pid)
+        if [ -n "$found" ]; then
+            pid="$found"
+            echo "$pid" >"$PID_FILE"
+        else
+            rm -f "$PID_FILE"
+            # Two files, because which one holds the reason depends on how far it got: a
+            # bad env file is said before log::init knows where the log lives and lands in
+            # startup.log, while a refused configuration — an admin token under 16
+            # characters, a store that cannot be opened — is said after, and lands in the
+            # log the env file named.
+            say "started and exited immediately. The reason is in one of these:"
+            for f in "$OUT_FILE" "$(value_of RESCRIPTUM_LOG_FILE)"; do
+                [ -n "$f" ] && [ -f "$f" ] || continue
+                echo "--- $f"
+                tail -n 5 "$f" 2>/dev/null
+            done
+            return 1
+        fi
+    fi
+
+    say "started (pid $pid)"
+    return 0
+}
+
+stop() {
+    pid=""
+    if [ -f "$PID_FILE" ]; then
+        pid=$(cat "$PID_FILE" 2>/dev/null)
+    else
+        # No pidfile is not the same as no server. An upgrade replaces target/ under a
+        # running process, and anything that loses var/ loses the pidfile with it — then
+        # `stop` says "not running", `start` meets a port that is still held, and the
+        # package fails to start for a reason that names neither. Look for it.
+        pid=$(find_pid)
+        [ -n "$pid" ] && say "no pidfile, but $BIN is running as $pid"
+    fi
+    if [ -z "$pid" ]; then
+        say "not running"
+        return 0
+    fi
+    if ! alive "$pid"; then
+        rm -f "$PID_FILE"
+        say "not running (stale pidfile removed)"
+        return 0
+    fi
+
+    # SIGTERM is what the server handles: it stops accepting and exits. There is no state
+    # to lose either way.
+    kill -TERM "$pid" 2>/dev/null
+    waited=0
+    while [ "$waited" -lt "$STOP_WAIT" ]; do
+        alive "$pid" || break
+        sleep 1
+        waited=$((waited + 1))
+    done
+
+    if alive "$pid"; then
+        say "still alive after ${STOP_WAIT}s — killing it"
+        kill -KILL "$pid" 2>/dev/null
+        sleep 1
+    fi
+
+    rm -f "$PID_FILE"
+    say "stopped"
+    return 0
+}
+
+# The exit codes are a contract with Package Center, and 1 does not mean "stopped": it
+# means "dead, and there is a pidfile it did not clean up", which shows up in the UI as a
+# service that crashed. A cleanly stopped package is 3.
+#
+#   0 running   1 dead, pidfile present   2 dead, lock file present
+#   3 not running   4 unknown   150 broken, should be reinstalled
+status() {
+    if [ -f "$PID_FILE" ]; then
+        pid=$(cat "$PID_FILE" 2>/dev/null)
+        if alive "$pid"; then
+            say "running (pid $pid)"
+            return 0
+        fi
+        say "not running, and $PID_FILE was left behind"
+        return 1
+    fi
+    say "not running"
+    return 3
+}
+
+case "${1:-}" in
+start)
+    start
+    exit $?
+    ;;
+stop)
+    stop
+    exit $?
+    ;;
+restart)
+    stop
+    start
+    exit $?
+    ;;
+status)
+    status
+    exit $?
+    ;;
+prestart | prestop)
+    # Nothing here may fail transiently. prestart runs at boot and a non-zero exit means
+    # the package does not start: a disk still spinning up, a share not yet unlocked or a
+    # network not yet configured are not reasons to refuse.
+    exit 0
+    ;;
+log)
+    # What DSM shows behind the package's log link.
+    echo "$VAR/$PKG.log"
+    exit 0
+    ;;
+*)
+    say "unhandled action: ${1:-none}"
+    exit 0
+    ;;
+esac

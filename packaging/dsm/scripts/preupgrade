@@ -1,0 +1,22 @@
+#!/bin/sh
+# rescriptum — before an upgrade replaces this version.
+#
+# Carries the live env file across in $SYNOPKG_TEMP_UPGRADE_FOLDER, which is the
+# framework's own documented mechanism for exactly this. It is the belt to postinst's
+# braces: postinst already writes the file only when it is absent, and this makes the
+# outcome the same whether or not etc/ survives the upgrade.
+
+set -u
+
+PKG="rescriptum"
+# See start-stop-status: the package root is a fixed path, not dirname of SYNOPKG_PKGDEST.
+ROOT="${RESCRIPTUM_PKG_ROOT:-/var/packages/${SYNOPKG_PKGNAME:-$PKG}}"
+ENV_FILE="$ROOT/etc/$PKG.env"
+
+if [ -n "${SYNOPKG_TEMP_UPGRADE_FOLDER:-}" ] && [ -f "$ENV_FILE" ]; then
+    mkdir -p "$SYNOPKG_TEMP_UPGRADE_FOLDER/etc"
+    cp -p "$ENV_FILE" "$SYNOPKG_TEMP_UPGRADE_FOLDER/etc/$PKG.env" &&
+        echo "$PKG: kept your configuration for the new version"
+fi
+
+exit 0

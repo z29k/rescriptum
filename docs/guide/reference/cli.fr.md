@@ -19,6 +19,11 @@ Sans argument, `rescriptum` lance le serveur. Tout le reste est une sous-command
 | `rescriptum check` | rendre tout le store configuré et signaler ce qui casse |
 | `rescriptum import <dir>` | copier un répertoire de documents dans le store configuré |
 | `rescriptum export <dir>` | écrire le store configuré comme un répertoire de documents |
+| `rescriptum config` | afficher la configuration, et d'où vient chaque valeur |
+| `rescriptum config --json` | la même chose, pour un panneau de réglages |
+| `rescriptum config --value CLÉ` | une valeur, pour un script — jamais un identifiant |
+| `rescriptum config set C=V …` | éditer le fichier que `RESCRIPTUM_ENV_FILE` nomme |
+| `rescriptum config unset CLÉ …` | recommenter un réglage dedans |
 | `rescriptum --help` | usage et variables d'environnement |
 
 Toutes lisent les mêmes [variables d'environnement](./configuration.md), dont
@@ -73,12 +78,63 @@ $ RESCRIPTUM_STORE=sqlite RESCRIPTUM_DB_PATH=/srv/answers.db rescriptum export /
 L'aller-retour est identique octet pour octet. Aucun des deux ne lance `check` pour vous — la
 sortie vous le dit.
 
+## `config`
+
+La configuration, ce sont des variables d'environnement, et sur un déploiement qui les lit
+depuis un fichier — une installation par paquet, surtout — voici comment les voir et les
+changer sans ouvrir d'éditeur. C'est aussi ce que
+l'[application DSM](../operations/synology.md#lapplication-de-bureau) exécute dessous.
+
+```console
+$ rescriptum config
+env file: /var/packages/rescriptum/etc/rescriptum.env
+
+  RESCRIPTUM_STORE            files                             default
+  RESCRIPTUM_ANSWERS_DIR      /volume1/netboot/answers          file
+  RESCRIPTUM_LISTEN_ADDR      0.0.0.0:9000                      environment
+  RESCRIPTUM_ADMIN_TOKEN      (set)                             file
+```
+
+La troisième colonne est l'essentiel. Le fichier fournit des **valeurs par défaut** et
+l'environnement réel l'emporte : une valeur marquée `environment` ne peut donc pas être
+changée en éditant le fichier — et `config set` le dit, plutôt que de vous laisser écrire
+quelque chose que le serveur en cours continuera d'ignorer.
+
+**Un identifiant n'est jamais affiché**, sous aucune forme de cette commande. Un jeton
+apparaît comme `(set)` ou `(not set)` ; `--value` refuse tout net.
+
+```console
+$ rescriptum config set RESCRIPTUM_LOG=problems RESCRIPTUM_CAPTURE_DIR=/srv/captures
+wrote /var/packages/rescriptum/etc/rescriptum.env
+```
+
+L'écriture laisse le fichier tel qu'il est par ailleurs : les commentaires restent, un
+réglage est remplacé là où il se trouve, et un réglage commenté est **décommenté sur place**
+plutôt qu'ajouté en dessous — ce qui compte quand le commentaire au-dessus est la seule
+documentation qu'a le fichier.
+
+Deux refus sont délibérés :
+
+- **Une modification qui laisserait un serveur incapable de démarrer est refusée**, en bloc,
+  avant toute écriture. Activer l'API d'administration sans jeton, ou avec un jeton de moins
+  de 16 caractères, vous vaut la raison plutôt qu'un prochain démarrage cassé.
+- **Une variable mal orthographiée est refusée.** Écrite, elle serait relue comme une
+  inconnue et signalée au démarrage suivant, quand plus personne ne fait le lien.
+
+Contrairement à toutes les autres sous-commandes, celle-ci fonctionne quand la configuration
+est trop cassée pour démarrer un serveur — un fichier qui ne parse pas, un jeton d'un
+caractère trop court. C'est l'état dont on se sert d'elle pour *sortir*.
+
 ## Codes de sortie
 
 | Code | Signifie |
 |---|---|
 | `0` | succès |
 | `1` | la commande a échoué — rien ne s'est résolu, un document ne parse pas, le store n'a pas pu être ouvert |
+
+`config` est la seule à avoir un second sens : **`0` dit que la configuration en est une sur
+laquelle le serveur démarrerait**, `1` qu'elle ne l'est pas — ou qu'une écriture a été
+refusée. Cela la rend utilisable depuis un script, comme `check`.
 
 Le serveur lui-même sort en `0` sur `SIGTERM` ou Ctrl-C, et en `1` s'il ne peut pas binder ou
 ouvrir le store.

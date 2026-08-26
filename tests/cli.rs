@@ -681,3 +681,293 @@ fn naming_the_env_file_inside_itself_says_why_it_does_nothing() {
         "the message must not claim it is unknown\n{r}"
     );
 }
+
+// ---- config ---------------------------------------------------------------
+//
+// The command a settings panel drives, and the one people reach for when the server will
+// not start — so its exit code is a contract like `check`'s: zero when the configuration
+// would start, one when it would not.
+
+impl Case {
+    /// `run_env` takes paths, which most of these do not have. Configuration is strings.
+    fn run_config(&self, env: &[(&str, &str)], args: &[&str]) -> Run {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_rescriptum"));
+        // Inherited from the test runner's own environment, these would silently beat the
+        // file and make every assertion below about the wrong thing.
+        for (key, _, _) in [("RESCRIPTUM_LOG", "", ""), ("RESCRIPTUM_STORE", "", "")] {
+            cmd.env_remove(key);
+        }
+        for (key, value) in env {
+            cmd.env(key, value);
+        }
+        Run::from(cmd.args(args).output().expect("run rescriptum"))
+    }
+
+    fn env_file(&self, body: &str) -> String {
+        let path = self.dir.join("rescriptum.env");
+        fs::write(&path, body).expect("env file");
+        path.to_string_lossy().into_owned()
+    }
+}
+
+#[test]
+fn config_says_which_of_the_file_and_the_environment_is_winning() {
+    // The file is only defaults. A panel that offered to edit a value the environment
+    // overrides would be offering to change nothing at all.
+    let c = Case::new(&[]);
+    let env = c.env_file("RESCRIPTUM_LOG=problems\nRESCRIPTUM_LISTEN_ADDR=0.0.0.0:8000\n");
+
+    let r = c.run_config(
+        &[
+            ("RESCRIPTUM_ENV_FILE", &env),
+            ("RESCRIPTUM_LISTEN_ADDR", "127.0.0.1:9999"),
+        ],
+        &["config"],
+    );
+    assert!(r.ok, "{r}");
+
+    let listen = line_for(&r.stdout, "RESCRIPTUM_LISTEN_ADDR");
+    assert!(listen.contains("127.0.0.1:9999"), "{r}");
+    assert!(listen.ends_with("environment"), "{listen:?}\n{r}");
+
+    let log = line_for(&r.stdout, "RESCRIPTUM_LOG ");
+    assert!(
+        log.contains("problems") && log.ends_with("file"),
+        "{log:?}\n{r}"
+    );
+
+    let store = line_for(&r.stdout, "RESCRIPTUM_STORE");
+    assert!(
+        store.contains("files") && store.ends_with("default"),
+        "{store:?}\n{r}"
+    );
+}
+
+/// The row for one variable, trimmed — the table is padded.
+fn line_for(stdout: &str, key: &str) -> String {
+    stdout
+        .lines()
+        .find(|l| l.trim_start().starts_with(key))
+        .unwrap_or_else(|| panic!("no row for {key} in\n{stdout}"))
+        .trim()
+        .to_string()
+}
+
+#[test]
+fn config_never_prints_a_token() {
+    // This output is what the DSM panel renders. A token reaching it once is a token in
+    // somebody's browser, their history, and a screenshot in a support thread.
+    let c = Case::new(&[]);
+    let env = c.env_file(
+        "RESCRIPTUM_ADMIN_TOKEN=sup3rs3cr3ttok3nvalue\nRESCRIPTUM_ANSWER_TOKEN=an0th3rs3cr3tvalue\n",
+    );
+
+    for args in [vec!["config"], vec!["config", "--json"]] {
+        let r = c.run_config(&[("RESCRIPTUM_ENV_FILE", &env)], &args);
+        assert!(r.ok, "{r}");
+        assert!(
+            !r.stdout.contains("sup3rs3cr3ttok3nvalue") && !r.stdout.contains("an0th3rs3cr3tvalue"),
+            "a token reached the output of {args:?}\n{r}"
+        );
+        assert!(
+            !r.stderr.contains("sup3rs3cr3ttok3nvalue"),
+            "a token reached stderr\n{r}"
+        );
+    }
+
+    // And it still has to say that there *is* one, or the panel cannot tell you whether
+    // the endpoint is guarded.
+    let r = c.run_config(&[("RESCRIPTUM_ENV_FILE", &env)], &["config"]);
+    assert!(
+        line_for(&r.stdout, "RESCRIPTUM_ADMIN_TOKEN").contains("(set)"),
+        "{r}"
+    );
+}
+
+#[test]
+fn config_set_keeps_the_comments_that_explain_the_file() {
+    // On a packaged install those comments are the only documentation the configuration
+    // has. A writer that regenerated the file would eat them on the first save.
+    let c = Case::new(&[]);
+    let env = c.env_file(
+        "# Where answers live.\nRESCRIPTUM_ANSWERS_DIR=/srv/answers\n\n# Off by default.\n# RESCRIPTUM_LOG=problems\n",
+    );
+
+    let r = c.run_config(
+        &[("RESCRIPTUM_ENV_FILE", &env)],
+        &["config", "set", "RESCRIPTUM_LOG=problems"],
+    );
+    assert!(r.ok, "{r}");
+
+    let after = fs::read_to_string(&env).expect("still there");
+    assert!(after.contains("# Where answers live."), "{after}");
+    assert!(after.contains("# Off by default."), "{after}");
+    // Uncommented in place rather than appended below, or the paragraph above it now
+    // explains a line that is no longer there.
+    assert!(after.contains("\nRESCRIPTUM_LOG=problems\n"), "{after}");
+    assert_eq!(
+        after.matches("RESCRIPTUM_LOG").count(),
+        1,
+        "the setting was duplicated\n{after}"
+    );
+}
+
+#[test]
+fn config_set_refuses_to_leave_a_server_that_cannot_start() {
+    // The panel doing the writing is reached over the very service this would stop. Get
+    // it wrong and the way back in is SSH — which is the thing the panel exists to avoid.
+    let c = Case::new(&[]);
+    let before = "RESCRIPTUM_STORE=sqlite\n";
+    let env = c.env_file(before);
+
+    let r = c.run_config(
+        &[("RESCRIPTUM_ENV_FILE", &env)],
+        &["config", "set", "RESCRIPTUM_ADMIN_ADDR=127.0.0.1:8001"],
+    );
+    assert!(!r.ok, "an unauthenticated admin API must be refused\n{r}");
+    assert!(r.stderr.contains("refused"), "{r}");
+    assert_eq!(
+        fs::read_to_string(&env).expect("still there"),
+        before,
+        "the file must be untouched when the write is refused"
+    );
+}
+
+#[test]
+fn config_set_refuses_a_misspelled_variable() {
+    // Written, it would be read back as a stranger and warned about only at the next
+    // start — by which time nobody connects the two.
+    let c = Case::new(&[]);
+    let env = c.env_file("RESCRIPTUM_STORE=files\n");
+
+    let r = c.run_config(
+        &[("RESCRIPTUM_ENV_FILE", &env)],
+        &["config", "set", "RESCRIPTUM_ADMIN_TOKENN=0123456789abcdef0"],
+    );
+    assert!(!r.ok, "{r}");
+    assert!(r.stderr.contains("check the spelling"), "{r}");
+    assert_eq!(
+        fs::read_to_string(&env).unwrap(),
+        "RESCRIPTUM_STORE=files\n"
+    );
+}
+
+#[test]
+fn config_exit_code_says_whether_the_server_would_start() {
+    // The same contract `check` has, for the same reason: something automated keys on it.
+    let c = Case::new(&[]);
+
+    let healthy = c.env_file("RESCRIPTUM_STORE=files\n");
+    let r = c.run_config(&[("RESCRIPTUM_ENV_FILE", &healthy)], &["config"]);
+    assert!(r.ok, "{r}");
+
+    // A file that will not parse is a *startup error*, not a warning — the server refuses
+    // to come up on it — so it has to reach the exit code rather than only the text.
+    let broken = c.dir.join("broken.env");
+    fs::write(&broken, "RESCRIPTUM_STORE files\n").unwrap();
+    let broken = broken.to_string_lossy().into_owned();
+    let r = c.run_config(&[("RESCRIPTUM_ENV_FILE", &broken)], &["config"]);
+    assert!(!r.ok, "an unparseable file must fail\n{r}");
+    assert!(r.stderr.contains("would not start"), "{r}");
+    // It still prints the table: seeing the other variables beside the reason is what
+    // makes this usable when everything is broken.
+    assert!(r.stdout.contains("RESCRIPTUM_ANSWERS_DIR"), "{r}");
+}
+
+#[test]
+fn config_works_when_the_configuration_is_too_broken_to_start_a_server() {
+    // Every other subcommand is handed a configuration `validate` has accepted. This one
+    // must survive one it would reject, or the diagnostic tool is the first casualty of
+    // the thing it diagnoses.
+    let c = Case::new(&[]);
+    let env = c.env_file(
+        "RESCRIPTUM_STORE=sqlite\nRESCRIPTUM_ADMIN_ADDR=127.0.0.1:8001\nRESCRIPTUM_ADMIN_TOKEN=short\n",
+    );
+
+    let r = c.run_config(&[("RESCRIPTUM_ENV_FILE", &env)], &["config"]);
+    assert!(!r.ok, "{r}");
+    assert!(
+        r.stdout.contains("RESCRIPTUM_ADMIN_ADDR"),
+        "it still prints\n{r}"
+    );
+    assert!(r.stderr.contains("16"), "and says why\n{r}");
+
+    // And it can put it right, which is the whole point.
+    let fix = c.run_config(
+        &[("RESCRIPTUM_ENV_FILE", &env)],
+        &["config", "set", "RESCRIPTUM_ADMIN_TOKEN=0123456789abcdef0"],
+    );
+    assert!(fix.ok, "{fix}");
+    let r = c.run_config(&[("RESCRIPTUM_ENV_FILE", &env)], &["config"]);
+    assert!(r.ok, "{r}");
+}
+
+#[test]
+fn config_json_carries_the_source_and_the_help_a_panel_needs() {
+    let c = Case::new(&[]);
+    let env = c.env_file("RESCRIPTUM_STORE=sqlite\n");
+
+    let r = c.run_config(&[("RESCRIPTUM_ENV_FILE", &env)], &["config", "--json"]);
+    assert!(r.ok, "{r}");
+    assert!(r.stdout.contains("\"key\":\"RESCRIPTUM_STORE\""), "{r}");
+    assert!(r.stdout.contains("\"source\":\"file\""), "{r}");
+    assert!(
+        r.stdout.contains("\"secret\":true"),
+        "the tokens are marked\n{r}"
+    );
+    assert!(r.stdout.contains("\"starts\":true"), "{r}");
+    assert!(r.stdout.contains("\"writable\":true"), "{r}");
+    // One line, so a CGI can hand it straight to a browser.
+    assert_eq!(r.stdout.lines().count(), 1, "{r}");
+}
+
+#[test]
+fn config_with_no_file_named_says_so_rather_than_failing() {
+    // A container or a systemd unit configures the environment directly and has nothing
+    // here to edit. That is a normal deployment, not an error.
+    let c = Case::new(&[]);
+    let r = c.run_config(&[], &["config"]);
+    assert!(r.ok, "{r}");
+    assert!(r.stdout.contains("none"), "{r}");
+
+    let w = c.run_config(&[], &["config", "set", "RESCRIPTUM_LOG=off"]);
+    assert!(!w.ok, "there is nothing to write to\n{w}");
+    assert!(w.stderr.contains("RESCRIPTUM_ENV_FILE"), "{w}");
+}
+
+#[test]
+fn config_value_prints_one_setting_but_never_a_credential() {
+    // The DSM panel's backend reads a value this way rather than grepping the file,
+    // because a variable absent from the file is not unset — it is the default, and a
+    // grep cannot know that. The refusal matters just as much: this output is a shell
+    // variable, and a shell variable ends up in a log or a `set -x` trace.
+    let c = Case::new(&[]);
+    let env = c.env_file("RESCRIPTUM_ADMIN_TOKEN=sup3rs3cr3ttok3nvalue\n");
+
+    let d = c.run_config(
+        &[("RESCRIPTUM_ENV_FILE", &env)],
+        &["config", "--value", "RESCRIPTUM_ANSWERS_DIR"],
+    );
+    assert!(d.ok, "{d}");
+    assert_eq!(
+        d.stdout.trim(),
+        "/srv/answers",
+        "the default, not nothing\n{d}"
+    );
+
+    let s = c.run_config(
+        &[("RESCRIPTUM_ENV_FILE", &env)],
+        &["config", "--value", "RESCRIPTUM_ADMIN_TOKEN"],
+    );
+    assert!(!s.ok, "a credential must not be printable\n{s}");
+    assert!(!s.stdout.contains("sup3rs3cr3ttok3nvalue"), "{s}");
+    assert!(!s.stderr.contains("sup3rs3cr3ttok3nvalue"), "{s}");
+
+    // Unset is an exit code, not an empty line that a script would mistake for a value.
+    let u = c.run_config(
+        &[("RESCRIPTUM_ENV_FILE", &env)],
+        &["config", "--value", "RESCRIPTUM_CAPTURE_DIR"],
+    );
+    assert!(!u.ok, "{u}");
+    assert!(u.stdout.is_empty(), "{u}");
+}

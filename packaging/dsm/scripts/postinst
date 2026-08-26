@@ -1,0 +1,159 @@
+#!/bin/sh
+# rescriptum — after installation, and after every upgrade.
+#
+# This is the most dangerous script in the package. `postinst` runs on an *upgrade* as
+# well as on an install (it is step 8 of the documented upgrade sequence), so a version
+# that wrote the env file unconditionally would replace the user's port, tokens and store
+# choice with defaults on every upgrade — and restart the service straight afterwards, so
+# the first symptom would be a fleet installing against the wrong answers.
+#
+# Hence: the live env file is written **only when it is absent**. The guard is the file,
+# not SYNOPKG_PKG_STATUS, because "absent" is the condition that actually matters — a
+# reinstall over a preserved etc/ is neither an install nor an upgrade from the file's
+# point of view. preupgrade/postupgrade carry the file across as well; both, deliberately.
+#
+# Everything here runs as the package user, so the file it writes is owned by rescriptum
+# and a 0600 file the service can read is the natural outcome rather than something to
+# arrange.
+
+# The pkgwizard_* variables below are set by DSM from the wizard's component keys, so
+# nothing in this file assigns them and every one is read with a default.
+# shellcheck disable=SC2154
+
+set -u
+
+PKG="rescriptum"
+# **ROOT is not derived from SYNOPKG_PKGDEST.** On a real DSM that variable resolves to
+# /volume1/@appstore/<package> — /var/packages/<package>/target is only a symlink to it — so
+# `dirname "$SYNOPKG_PKGDEST"` is /volume1/@appstore, and everything hung off it (etc/, var/,
+# shares/) lands somewhere nobody reads. The package root is a fixed path; only DEST is not.
+ROOT="${RESCRIPTUM_PKG_ROOT:-/var/packages/${SYNOPKG_PKGNAME:-$PKG}}"
+DEST="${SYNOPKG_PKGDEST:-$ROOT/target}"
+ETC="$ROOT/etc"
+VAR="${SYNOPKG_PKGVAR:-$ROOT/var}"
+
+ENV_FILE="$ETC/$PKG.env"
+EXAMPLE="$DEST/etc/$PKG.env.example"
+SC_FILE="$DEST/port_conf/$PKG.sc"
+
+SHARE_ANSWERS="$ROOT/shares/$PKG/answers"
+DEFAULT_PORT=8000
+
+say() { echo "$PKG: $*"; }
+
+# Wizard values arrive as environment variables named after the component keys — and every
+# one of them has to be read as "possibly absent, with a default". silent_install exists,
+# and a reinstall may present no wizard at all; a package that only works when someone
+# answered one is a package that breaks the first time DSM installs it without one.
+port="${pkgwizard_port:-$DEFAULT_PORT}"
+case "$port" in
+'' | *[!0-9]*) port="$DEFAULT_PORT" ;;
+esac
+if [ "$port" -lt 1024 ] || [ "$port" -gt 65535 ]; then
+    say "port $port is not usable by an unprivileged package — using $DEFAULT_PORT"
+    port="$DEFAULT_PORT"
+fi
+
+answers="$SHARE_ANSWERS"
+if [ "${pkgwizard_answers_custom:-false}" = "true" ] && [ -n "${pkgwizard_answers_path:-}" ]; then
+    answers="$pkgwizard_answers_path"
+    # A promise the package cannot keep, said out loud rather than discovered later: the
+    # scripts run unprivileged, so this cannot be chowned or given an ACL from here.
+    say "answers set to $answers — grant the '$PKG' user read access to it yourself"
+fi
+
+# The file, in full, for both the live copy and the example. Every path is explicit:
+# RESCRIPTUM_ANSWERS_DIR defaults to /srv/answers and RESCRIPTUM_DB_PATH to
+# /srv/answers.db, neither of which exists on DSM nor could be created by this user.
+env_body() {
+    cat <<BODY
+# rescriptum — configuration for the packaged install on DSM.
+#
+# This file is the configuration interface: DSM has no settings panel for a package, so
+# changing anything means editing it here and restarting the package from Package Center.
+# It is read by the server itself (RESCRIPTUM_ENV_FILE), never sourced by a shell, so
+# there is no \${} expansion and a # in a value is part of the value.
+#
+# Every variable is documented at
+# https://z29k.github.io/rescriptum/guide/reference/configuration/
+
+RESCRIPTUM_ANSWERS_DIR=$1
+RESCRIPTUM_LISTEN_ADDR=0.0.0.0:$2
+RESCRIPTUM_LOG_FILE=$VAR/$PKG.log
+
+# Not the default (/srv/answers.db), which this package's user cannot write. Set even
+# while the store is 'files', so switching is one uncommented line rather than a fatal
+# "cannot open the store" on the next start — a store that cannot be opened is a startup
+# error, not a warning.
+RESCRIPTUM_DB_PATH=$ROOT/shares/$PKG/answers.db
+# RESCRIPTUM_STORE=sqlite
+
+# Keeps the failures and drops the requests that worked. Worth it once a rollout is
+# routine: successful answers are the only high-volume thing in the log.
+# RESCRIPTUM_LOG=problems
+
+# Records what installers actually send, for when something answers nothing and nobody
+# can see why.
+# RESCRIPTUM_CAPTURE_DIR=$VAR/captures
+
+# Proxmox sends this when its ISO was prepared with --answer-auth-token. Most other
+# installers have no credential, so it is off by default.
+# RESCRIPTUM_ANSWER_TOKEN=
+
+# The write API. Off by default, and loopback when it is on — reach it through an SSH
+# tunnel. It sets the root password and SSH keys of every machine installed afterwards
+# and speaks plain HTTP, which is why it is deliberately not registered with the firewall.
+# It also requires the sqlite store and a token of at least 16 characters; both are
+# startup errors, so getting them wrong shows up as a package that will not start.
+# RESCRIPTUM_ADMIN_ADDR=127.0.0.1:8001
+# RESCRIPTUM_ADMIN_TOKEN=
+BODY
+}
+
+# The example is rewritten every time, complete for the version being installed: it is how
+# a new variable becomes discoverable without touching the live file. Nothing reads it.
+mkdir -p "$DEST/etc"
+{
+    echo "# Example only — nothing reads this file. The live one is $ENV_FILE."
+    echo "# It is rewritten on every install and upgrade; the live one is never touched"
+    echo "# once it exists."
+    echo
+    env_body "$SHARE_ANSWERS" "$DEFAULT_PORT"
+} >"$EXAMPLE"
+
+SAVED="${SYNOPKG_TEMP_UPGRADE_FOLDER:-}/etc/$PKG.env"
+if [ -f "$ENV_FILE" ]; then
+    say "keeping the existing $ENV_FILE"
+elif [ "${SYNOPKG_PKG_STATUS:-}" = "UPGRADE" ] && [ -n "${SYNOPKG_TEMP_UPGRADE_FOLDER:-}" ] && [ -f "$SAVED" ]; then
+    # This script runs *before* postupgrade, so "absent" is not the same question as
+    # "never existed": on an upgrade where etc/ did not survive, preupgrade's copy is the
+    # user's configuration and writing defaults here would destroy it before postupgrade
+    # ever got the chance to put it back. Checked by simulating exactly that.
+    #
+    # **The status guard is not decoration.** The temp folder outlives the upgrade that
+    # created it, so a later *fresh* install finds a copy of a configuration that belongs
+    # to an installation the user removed — and silently resurrects it, tokens and all.
+    # Found on a real DSM, by a fresh install coming back up with the previous run's
+    # answer token in it.
+    mkdir -p "$ETC"
+    cp -p "$SAVED" "$ENV_FILE"
+    chmod 600 "$ENV_FILE"
+    say "restored your configuration into $ENV_FILE"
+else
+    mkdir -p "$ETC"
+    env_body "$answers" "$port" >"$ENV_FILE"
+    chmod 600 "$ENV_FILE"
+    say "wrote $ENV_FILE"
+fi
+
+# The .sc file is static and the port is not, so write the chosen one in. Whether the
+# port-config worker acquires this before or after this script runs decides whether it
+# reaches the firewall entry on a fresh install; either way, changing the port later means
+#   sudo /usr/syno/sbin/synopkghelper update rescriptum port-config
+# because Acquire skips a file that already exists in /usr/local/etc/service.d/.
+if [ -f "$SC_FILE" ]; then
+    sed "s|^dst.ports=.*|dst.ports=\"$port/tcp\"|" "$SC_FILE" >"$SC_FILE.new" &&
+        mv "$SC_FILE.new" "$SC_FILE"
+fi
+
+exit 0

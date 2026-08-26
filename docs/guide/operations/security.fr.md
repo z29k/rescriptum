@@ -122,6 +122,50 @@ L'API d'administration est le seul endroit où cela compte par défaut : elle pa
 en clair, donc le jeton traverse le réseau en clair. Sur la boucle locale c'est sans objet.
 Ailleurs, mettez un proxy terminant TLS devant.
 
+## L'application de bureau
+
+Sur Synology uniquement, et uniquement là — l'[application DSM](./synology.md#lapplication-de-bureau)
+fait partie du paquet, pas du serveur. Son backend est un CGI que DSM sert depuis
+`/webman/3rdparty/rescriptum/`, et deux choses concernant ce chemin décident de tout son
+modèle de sécurité. **Les deux ont été mesurées sur une machine DSM 7.2.2 plutôt que lues
+dans un guide, qui n'en mentionne aucune :**
+
+1. **Un CGI y tourne sous le propriétaire du script.** DSM attribue l'arborescence d'un
+   paquet à l'utilisateur du paquet : le backend tourne donc en tant que `rescriptum`, la
+   même identité qui possède le fichier d'environnement en `0600` et le journal. C'est ce
+   qui lui permet d'éditer la configuration et de lire le journal *pendant que le serveur
+   est arrêté*, c'est-à-dire précisément quand un panneau de réglages sert à quelque chose.
+   Ce n'est pas root, et il ne peut devenir personne : il n'a aucun droit de démarrer ou
+   d'arrêter le paquet, et c'est pourquoi le redémarrage passe par l'API de DSM avec la
+   session de l'administrateur. (Un script resté possédé par root, lui, **tourne bien** en
+   root là-bas. Bon à savoir, et à ne jamais faire.)
+2. **DSM n'authentifie pas ce chemin.** Une requête non authentifiée atteint le script et
+   reçoit une réponse. DSM protège ses propres pages ; celles d'un paquet regardent le
+   paquet.
+
+Mis ensemble : les contrôles à l'intérieur du script sont la seule chose devant lui. Il en
+fait donc trois, dans cet ordre, avant de toucher à quoi que ce soit.
+
+- **Une session DSM.** Il exécute l'`authenticate.cgi` de DSM, qui affiche le nom de
+  l'utilisateur connecté et n'affiche rien du tout s'il n'y a pas de session.
+- **Un administrateur.** Être connecté ne suffit pas ; l'utilisateur doit appartenir à
+  `administrators`. Moins que cela laisserait n'importe quel compte du NAS fixer le mot de
+  passe root de chaque machine qu'il installe.
+- **L'intention, pour une écriture.** Une écriture doit porter un en-tête que l'application
+  envoie et qu'un formulaire d'un autre site ne peut pas : un navigateur n'envoie pas un
+  en-tête inventé en cross-origin sans un préalable (*preflight*), et ce script n'y répond
+  pas. Le `SynoToken` de DSM est envoyé en plus, ce qui garde l'application fonctionnelle
+  avec la protection contre la falsification de requête inter-sites activée.
+
+`check-spk.sh` vérifie que les deux premiers sont toujours dans le script, et
+`lifecycle-test.sh` le pilote avec un authentificateur bouchonné pour prouver que les trois
+refusent réellement. Ils ont été vus échouer : retirer le contrôle de session fait passer
+quatre verts au rouge.
+
+L'application ne reçoit jamais de jeton. `RESCRIPTUM_ANSWER_TOKEN` et
+`RESCRIPTUM_ADMIN_TOKEN` lui parviennent comme *défini* ou *non défini*, et rien de plus —
+la commande qu'elle appelle refuse d'afficher un identifiant, quoi qu'on lui demande.
+
 ## Connu et accepté
 
 - **La limitation par adresse n'arrête pas un attaquant disposant de nombreuses adresses.**

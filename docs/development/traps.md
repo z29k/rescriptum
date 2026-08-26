@@ -46,6 +46,15 @@ A test at the connection cap pins it.
 
 ## Selection and formats
 
+**A Mac editing the answers directory over SMB can hijack a machine's answer.** macOS writes
+an AppleDouble `._<name>` beside a file whose extended attributes the filesystem will not
+take — `._98-fa-9b-50-d8-10.toml` has an extension that *is* on the allowlist, and
+normalization strips the leading `._`, so it claims the same identity as the real file with a
+body that is binary. The machine being configured then receives a parse error instead of its
+answer, and `check` reports the failure against the *group* as well. `.DS_Store` is harmless
+only by luck (its extension is not on the list). The file store now skips every entry whose
+name starts with `.`; found on a real NAS, not by reading anything.
+
 **Normalizing a selector pattern strips `*` and `?`** unless you use `normalize_pattern` —
 which turns every glob into a literal, quietly.
 
@@ -103,6 +112,151 @@ key's original decor, so the output can read `value= 3` — valid TOML, differen
 **A `python`/`sed` patch that "succeeds" may have matched nothing.** Two edits in this
 project's history silently no-opped and were only caught by checking test counts
 afterwards. Assert the old text was found before writing.
+
+## Packaging for DSM
+
+**A shell script that works on macOS is not a shell script that works on CI.** Two found by
+running the harnesses in a Linux container rather than trusting them: `stat -f '%Lp'` is the
+format flag on BSD and *filesystem status* on GNU — where it **succeeds**, printing overlayfs
+trivia into a variable that was supposed to hold a file mode, so the fallback never fires.
+Ask GNU first (`stat -c '%a' || stat -f '%Lp'`), which fails cleanly on macOS. And `shasum`
+is a Perl script that a minimal Debian does not have: `sha256sum` is coreutils and is
+everywhere on Linux. Ubuntu runners carry both, which is exactly how a script like that ships
+broken to everyone else.
+
+**musl 1.2 cannot run on Synology's ARMv7 kernels, and the symptom names nothing.** Those
+kernels are 3.10 and answer the *time64* syscalls with `EINVAL`; musl falls back to the
+32-bit ones only on `ENOSYS`, so `clock_gettime`, `clock_nanosleep` and the timed futex all
+fail. The binary installs, answers `--version`, and panics at `time.rs:131` with
+`Os { code: 22, kind: InvalidInput }` the moment it wants a timestamp — which looks like an
+ABI or a too-old-kernel problem and is neither. The armv7 target is glibc with a 2.17 floor
+for this reason; 64-bit targets have no time32/time64 split and are unaffected. Proven with
+a ten-line C probe on the machine, not by reading anything.
+
+**`SYNOPKG_PKGDEST` is `/volume1/@appstore/<package>`, not `/var/packages/<package>/target`.**
+The second is a symlink to the first, so `dirname "$SYNOPKG_PKGDEST"` is `/volume1/@appstore`
+and everything hung off it — `etc/`, `var/`, `shares/` — lands where nothing reads it. The
+package root is a fixed path. This one costs a service that installs perfectly and never
+starts, and a fake-tree harness cannot catch it: in a tree you built yourself, `dirname` is
+right by construction.
+
+**`$SYNOPKG_TEMP_UPGRADE_FOLDER` outlives the upgrade that created it.** A *fresh* install
+that reads it finds the configuration of an installation the user removed, and silently
+restores it — tokens and all. Restoring from it has to require `SYNOPKG_PKG_STATUS = UPGRADE`.
+
+**`etc/` and `var/` survive an uninstall.** They are symlinks into `/volume1/@appconf/<pkg>`
+and `/volume1/@appdata/<pkg>`, which DSM keeps. So the env file, tokens included, stays on
+the volume after the package is gone — which the documentation has to say, and which makes
+a rig that does not clear them fail on the *next* run for reasons belonging to the last one.
+
+**A DSM account named after the package user is destroyed with it.** `conf/privilege`'s
+`username` creates a system user at install; an administrator of the same name is shadowed
+by it and removed on uninstall.
+
+**The firewall directory is `/usr/local/etc/services.d/`** — plural. The developer guide says
+`service.d`, which does not exist. The `port-config` worker acquires **after `postinst`**, so
+the wizard's port does reach the firewall entry on a fresh install.
+
+**`port-config` and `usr-local-linker` acquire when the package is *enabled*,** not when
+`postinst` runs: checked any earlier they are always absent.
+
+**The generated unit has no `Restart=`** — `Type=oneshot`, `RemainAfterExit=yes`,
+`TimeoutStartSec=3600`. DSM does not restart the process if it dies.
+
+**`postinst` runs on an upgrade too, and it runs *before* `postupgrade`.** So "the env
+file is absent" is not the same question as "this is a fresh install": on an upgrade where
+`etc/` did not survive, writing defaults there destroys the user's port and tokens before
+the restore ever runs. `postinst` checks `$SYNOPKG_TEMP_UPGRADE_FOLDER` before it decides.
+Found by simulating that exact case, not by reading the documented sequence.
+
+**The old version's `preuninst`/`postuninst` run during an upgrade.** Anything destructive
+in them therefore runs every time somebody upgrades — and the *first published* `.spk` is
+the one whose uninstall scripts will run during everybody's first upgrade. They cannot be
+fixed later.
+
+**`status` returning `1` means "crashed, stale pidfile"**, not "stopped". A cleanly stopped
+package is `3`. Returning `1` tells Package Center the service died.
+
+**`prestart` runs at boot**, and DSM calls it whether or not you wrote it —
+`precheckstartstop` defaults to `"yes"`. A `case` that exits non-zero on an unrecognised
+verb stops the package from ever starting after a reboot, with a symptom ("works by hand,
+never after a reboot") that looks like anything but a missing case arm.
+
+**The lifecycle scripts are not root.** `run-as: package` governs them, not only the
+service — so a chown outside the package tree, or `synopkghelper`, fails, possibly
+silently.
+
+**`data-share` runs at package *start*, not at install**, so nothing in `postinst` may
+assume the shared folder exists. And a username that does not match its permission list
+creates the share and grants it to nobody, without a word.
+
+**A logrotate stanza without `copytruncate` silently ends logging**: `log::init` opens the
+file once and never reopens it, so a rotation moves the inode out from under a server that
+carries on writing to a file with no name.
+
+**A `.spk` whose outer tar is gzipped is rejected** with "invalid file format" and no
+further detail. So is one carrying macOS `._` members. `check-spk.sh` asserts both.
+
+## The DSM desktop application
+
+Seven things, measured on a DSM 7.2.2 virtual machine and on a DS416j running 7.1.1, and
+none of them in the developer guide.
+
+**A CGI under `/webman/3rdparty/<pkg>/` runs as the owner of the script.** Not as `http`,
+and not as root — as whoever owns the file. DSM chowns a package's tree to the package
+user, so the application's backend runs as `rescriptum` and can read the `0600` env file it
+owns, which is the entire reason the configuration can be edited while the server is
+stopped. Proven by chowning the same script two ways and watching `id` change. A script
+left owned by root **does** run as root there, so do not leave one lying about.
+
+**That path is not authenticated by DSM.** An unauthenticated request reaches the script
+and is answered `200`. Whatever guards a package's CGI, the package wrote it — here that is
+`authenticate.cgi` plus an `administrators` check, and losing either would be silent.
+
+**`su` in a CGI hangs the request.** Without `</dev/null` it inherits the CGI's stdin — a
+pipe from the web server that nothing will close — reads from it, and never returns. The
+status page simply stopped mid-answer. Then, once that was fixed, it failed anyway with
+"Permission denied", because a non-root process cannot become anybody. Both were wasted
+effort: the script already *is* the user in question, so a plain `test -r` was the answer
+all along.
+
+**The framework a package can use is the machine's choice, not Synology's guide's.** DSM
+7.2 ships a Vue UI framework and the current guide documents only that one. The DS416j is
+capped at DSM 7.1.1, where `Vue` is undefined — so an application built on it installs and
+gives that machine an icon that opens nothing. ExtJS is on both (7.1.1 and 7.2.2 measured),
+which is why there is one application rather than two.
+
+**The guide's own ExtJS example does not run.** It declares classes with `Ext.define` and
+chains with `callParent`; against `SYNO.SDS.AppInstance` that throws `Cannot read properties
+of null (reading 'apply')` before the window ever appears. This is **ExtJS 3.4.1** with an
+`Ext.define` shim over it: use `Ext.define` for the declaration — DSM's launcher finds the
+class that way and it does set `superclass` — and then call
+`MyClass.superclass.constructor.call(this, config)` rather than `callParent`.
+
+**DSM's taskbar calls `getWindowTitle()` on the window.** Without a title it throws from
+inside DSM's own taskbar bundle, and the application then fails to open at all — with a
+stack trace that names Synology's code and not yours.
+
+**Do not name a method `show`.** `Ext.Window.prototype.show()` is what DSM calls to display
+the window, so a `show(which)` added for switching tabs silently overrode it: the window was
+built, laid out, and rendered a correct thumbnail in the taskbar preview — and never
+appeared. **Nothing threw**, on either DSM version, which is what made it expensive: it was
+found by bisecting from the guide's minimal example upwards. Everything added to that
+prototype shares a namespace with every method of `Ext.Window`, and that is a large
+namespace.
+
+**`fieldLabel` is drawn by the form layout, not by the field.** A `syno_displayfield` in a
+plain `Ext.Panel` renders its value and silently drops its label, which turned the status
+page into a bare column of values with nothing saying what they were. `SYNO.ux.FormPanel`,
+or `layout: 'form'`.
+
+**Reproducible builds and browser caches disagree, and the browser wins.** `make-spk.sh`
+gives every packaged file a fixed mtime so the same inputs produce a byte-identical `.spk`.
+nginx turns that into `Last-Modified: 2019` with no `Cache-Control`, and a browser's
+heuristic freshness is a tenth of the file's apparent age — years. An upgraded package went
+on running the **old** JavaScript against the new backend, through a reinstall and a hard
+reload. The application's file is therefore named after the version and everything it
+fetches itself carries `?v=`; `check-spk.sh` asserts the name still moves.
 
 ## Behaviour changes worth remembering
 

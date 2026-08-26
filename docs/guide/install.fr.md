@@ -8,7 +8,7 @@ sidebar:
 
 # Installation
 
-rescriptum est **un binaire lié statiquement**. Pas de runtime à installer, pas
+rescriptum est **un binaire autonome**. Pas de runtime à installer, pas
 d'interpréteur, pas d'image de conteneur, et rien d'écrit en dehors du répertoire que vous
 lui indiquez. Copiez-le quelque part et lancez-le.
 
@@ -19,7 +19,7 @@ Les binaires de chaque cible publiée sont attachés à chaque
 
 | Cible | Pour |
 |---|---|
-| `armv7-unknown-linux-musleabihf` | Synology DS416j et autres NAS ARMv7 |
+| `armv7-unknown-linux-gnueabihf` | Synology DS416j et autres NAS ARMv7 (glibc ≥ 2.17) |
 | `aarch64-unknown-linux-musl` | NAS ARM récents, Raspberry Pi |
 | `x86_64-unknown-linux-musl` | la plupart des autres hôtes Linux |
 | `aarch64-apple-darwin` | développement local, Apple silicon |
@@ -38,8 +38,18 @@ Vérifiez la somme. Ce binaire tourne en root sur du matériel que vous êtes su
 d'installer, ce qui représente à peu près toute la confiance qu'un programme puisse
 obtenir.
 
-Les builds Linux sont liés à musl, statiquement, et se moquent donc de l'âge de la glibc de
-l'hôte :
+## Sur un Synology
+
+Prenez plutôt le `.spk` de votre modèle — `rescriptum-<version>-armv7.spk` pour le DS416j et
+les autres machines `armada38x`, `-x86_64.spk` pour tous les modèles Intel — et installez-le
+par **Package Center → Installation manuelle**. Il crée le dossier partagé, enregistre le
+port auprès du pare-feu, lie le CLI dans le `PATH` et démarre au boot. Les détails, et ce
+qu'il ne fait délibérément pas pour vous, sont sur la
+[page Synology](./operations/synology.md).
+
+Les builds Linux sont liés à musl statiquement — sauf `armv7`, qui vise la glibc 2.17
+parce que musl 1.2 ne peut pas tourner sur les noyaux 3.10 de Synology (voir la
+[page de build](../development/building.md#pourquoi-armv7-est-la-seule-cible-qui-ne-soit-pas-musl)) :
 
 ```console
 $ file /usr/local/bin/rescriptum
@@ -58,9 +68,9 @@ $ ./build.sh
 La compilation croisée pour le NAS demande
 [`cargo-zigbuild`](https://github.com/rust-cross/cargo-zigbuild) et Zig, qui remplacent une
 toolchain croisée complète. La [page de build](../development/building.md) donne les
-détails, y compris comment confirmer que le résultat est bien statique — un binaire musl
-lié dynamiquement échoue au moment de l'exec, sur le NAS, et non au build sur votre
-portable.
+détails, y compris ce qu'il faut vérifier selon la cible : que les builds musl sont bien
+statiques, et que le build armv7 ne réclame pas une glibc plus récente que celle du NAS —
+les deux échouent au moment de l'exec, sur la machine, et non au build sur votre portable.
 
 ## Le lancer
 

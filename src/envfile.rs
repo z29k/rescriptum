@@ -188,6 +188,202 @@ fn is_valid_key(key: &str) -> bool {
         && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
+/// Apply changes to the **text** of an env file, leaving everything else exactly as it is.
+///
+/// The file a program writes here is the same file a person edits by hand, and on a
+/// packaged install it is the only documentation the configuration has — the template
+/// `postinst` lays down explains every variable in comments above it. A writer that
+/// regenerated the file would throw all of that away the first time anyone changed a
+/// setting, so this one edits lines where they stand.
+///
+/// Three cases, tried in that order:
+///
+/// * a **live** assignment is replaced in place, keeping its indentation and its `export`;
+/// * a **commented** one is uncommented and set — which is how the template's
+///   `# RESCRIPTUM_STORE=sqlite` becomes a real setting instead of a duplicate appearing
+///   at the bottom of the file with its explanation left behind;
+/// * anything else is appended.
+///
+/// `None` comments a setting out rather than deleting it, so the paragraph explaining it
+/// survives and setting it again lands back in the same place.
+///
+/// Keys are not checked here: whether a name is one this program reads is the caller's
+/// question, and `KNOWN_KEYS` is where it is answered. What *is* refused here is a value
+/// this file could not carry back — the parser has no escapes, so a value it would not
+/// return unchanged must not be written rather than written and silently misread.
+pub fn rewrite(text: &str, changes: &BTreeMap<String, Option<String>>) -> Result<String, String> {
+    let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
+    let mut appended: Vec<String> = Vec::new();
+
+    for (key, change) in changes {
+        if !is_valid_key(key) {
+            return Err(format!("{key:?} is not a usable variable name"));
+        }
+
+        let live = lines
+            .iter()
+            .position(|l| assignment_prefix(l, key).is_some());
+
+        match change {
+            Some(value) => {
+                let rendered = render_value(key, value)?;
+                if let Some(n) = live {
+                    let prefix = assignment_prefix(&lines[n], key).unwrap_or_default();
+                    lines[n] = format!("{prefix}{key}={rendered}");
+                    continue;
+                }
+                let commented = lines
+                    .iter()
+                    .position(|l| commented_prefix(l, key).is_some());
+                if let Some(n) = commented {
+                    let prefix = commented_prefix(&lines[n], key).unwrap_or_default();
+                    lines[n] = format!("{prefix}{key}={rendered}");
+                    continue;
+                }
+                appended.push(format!("{key}={rendered}"));
+            }
+            None => {
+                // Only a live line means anything here. An already-commented one is
+                // already unset, and appending a comment saying so would be noise.
+                if let Some(n) = live {
+                    let indent: String =
+                        lines[n].chars().take_while(|c| c.is_whitespace()).collect();
+                    lines[n] = format!("{indent}# {}", &lines[n][indent.len()..]);
+                }
+            }
+        }
+    }
+
+    let mut out = String::new();
+    for line in lines.iter().chain(appended.iter()) {
+        out.push_str(line);
+        out.push('\n');
+    }
+    Ok(out)
+}
+
+/// Recognise `KEY=` on a line, and return everything that should stay in front of it —
+/// the indentation and an `export` if the line carried one. `None` when this line is not
+/// an assignment to this key.
+fn assignment_prefix(line: &str, key: &str) -> Option<String> {
+    let indent: String = line.chars().take_while(|c| c.is_whitespace()).collect();
+    let rest = &line[indent.len()..];
+    let (export, rest) = match rest.strip_prefix("export ") {
+        Some(r) => ("export ", r.trim_start()),
+        None => ("", rest),
+    };
+    // `RESCRIPTUM_STORE_X=1` must not answer for `RESCRIPTUM_STORE`: after the name only
+    // whitespace and the `=` may follow.
+    let rest = rest.strip_prefix(key)?;
+    rest.trim_start().strip_prefix('=')?;
+    Some(format!("{indent}{export}"))
+}
+
+/// The same, for a line that is commented out. `#KEY=`, `# KEY=` and `#  export KEY=` all
+/// count — a template written by hand does not keep to one of them.
+fn commented_prefix(line: &str, key: &str) -> Option<String> {
+    let indent: String = line.chars().take_while(|c| c.is_whitespace()).collect();
+    let rest = line[indent.len()..].strip_prefix('#')?.trim_start();
+    let inner = assignment_prefix(rest, key)?;
+    Some(format!("{indent}{inner}"))
+}
+
+/// How a value has to be written so that `parse` gives it back unchanged.
+///
+/// There are no escape sequences in this format, deliberately, which means some values
+/// cannot be represented at all. Refusing those is the only honest option: writing one
+/// and reading back something else is the silent failure this whole module exists to
+/// remove.
+fn render_value(key: &str, value: &str) -> Result<String, String> {
+    if let Some(c) = value.chars().find(|c| c.is_control()) {
+        return Err(format!(
+            "{key}: a value cannot contain {c:?} — one line, one setting"
+        ));
+    }
+    // A value that already looks quoted would come back stripped of its own first and
+    // last character.
+    let bytes = value.as_bytes();
+    if bytes.len() >= 2 {
+        let (first, last) = (bytes[0], bytes[bytes.len() - 1]);
+        if (first == b'"' || first == b'\'') && first == last {
+            return Err(format!(
+                "{key}: a value that begins and ends with a quote cannot be written to \
+                 this file — it would be read back without them"
+            ));
+        }
+    }
+    if value == value.trim() {
+        return Ok(value.to_string());
+    }
+    // Only quoting protects the whitespace, and only a value without quotes of its own
+    // can be quoted.
+    if value.contains('"') {
+        return Err(format!(
+            "{key}: a value with leading or trailing whitespace cannot also contain a \
+             double quote"
+        ));
+    }
+    Ok(format!("\"{value}\""))
+}
+
+/// Replace a file's contents without a reader ever seeing half of them, and **without
+/// changing who owns it**.
+///
+/// The rename is the atomic part, and it is the same trick the file store uses. The
+/// ownership is the part that is easy to miss and expensive to get wrong: on a packaged
+/// install this file is `0600` and owned by the service's own user, so a rewrite by root
+/// that left a root-owned file behind would mean the service could no longer read its own
+/// configuration — and the symptom would be a server that stops starting, one restart
+/// later, for no reason anybody changed.
+pub fn write_atomic(path: &Path, text: &str) -> std::io::Result<()> {
+    let dir = path.parent().unwrap_or(Path::new("."));
+    let name = path.file_name().map_or_else(
+        || std::ffi::OsString::from("env"),
+        std::ffi::OsStr::to_os_string,
+    );
+    let mut tmp = std::ffi::OsString::from(".");
+    tmp.push(&name);
+    tmp.push(format!(".tmp.{}", std::process::id()));
+    let tmp = dir.join(tmp);
+
+    let existing = std::fs::metadata(path).ok();
+    std::fs::write(&tmp, text)?;
+
+    if let Err(e) = preserve(&tmp, existing.as_ref()) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
+    }
+    if let Err(e) = std::fs::rename(&tmp, path) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
+    }
+    Ok(())
+}
+
+/// Carry the old file's mode and ownership onto the new one. A file that did not exist
+/// gets `0600`: this one holds tokens, and inheriting a umask would be how it ends up
+/// world-readable on somebody's NAS.
+#[cfg(unix)]
+fn preserve(tmp: &Path, existing: Option<&std::fs::Metadata>) -> std::io::Result<()> {
+    use std::os::unix::fs::MetadataExt;
+    use std::os::unix::fs::PermissionsExt;
+
+    let mode = existing.map_or(0o600, |m| m.permissions().mode() & 0o7777);
+    std::fs::set_permissions(tmp, std::fs::Permissions::from_mode(mode))?;
+
+    if let Some(meta) = existing {
+        // Only root can give a file away, and only root needs to: anyone else is already
+        // writing as the owner. A refusal here is therefore not an error.
+        let _ = std::os::unix::fs::chown(tmp, Some(meta.uid()), Some(meta.gid()));
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn preserve(_tmp: &Path, _existing: Option<&std::fs::Metadata>) -> std::io::Result<()> {
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -340,6 +536,178 @@ mod tests {
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
         let tight = EnvFile::load(&path).expect("parses");
         assert!(tight.warnings.is_empty(), "{:?}", tight.warnings);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ---- rewriting -------------------------------------------------------
+
+    fn changes(pairs: &[(&str, Option<&str>)]) -> BTreeMap<String, Option<String>> {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.map(str::to_string)))
+            .collect()
+    }
+
+    /// What `parse` makes of a rewrite — the only thing that actually matters about one.
+    fn reparse(text: &str) -> BTreeMap<String, String> {
+        parse(text).expect("a rewrite must produce a file this parser accepts")
+    }
+
+    #[test]
+    fn a_setting_is_replaced_where_it_stands() {
+        // The comment above a setting is the only documentation a packaged install has.
+        // Regenerating the file would lose it the first time anybody changed anything.
+        let before = "# Which store answers come from.\nRESCRIPTUM_STORE=files\n\n# The log.\nRESCRIPTUM_LOG=all\n";
+        let after = rewrite(before, &changes(&[("RESCRIPTUM_STORE", Some("sqlite"))])).unwrap();
+
+        assert!(
+            after.contains("# Which store answers come from."),
+            "{after}"
+        );
+        assert!(after.contains("# The log."), "{after}");
+        assert_eq!(reparse(&after)["RESCRIPTUM_STORE"], "sqlite");
+        assert_eq!(reparse(&after)["RESCRIPTUM_LOG"], "all");
+        // Replaced, not appended: exactly one line mentions it.
+        assert_eq!(
+            after
+                .lines()
+                .filter(|l| l.contains("RESCRIPTUM_STORE"))
+                .count(),
+            1,
+            "{after}"
+        );
+    }
+
+    #[test]
+    fn a_commented_setting_is_uncommented_rather_than_duplicated() {
+        // The DSM template ships several of these — `# RESCRIPTUM_STORE=sqlite` with a
+        // paragraph above explaining it. Appending a second one at the bottom of the file
+        // would leave the explanation attached to the wrong line.
+        let before = "# Not the default, because the package user cannot write it.\n# RESCRIPTUM_STORE=sqlite\n";
+        let after = rewrite(before, &changes(&[("RESCRIPTUM_STORE", Some("sqlite"))])).unwrap();
+
+        assert_eq!(reparse(&after)["RESCRIPTUM_STORE"], "sqlite");
+        assert!(after.contains("# Not the default"), "{after}");
+        assert_eq!(after.lines().count(), 2, "{after}");
+    }
+
+    #[test]
+    fn a_setting_the_file_never_mentioned_is_appended() {
+        let after = rewrite(
+            "RESCRIPTUM_STORE=files\n",
+            &changes(&[("RESCRIPTUM_LOG", Some("problems"))]),
+        )
+        .unwrap();
+        assert_eq!(reparse(&after)["RESCRIPTUM_LOG"], "problems");
+        assert_eq!(reparse(&after)["RESCRIPTUM_STORE"], "files");
+    }
+
+    #[test]
+    fn indentation_and_export_survive() {
+        // The same file has to keep working when it is sourced by a shell.
+        let after = rewrite(
+            "  export RESCRIPTUM_STORE=files\n",
+            &changes(&[("RESCRIPTUM_STORE", Some("sqlite"))]),
+        )
+        .unwrap();
+        assert_eq!(after, "  export RESCRIPTUM_STORE=sqlite\n");
+        assert_eq!(reparse(&after)["RESCRIPTUM_STORE"], "sqlite");
+    }
+
+    #[test]
+    fn a_similarly_named_setting_is_not_mistaken_for_this_one() {
+        let after = rewrite(
+            "RESCRIPTUM_LOG_FILE=/var/log/r.log\n",
+            &changes(&[("RESCRIPTUM_LOG", Some("problems"))]),
+        )
+        .unwrap();
+        let vars = reparse(&after);
+        assert_eq!(vars["RESCRIPTUM_LOG_FILE"], "/var/log/r.log");
+        assert_eq!(vars["RESCRIPTUM_LOG"], "problems");
+    }
+
+    #[test]
+    fn unsetting_comments_the_line_out_and_keeps_it() {
+        // So the paragraph above it survives, and setting it again lands back here.
+        let before = "# The write API.\nRESCRIPTUM_ADMIN_ADDR=127.0.0.1:8001\n";
+        let after = rewrite(before, &changes(&[("RESCRIPTUM_ADMIN_ADDR", None)])).unwrap();
+
+        assert!(
+            !reparse(&after).contains_key("RESCRIPTUM_ADMIN_ADDR"),
+            "{after}"
+        );
+        assert!(
+            after.contains("# RESCRIPTUM_ADMIN_ADDR=127.0.0.1:8001"),
+            "{after}"
+        );
+
+        let again = rewrite(
+            &after,
+            &changes(&[("RESCRIPTUM_ADMIN_ADDR", Some("127.0.0.1:9001"))]),
+        )
+        .unwrap();
+        assert_eq!(reparse(&again)["RESCRIPTUM_ADMIN_ADDR"], "127.0.0.1:9001");
+        assert_eq!(again.lines().count(), 2, "{again}");
+    }
+
+    #[test]
+    fn a_value_that_would_not_survive_the_round_trip_is_refused() {
+        // There are no escapes in this format. Writing one of these and reading back
+        // something else is exactly the silent failure this module exists to remove.
+        for bad in ["two\nlines", "tab\there", "\"quoted\"", "'quoted'"] {
+            let e = rewrite(
+                "RESCRIPTUM_STORE=files\n",
+                &changes(&[("RESCRIPTUM_ADMIN_TOKEN", Some(bad))]),
+            )
+            .expect_err("{bad} should be refused");
+            assert!(e.contains("RESCRIPTUM_ADMIN_TOKEN"), "{e}");
+        }
+    }
+
+    #[test]
+    fn whitespace_a_value_needs_is_quoted_and_comes_back() {
+        let after = rewrite(
+            "",
+            &changes(&[("RESCRIPTUM_ADMIN_TOKEN", Some(" padded token "))]),
+        )
+        .unwrap();
+        assert_eq!(reparse(&after)["RESCRIPTUM_ADMIN_TOKEN"], " padded token ");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_atomic_write_keeps_the_mode_and_leaves_no_temporary_behind() {
+        // A `0600` file that came back `0644` would put the admin token within reach of
+        // every account on the machine, quietly.
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("pve-envfile-write-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("rescriptum.env");
+
+        write_atomic(&path, "RESCRIPTUM_STORE=files\n").expect("writes");
+        let fresh = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(fresh, 0o600, "a new file must not inherit the umask");
+
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).unwrap();
+        write_atomic(&path, "RESCRIPTUM_STORE=sqlite\n").expect("writes");
+        let kept = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(kept, 0o640, "an existing file keeps the mode it had");
+
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "RESCRIPTUM_STORE=sqlite\n"
+        );
+        let leftovers: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .filter(|n| n != "rescriptum.env")
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "temporary files left behind: {leftovers:?}"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
