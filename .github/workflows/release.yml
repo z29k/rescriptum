@@ -159,7 +159,12 @@ jobs:
           # One .spk per *build*; the arch line inside each covers the platforms that
           # build serves. aarch64 (arch="armv8") joins this list once the binary has been
           # run on one of its platforms — make-spk.sh already knows the mapping.
-          for pair in "x86_64:x86_64-unknown-linux-musl" "armv7:armv7-unknown-linux-musleabihf"; do
+          # **The armv7 target here is glibc, and it used to be musl.** When it moved —
+          # Synology's 3.10 kernels break musl's time64 fallback — the build matrix above
+          # was updated and this line was not, so the job downloaded an artifact that no
+          # longer exists and the release died after building all five binaries. The same
+          # stale name was still in build.sh, where it silently produced no package at all.
+          for pair in "x86_64:x86_64-unknown-linux-musl" "armv7:armv7-unknown-linux-gnueabihf"; do
             abi="${pair%%:*}"; target="${pair#*:}"
             tar -xzf "artifacts/$target/rescriptum-$VERSION-$target.tar.gz" -C bins
             packaging/dsm/make-spk.sh "$abi" \
