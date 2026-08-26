@@ -23,6 +23,11 @@ USAGE:
     rescriptum check              validate the configured store
     rescriptum import <dir>       load a directory of TOML into the store
     rescriptum export <dir>       write the store out as a directory of TOML
+    rescriptum config             show the configuration, and where each value comes from
+    rescriptum config --json      the same, for a settings panel
+    rescriptum config --value K   one value, for a script (never a credential)
+    rescriptum config set K=V     edit the file RESCRIPTUM_ENV_FILE names
+    rescriptum config unset K     comment a setting back out of it
     rescriptum --help
 
 ENVIRONMENT:
@@ -404,4 +409,326 @@ fn copy(
         println!("  {failures} failure(s)");
         ExitCode::FAILURE
     }
+}
+
+// ---- config ---------------------------------------------------------------
+
+/// `config` / `config --json` / `config set KEY=VALUE` / `config unset KEY`
+///
+/// **This one deliberately does not take a `Config`.** Every other subcommand is handed
+/// one that `main` already built and validated, which is exactly what cannot be relied on
+/// here: a file that will not parse, or a token one character too short, are the states in
+/// which somebody reaches for this command. It loads the file itself, reports what is
+/// wrong rather than dying of it, and is the way back out.
+///
+/// The exit code is a contract, like `check`'s: **zero when the configuration would
+/// start**, one when it would not, or when a write was refused.
+pub fn config(args: &[String]) -> ExitCode {
+    let path = std::env::var(crate::envfile::ENV_FILE)
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty());
+
+    match args.split_first() {
+        None => show(path.as_deref(), false),
+        Some((flag, rest)) if flag == "--json" && rest.is_empty() => show(path.as_deref(), true),
+        Some((flag, rest)) if flag == "--value" && rest.len() == 1 => {
+            value(path.as_deref(), &rest[0])
+        }
+        Some((cmd, rest)) if cmd == "set" && !rest.is_empty() => edit(path.as_deref(), rest, true),
+        Some((cmd, rest)) if cmd == "unset" && !rest.is_empty() => {
+            edit(path.as_deref(), rest, false)
+        }
+        _ => {
+            eprintln!(
+                "usage: rescriptum config\n\
+                 \x20      rescriptum config --json\n\
+                 \x20      rescriptum config --value KEY\n\
+                 \x20      rescriptum config set KEY=VALUE [KEY=VALUE …]\n\
+                 \x20      rescriptum config unset KEY [KEY …]"
+            );
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// One value, on stdout, for a script that wants it.
+///
+/// The alternative is a shell reading the env file with `sed`, which gets the *defaults*
+/// wrong: a variable absent from the file is not unset, it is whatever this program falls
+/// back to. Precedence goes the same way — the environment beats the file — and neither is
+/// visible to something grepping a file.
+///
+/// **A secret is never printed**, whatever is asked. Exit code one means "no such value",
+/// so `if v=$(rescriptum config --value KEY)` reads correctly.
+fn value(path: Option<&str>, key: &str) -> ExitCode {
+    let Some(known) = crate::config::KNOWN.iter().find(|k| k.key == key) else {
+        eprintln!("{key} is not a variable this program reads");
+        return ExitCode::FAILURE;
+    };
+    if known.secret {
+        eprintln!("{key} is a credential and will not be printed");
+        return ExitCode::FAILURE;
+    }
+
+    let (file, _, unreadable) = load_file(path);
+    if let Some(reason) = unreadable {
+        eprintln!("{reason}");
+        return ExitCode::FAILURE;
+    }
+    match crate::config::settings(file.as_ref(), from_environment)
+        .into_iter()
+        .find(|s| s.key == key)
+        .and_then(|s| s.value)
+    {
+        Some(v) => {
+            println!("{v}");
+            ExitCode::SUCCESS
+        }
+        None => ExitCode::FAILURE,
+    }
+}
+
+/// Load the named file, if one is named at all.
+///
+/// A file that will not parse still **prints**, rather than being a single error line:
+/// seeing the other twelve variables next to the reason the file is broken is what makes
+/// this usable. It is returned separately from the warnings because it is not one — an
+/// unreadable env file is a startup *error*, so it has to reach the exit code.
+fn load_file(path: Option<&str>) -> (Option<crate::envfile::EnvFile>, Vec<String>, Option<String>) {
+    match path {
+        None => (None, Vec::new(), None),
+        Some(p) => match crate::envfile::EnvFile::load(p) {
+            Ok(file) => {
+                let warnings = file.warnings.clone();
+                (Some(file), warnings, None)
+            }
+            Err(e) => (None, Vec::new(), Some(e)),
+        },
+    }
+}
+
+/// The environment as `settings` and `Config` both want to read it.
+fn from_environment(key: &str) -> Option<String> {
+    std::env::var(key).ok()
+}
+
+/// Rebuild the configuration exactly as the server would, from a file plus the real
+/// environment, so that what this command reports is what would actually happen.
+fn effective(file: Option<&crate::envfile::EnvFile>) -> Config {
+    Config::from_lookup(|key| {
+        std::env::var(key)
+            .ok()
+            .filter(|v| !v.trim().is_empty())
+            .or_else(|| file.and_then(|f| f.get(key)))
+    })
+}
+
+fn show(path: Option<&str>, as_json: bool) -> ExitCode {
+    let (file, problems, unreadable) = load_file(path);
+    let settings = crate::config::settings(file.as_ref(), from_environment);
+    // Either of these stops a server starting, so either of them is the answer here.
+    // A file that cannot be read comes first: it is the more basic failure, and the
+    // configuration `validate` would inspect is not the one the operator wrote.
+    let refusal = unreadable.or_else(|| effective(file.as_ref()).validate().err());
+
+    if as_json {
+        println!(
+            "{}",
+            as_json_text(path, &settings, &problems, refusal.as_deref())
+        );
+    } else {
+        match path {
+            Some(p) => println!("env file: {p}"),
+            // Not an error. Plenty of deployments configure a container or a unit file
+            // and have nothing for this to edit; saying so beats an empty line.
+            None => println!(
+                "env file: none — {} names one, and nothing does",
+                crate::envfile::ENV_FILE
+            ),
+        }
+        println!();
+
+        let width = settings.iter().map(|s| s.key.len()).max().unwrap_or(0);
+        for s in &settings {
+            let shown = match (&s.value, s.secret, s.set) {
+                (_, true, true) => "(set)".to_string(),
+                (Some(v), _, _) => v.clone(),
+                _ => "(not set)".to_string(),
+            };
+            println!("  {:<width$}  {:<32}  {}", s.key, shown, s.source.label());
+        }
+
+        for problem in &problems {
+            eprintln!("warning: {problem}");
+        }
+        if let Some(reason) = &refusal {
+            eprintln!("this configuration would not start: {reason}");
+        }
+    }
+
+    if refusal.is_some() {
+        return ExitCode::FAILURE;
+    }
+    ExitCode::SUCCESS
+}
+
+fn as_json_text(
+    path: Option<&str>,
+    settings: &[crate::config::Setting],
+    problems: &[String],
+    refusal: Option<&str>,
+) -> String {
+    let rows: Vec<serde_json::Value> = settings
+        .iter()
+        .map(|s| {
+            serde_json::json!({
+                "key": s.key,
+                // Null for a secret, always: this is what anything reading the output
+                // renders, and it must not be able to render a token by accident.
+                "value": s.value,
+                "set": s.set,
+                "source": s.source.label(),
+                "default": s.default,
+                "secret": s.secret,
+                "help": s.help,
+            })
+        })
+        .collect();
+
+    serde_json::json!({
+        "env_file": path,
+        "writable": path.is_some_and(writable),
+        "settings": rows,
+        "warnings": problems,
+        "starts": refusal.is_none(),
+        "error": refusal,
+    })
+    .to_string()
+}
+
+/// Whether this process could actually rewrite the file — which is not the same question
+/// as whether it exists. A panel that offered an editable form over a file it cannot write
+/// would fail at the save button, having promised otherwise.
+///
+/// Asked by trying rather than by reading permission bits, so that ownership, groups, ACLs
+/// and a read-only mount all count — the same reasoning as the answers-directory check at
+/// startup, and the same failure a packaged, non-root run meets first. Opening for append
+/// changes nothing; the handle is dropped unused.
+fn writable(path: &str) -> bool {
+    let path = std::path::Path::new(path);
+    if path.exists() {
+        return std::fs::OpenOptions::new().append(true).open(path).is_ok();
+    }
+    // Not there yet, so it would be created and the directory is the real question.
+    let dir = path.parent().unwrap_or(std::path::Path::new("."));
+    let probe = dir.join(format!(".rescriptum-writable.{}", std::process::id()));
+    match std::fs::File::create(&probe) {
+        Ok(_) => {
+            let _ = std::fs::remove_file(&probe);
+            true
+        }
+        Err(_) => false,
+    }
+}
+
+fn edit(path: Option<&str>, args: &[String], setting: bool) -> ExitCode {
+    let Some(path) = path else {
+        eprintln!(
+            "there is no file to edit: {} names one, and nothing does",
+            crate::envfile::ENV_FILE
+        );
+        return ExitCode::FAILURE;
+    };
+
+    let mut changes: std::collections::BTreeMap<String, Option<String>> = Default::default();
+    for arg in args {
+        let (key, value) = if setting {
+            match arg.split_once('=') {
+                Some((k, v)) => (k.trim().to_string(), Some(v.to_string())),
+                None => {
+                    eprintln!("expected KEY=VALUE, found {arg:?}");
+                    return ExitCode::FAILURE;
+                }
+            }
+        } else {
+            (arg.trim().to_string(), None)
+        };
+
+        // A misspelled name would otherwise be written, read back as a stranger, and
+        // warned about only at the next start — by which time nobody connects the two.
+        if !crate::envfile::KNOWN_KEYS.contains(&key.as_str()) {
+            eprintln!("{key} is not a variable this program reads — check the spelling");
+            return ExitCode::FAILURE;
+        }
+        if changes.insert(key.clone(), value).is_some() {
+            eprintln!("{key} given twice");
+            return ExitCode::FAILURE;
+        }
+    }
+
+    // The file has to be readable and sound before it can be edited: rewriting one that
+    // does not parse would bake the mistake in rather than report it.
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        // A file that is not there yet is one to create — that is how a fresh deployment
+        // gets its first setting.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => {
+            eprintln!("cannot read {path}: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    if let Err(e) = crate::envfile::parse(&text) {
+        eprintln!("{path} does not parse, so it will not be edited: {e}");
+        return ExitCode::FAILURE;
+    }
+
+    let rewritten = match crate::envfile::rewrite(&text, &changes) {
+        Ok(text) => text,
+        Err(e) => {
+            eprintln!("{e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    // **A write may never leave a server that cannot start.** The same reasoning as the
+    // admin API's rollback: the panel doing the writing is reached over the very service
+    // this would stop, so getting it wrong costs somebody an SSH session at best.
+    let parsed = match crate::envfile::parse(&rewritten) {
+        Ok(vars) => vars,
+        Err(e) => {
+            eprintln!("refusing to write a file this program could not read back: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let would = Config::from_lookup(|key| {
+        std::env::var(key)
+            .ok()
+            .filter(|v| !v.trim().is_empty())
+            .or_else(|| parsed.get(key).cloned())
+    });
+    if let Err(reason) = would.validate() {
+        eprintln!("refused: this would leave a server that cannot start — {reason}");
+        return ExitCode::FAILURE;
+    }
+
+    if let Err(e) = crate::envfile::write_atomic(std::path::Path::new(path), &rewritten) {
+        eprintln!("cannot write {path}: {e}");
+        return ExitCode::FAILURE;
+    }
+
+    // Said last, and only on success. A value the environment overrides is written all
+    // the same — the file is still the record — but pretending it took effect would be
+    // the silent half-failure this whole module exists to remove.
+    for key in changes.keys() {
+        if std::env::var(key).is_ok_and(|v| !v.trim().is_empty()) {
+            eprintln!(
+                "note: {key} is also set in the environment, which wins — this file will \
+                 not change what a server started from it uses"
+            );
+        }
+    }
+    eprintln!("wrote {path}");
+    ExitCode::SUCCESS
 }

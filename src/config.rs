@@ -262,6 +262,196 @@ impl Config {
     }
 }
 
+/// One configuration variable, **described** rather than merely read.
+///
+/// `from_lookup` above knows how to interpret each of these. This table is what anything
+/// that has to *present* one needs instead: its default, whether printing it would hand
+/// out a credential, and a line saying what it does. They sit in the same file so that
+/// adding a variable to one and forgetting the other is a test failure rather than a
+/// setting nobody can see.
+pub struct Known {
+    pub key: &'static str,
+    /// What is in force when nothing sets it, written the way the file would write it.
+    /// `None` means the feature is simply off until someone turns it on.
+    pub default: Option<&'static str>,
+    /// A credential: its value is never printed, and never leaves this process.
+    pub secret: bool,
+    /// One line, for whatever has to label the field.
+    pub help: &'static str,
+}
+
+/// Every variable, in the order a person would want to meet them: what answers come
+/// from, where the server listens, how much it says, then the two credentials.
+pub const KNOWN: [Known; 13] = [
+    Known {
+        key: "RESCRIPTUM_STORE",
+        default: Some("files"),
+        secret: false,
+        help: "Where answers come from: a directory of documents, or a database.",
+    },
+    Known {
+        key: "RESCRIPTUM_ANSWERS_DIR",
+        default: Some(DEFAULT_ANSWERS_DIR),
+        secret: false,
+        help: "The directory of answer documents, when the store is files.",
+    },
+    Known {
+        key: "RESCRIPTUM_DB_PATH",
+        default: Some(DEFAULT_DB_PATH),
+        secret: false,
+        help: "The SQLite database, when the store is sqlite.",
+    },
+    Known {
+        key: "RESCRIPTUM_LISTEN_ADDR",
+        default: Some(DEFAULT_LISTEN_ADDR),
+        secret: false,
+        help: "Where installers reach the answer endpoint.",
+    },
+    Known {
+        // The only default that is not a constant: it is this machine's CPU count, so
+        // `settings` fills it in rather than the table claiming a number it cannot know.
+        key: "RESCRIPTUM_WORKERS",
+        default: None,
+        secret: false,
+        help: "Runtime threads. Not a concurrency limit; the default is the CPU count.",
+    },
+    Known {
+        key: "RESCRIPTUM_MAX_CONNECTIONS",
+        default: Some("2048"),
+        secret: false,
+        help: "In-flight connections before a burst is shed with 503 rather than queued.",
+    },
+    Known {
+        key: "RESCRIPTUM_TIMEOUT_SECS",
+        default: Some("10"),
+        secret: false,
+        help: "Header-read timeout, and the whole-connection deadline.",
+    },
+    Known {
+        key: "RESCRIPTUM_LOG",
+        default: Some("all"),
+        secret: false,
+        help: "all, problems (drops the requests that worked), or off.",
+    },
+    Known {
+        key: "RESCRIPTUM_LOG_FILE",
+        default: None,
+        secret: false,
+        help: "A file to append to, or stdout or stderr. Unset means stderr.",
+    },
+    Known {
+        key: "RESCRIPTUM_CAPTURE_DIR",
+        default: None,
+        secret: false,
+        help: "Record what installers actually send, for when nothing is answered.",
+    },
+    Known {
+        key: "RESCRIPTUM_ANSWER_TOKEN",
+        default: None,
+        secret: true,
+        help: "Required of installers, when they have one to offer. Off by default.",
+    },
+    Known {
+        key: "RESCRIPTUM_ADMIN_ADDR",
+        default: None,
+        secret: false,
+        help: "The write API's own listener. Off unless set; keep it on loopback.",
+    },
+    Known {
+        key: "RESCRIPTUM_ADMIN_TOKEN",
+        default: None,
+        secret: true,
+        help: "Bearer token for the write API. At least 16 characters, and required.",
+    },
+];
+
+/// Which of the three places a value came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Source {
+    /// The process environment, which **wins over the file**.
+    Environment,
+    /// The file `RESCRIPTUM_ENV_FILE` names.
+    File,
+    /// Nothing set it.
+    Default,
+}
+
+impl Source {
+    pub fn label(self) -> &'static str {
+        match self {
+            Source::Environment => "environment",
+            Source::File => "file",
+            Source::Default => "default",
+        }
+    }
+}
+
+/// A variable as it currently stands.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Setting {
+    pub key: &'static str,
+    /// What is in force. **Always `None` for a secret** — this type does not carry one.
+    pub value: Option<String>,
+    /// Whether anything is in force at all. For a secret this is the whole story.
+    pub set: bool,
+    pub source: Source,
+    pub default: Option<String>,
+    pub secret: bool,
+    pub help: &'static str,
+}
+
+/// Describe every variable: what is in force, and **which of the file and the environment
+/// put it there**.
+///
+/// That distinction is the entire reason this returns a source rather than a map. The
+/// file supplies defaults and the real environment wins, so anything offering to edit the
+/// file has to know when doing so would change nothing — and say so, rather than write a
+/// value the running server will keep ignoring.
+///
+/// Empty counts as unset in both places, exactly as `from_lookup` treats it: an
+/// exported-but-empty variable is a mistake, not an instruction.
+pub fn settings(
+    file: Option<&crate::envfile::EnvFile>,
+    env: impl Fn(&str) -> Option<String>,
+) -> Vec<Setting> {
+    let useful = |v: String| -> Option<String> {
+        let v = v.trim().to_string();
+        (!v.is_empty()).then_some(v)
+    };
+
+    KNOWN
+        .iter()
+        .map(|known| {
+            let from_env = env(known.key).and_then(useful);
+            let from_file = file.and_then(|f| f.get(known.key)).and_then(useful);
+
+            let source = if from_env.is_some() {
+                Source::Environment
+            } else if from_file.is_some() {
+                Source::File
+            } else {
+                Source::Default
+            };
+
+            let default = match known.key {
+                "RESCRIPTUM_WORKERS" => Some(default_workers().to_string()),
+                _ => known.default.map(str::to_string),
+            };
+            let value = from_env.or(from_file).or_else(|| default.clone());
+
+            Setting {
+                key: known.key,
+                set: value.is_some(),
+                value: if known.secret { None } else { value },
+                source,
+                default,
+                secret: known.secret,
+                help: known.help,
+            }
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -462,5 +652,119 @@ mod tests {
     fn surrounding_whitespace_is_trimmed() {
         let c = Config::from_lookup(lookup(&[("RESCRIPTUM_LISTEN_ADDR", "  0.0.0.0:8080 ")]));
         assert_eq!(c.listen_addr, "0.0.0.0:8080");
+    }
+
+    // ---- the described surface -------------------------------------------
+
+    #[test]
+    fn every_variable_is_described_exactly_once() {
+        // Two lists of the same thing drift. `KNOWN_KEYS` is what reports a typo in the
+        // file; `KNOWN` is what a settings panel shows. A variable in one and not the
+        // other is either invisible or unwarned about, and neither failure announces
+        // itself.
+        let described: Vec<&str> = KNOWN.iter().map(|k| k.key).collect();
+        let mut sorted = described.clone();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(sorted.len(), described.len(), "a key is described twice");
+
+        for key in crate::envfile::KNOWN_KEYS {
+            assert!(described.contains(&key), "{key} is read but not described");
+        }
+        for key in described {
+            assert!(
+                crate::envfile::KNOWN_KEYS.contains(&key),
+                "{key} is described but not read"
+            );
+        }
+    }
+
+    /// An `EnvFile` can only be loaded from a real file, which is the point of it.
+    fn env_file(name: &str, body: &str) -> (std::path::PathBuf, crate::envfile::EnvFile) {
+        let dir = std::env::temp_dir().join(format!("pve-settings-{}-{name}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("rescriptum.env");
+        std::fs::write(&path, body).unwrap();
+        let file = crate::envfile::EnvFile::load(&path).expect("parses");
+        (dir, file)
+    }
+
+    fn setting<'a>(settings: &'a [Setting], key: &str) -> &'a Setting {
+        settings.iter().find(|s| s.key == key).expect("described")
+    }
+
+    #[test]
+    fn the_environment_is_reported_as_beating_the_file() {
+        // The file is defaults. Offering to edit a value the environment is overriding
+        // would be offering to change nothing, which is worse than refusing.
+        let (dir, file) = env_file(
+            "override",
+            "RESCRIPTUM_LISTEN_ADDR=0.0.0.0:8000\nRESCRIPTUM_LOG=problems\n",
+        );
+        let s = settings(Some(&file), |k| {
+            (k == "RESCRIPTUM_LISTEN_ADDR").then(|| "127.0.0.1:9999".to_string())
+        });
+
+        let addr = setting(&s, "RESCRIPTUM_LISTEN_ADDR");
+        assert_eq!(addr.source, Source::Environment);
+        assert_eq!(addr.value.as_deref(), Some("127.0.0.1:9999"));
+
+        let log = setting(&s, "RESCRIPTUM_LOG");
+        assert_eq!(log.source, Source::File);
+        assert_eq!(log.value.as_deref(), Some("problems"));
+
+        let store = setting(&s, "RESCRIPTUM_STORE");
+        assert_eq!(store.source, Source::Default);
+        assert_eq!(store.value.as_deref(), Some("files"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_secret_reports_that_it_is_set_and_nothing_else() {
+        // This is the whole reason `value` is separate from `set`: a settings panel has
+        // to show that a token exists without ever being handed one.
+        let (dir, file) = env_file("secret", "RESCRIPTUM_ADMIN_TOKEN=0123456789abcdef0\n");
+        let s = settings(Some(&file), |_| None);
+
+        let token = setting(&s, "RESCRIPTUM_ADMIN_TOKEN");
+        assert!(token.secret);
+        assert!(token.set, "it is set");
+        assert_eq!(token.value, None, "a secret's value must never be carried");
+        assert_eq!(token.source, Source::File);
+
+        let unset = setting(&s, "RESCRIPTUM_ANSWER_TOKEN");
+        assert!(!unset.set);
+        assert_eq!(unset.source, Source::Default);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_empty_value_counts_as_unset_in_both_places() {
+        // Matching `from_lookup`, where an exported-but-empty variable is a mistake
+        // rather than an instruction — otherwise the panel and the server would disagree
+        // about what is in force.
+        let (dir, file) = env_file("empty", "RESCRIPTUM_LOG=\n");
+        let s = settings(Some(&file), |k| {
+            (k == "RESCRIPTUM_STORE").then(|| "   ".to_string())
+        });
+
+        assert_eq!(setting(&s, "RESCRIPTUM_LOG").source, Source::Default);
+        assert_eq!(setting(&s, "RESCRIPTUM_LOG").value.as_deref(), Some("all"));
+        assert_eq!(setting(&s, "RESCRIPTUM_STORE").source, Source::Default);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_one_default_that_is_not_a_constant_is_filled_in() {
+        // The CPU count is this machine's, so the table cannot hold it and `settings`
+        // has to. A panel showing "default: (none)" for workers would be wrong.
+        let s = settings(None, |_| None);
+        let workers = setting(&s, "RESCRIPTUM_WORKERS");
+        assert_eq!(workers.default, Some(default_workers().to_string()));
+        assert_eq!(workers.value, Some(default_workers().to_string()));
+        assert!(workers.set);
     }
 }

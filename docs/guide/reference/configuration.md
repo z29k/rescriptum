@@ -120,6 +120,17 @@ answers directory, no admin token — without a word in the log.
 
 Warnings name keys and paths, never values.
 
+## Reading and editing it
+
+`rescriptum config` prints every variable, its value, and **which of the file and the
+environment put it there** — the distinction that matters, because the file supplies
+defaults and the real environment wins. `config set` edits the file the way you would want
+it edited: comments kept, a commented-out setting uncommented in place rather than
+duplicated, and a change that would leave a server unable to start refused before anything
+is written. It is documented in the [command line reference](./cli.md#config), and it is
+what the [DSM application](../operations/synology.md#the-desktop-application) drives
+underneath.
+
 ## Invalid values
 
 | Case | What happens |
