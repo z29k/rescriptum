@@ -70,10 +70,25 @@ git push origin main --follow-tags
 3. Packages each as `rescriptum-<version>-<target>.tar.gz`, with `README.md` and `LICENSE`
    alongside the binary, plus a **SHA-256 sum** — whoever runs this as root should be able
    to check what they downloaded.
-4. Cuts the GitHub Release with `gh` and `--generate-notes`.
+4. Wraps the Linux musl builds as [Synology packages](./building.md#the-synology-package),
+   `rescriptum-<version>-<build>-<abi>.spk`, and checks each structurally before it can be
+   published.
+5. Cuts the GitHub Release with `gh` and `--generate-notes`, or uploads into it if it
+   already exists.
 
 It is re-runnable by hand through `workflow_dispatch` with a tag, for when a job fails
 after the tag is already pushed.
+
+**A packaging-only fix needs no tag.** SPK versions are all-numeric segments and the last
+one is a package build number, so `v0.1.0` produces `0.1.0-1`; dispatching by hand with
+`spk_build: 2` attaches `rescriptum-0.1.0-2-<abi>.spk` to the same Release. A prerelease
+does not produce an `.spk` at all — the archives are the prerelease channel.
+
+**A tag must not be the first time an `.spk` is installed on a DSM machine.** The
+structural check catches a broken archive; only Package Center catches a broken package,
+and the first published one is the one whose uninstall scripts will run during everybody's
+first upgrade. The checklist is in
+[`packaging/dsm/README.md`](https://github.com/z29k/rescriptum/blob/main/packaging/dsm/README.md).
 
 Every action used is an official `actions/*` one, and `gh` is already on the runner. That
 is deliberate for the same reason as everything else in this file.

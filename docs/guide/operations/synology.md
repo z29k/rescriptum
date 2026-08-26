@@ -1,6 +1,6 @@
 ---
 title: Synology DSM 7
-description: The original target — an ARMv7 DS416j with 512 MB and no Docker. Autostart, firewall, and replacing a running instance.
+description: The original target — an ARMv7 DS416j with 512 MB and no Docker. A Package Center install, what it does and does not do for you, and the manual route if you prefer it.
 sidebar:
   label: Synology DSM 7
   order: 2
@@ -12,17 +12,205 @@ A Synology DS416j is why this project exists: ARMv7, 512 MB of RAM, DSM 7, no Do
 static binary with no runtime is not an aesthetic preference there — it is the only thing
 that fits.
 
-DSM gives you no systemd, so autostart goes through the Task Scheduler.
+DSM 7 does run systemd, but it offers no supported place for a unit of your own: files in
+`/usr/lib/systemd/system` are Synology's, and a DSM update is free to replace them. The
+supported route to a service is a **package** — install one and DSM generates
+`pkgctl-rescriptum.service` from it. That is what this page leads with; the older
+[Task Scheduler route](#without-the-package) still works and is kept at the bottom.
 
-## 1. Get the binary onto it
+## Install the package
 
-Use the **`armv7-unknown-linux-musleabihf`** build from the
-[releases page](https://github.com/z29k/rescriptum/releases), or cross-compile one
-yourself (see [building](../../development/building.md)).
+Download the `.spk` for your model from the
+[releases page](https://github.com/z29k/rescriptum/releases):
+
+| File | For |
+|---|---|
+| `rescriptum-<version>-armv7.spk` | DS416j and other Marvell `armada38x` models |
+| `rescriptum-<version>-x86_64.spk` | every Intel model |
+
+Not sure which? Ask the machine:
+
+```console
+$ ssh admin@nas synogetkeyvalue /etc.defaults/synoinfo.conf unique
+synology_armada38x_ds416j
+```
+
+Then **Package Center → Manual Install**, pick the file, and click through the warning that
+the package is not verified by Synology. That warning is not about this package in
+particular: DSM 7 removed third-party signing altogether and no longer offers a trust-level
+setting, so every non-Synology package shows it. Our verification is the SHA-256 sum
+published beside the `.spk`:
+
+```console
+$ shasum -a 256 -c rescriptum-0.1.0-1-armv7.spk.sha256
+```
+
+The wizard asks two things — **where the answers live** and **which port to listen on** —
+and then the package:
+
+- creates a **`rescriptum` shared folder** and grants itself read/write access to it (if
+  you already have one by that name, it is kept and simply gains the grant);
+- creates the `answers` directory inside it at every start;
+- **registers the port** with the DSM firewall, so the service is selectable by name;
+- links **`rescriptum-cli`** into `/usr/local/bin`;
+- starts at boot, and stops and starts from Package Center like anything else.
+
+## What the package does not do
+
+Four things worth knowing before they surprise you.
+
+- **It does not open the firewall.** Registering the port makes *rescriptum* appear by name
+  in the rule editor instead of you typing a number. If your firewall is on with a
+  default-deny rule, you still have to create the rule.
+- **It does not tell you about updates.** There is no package source to poll — the
+  distribution model is: download the new `.spk` from the releases page and install it by
+  hand, for an upgrade as much as for a first install. Watch the releases.
+- **A custom answers path is yours to permission.** The package runs unprivileged and
+  cannot grant itself access to a folder you name; if you point it outside the `rescriptum`
+  share, give the `rescriptum` user read access yourself.
+- **The share's permission is reapplied at every start.** If you deliberately narrow it,
+  you will find it restored the next time the package starts.
+
+## Where everything lives
+
+| What | Where | Survives an upgrade | Survives uninstall |
+|---|---|---|---|
+| binary, `rescriptum-cli`, the example env file | `/var/packages/rescriptum/target/` | no — replaced | no |
+| **the env file** | `/var/packages/rescriptum/etc/rescriptum.env` | **yes** | **yes** — see below |
+| log, pidfile, captures | `/var/packages/rescriptum/var/` | yes | **yes** |
+| **answers** | `/var/packages/rescriptum/shares/rescriptum/answers/` | **yes** | **yes — always** |
+| **the SQLite database**, if you use one | beside the answers, in the same share | **yes** | **yes — always** |
+
+Use the `shares/` path rather than `/volume1/…`: it is a symlink DSM maintains, so it keeps
+working on a NAS whose data is not on volume 1.
+
+Uninstalling leaves the shared folder and everything in it alone. That is both DSM's own
+behaviour and ours: when the store is SQLite, the database *is* your answers.
+
+**Uninstalling also leaves your configuration behind, and that is worth knowing.**
+`etc/` and `var/` are symlinks into `/volume1/@appconf/rescriptum` and
+`/volume1/@appdata/rescriptum`, which DSM keeps — so the env file stays on the volume after
+the package is gone, **with whatever tokens are in it**. Reinstalling picks it back up,
+which is usually what you want. If you are removing rescriptum for good and it held a
+token, delete `/volume1/@appconf/rescriptum` yourself.
+
+## Configuring it
+
+DSM has no settings panel for a package, so **the env file is the configuration
+interface**:
+
+```console
+$ sudo vi /var/packages/rescriptum/etc/rescriptum.env
+```
+
+`postinst` writes it complete on a fresh install, with the variables in use uncommented and
+the rest commented with a line saying what they do. **Stop and start the package from
+Package Center to apply a change** — the server reads the file at every start.
+
+An upgrade never touches it. The complete example for the version you have is at
+`/var/packages/rescriptum/target/etc/rescriptum.env.example`, rewritten on every install
+and upgrade, which is how a new variable becomes visible without disturbing your live file.
+Every variable is in the [configuration reference](../reference/configuration.md).
+
+The file is `chmod 600` and owned by the package user. It is where
+`RESCRIPTUM_ANSWER_TOKEN` and `RESCRIPTUM_ADMIN_TOKEN` live, and — being under `etc/` — it
+is a plausible passenger in a DSM configuration backup. Worth knowing rather than
+discovering.
+
+The [admin API](./admin-api.md) is off by default and, when you enable it, should stay on
+loopback and be reached through an SSH tunnel; it is deliberately *not* registered with the
+firewall. It also requires `RESCRIPTUM_STORE=sqlite` and a token of at least 16 characters,
+both of which are **startup errors** — so getting them wrong shows up as a package that
+will not start, with the reason in `/var/log/packages/rescriptum.log`.
+
+## Putting answers in place
+
+Drop files into the `rescriptum` shared folder's `answers` directory, over File Station or
+over SSH, exactly as you would anywhere else — see [writing answers](../answers/index.md).
+Then validate them **as the package user**:
+
+```console
+$ sudo -u rescriptum rescriptum-cli check
+```
+
+The `sudo -u` matters. Run as root it succeeds whatever the shared folder's permissions
+say, which makes a successful run meaningless. `rescriptum-cli` is the packaged wrapper: it
+names the env file, so `check` and `render` look at this machine's answers rather than at
+`/srv/answers`.
+
+## The firewall
+
+**Control Panel → Security → Firewall** — create a rule allowing *rescriptum* from your
+provisioning network. The service appears by name because the package registered its port.
+
+DSM's firewall is the single most common reason a machine "never contacts the server".
+
+If you change the port later, edit `RESCRIPTUM_LISTEN_ADDR` in the env file and then move
+the firewall entry, which does not follow by itself:
+
+```console
+$ sudo /usr/syno/sbin/synopkghelper update rescriptum port-config
+```
+
+## The log
+
+`RESCRIPTUM_LOG_FILE` points the server at `/var/packages/rescriptum/var/rescriptum.log`,
+and the package installs a logrotate stanza for it — weekly, eight kept, `copytruncate`
+(the server opens its log once and never reopens it, so anything else would silently end
+logging). Beside it, `var/startup.log` holds what the server says before it knows where its
+log lives: a configuration error, a malformed env file.
+
+Once a rollout is routine, `RESCRIPTUM_LOG=problems` keeps the failures and drops the
+successful answers, which are the only high-volume thing in there.
+
+## When it will not start
+
+Three places say why, in this order:
+
+```console
+$ cat /var/log/packages/rescriptum.log        # the package scripts' own output
+$ cat /var/packages/rescriptum/var/startup.log  # what the server said before it had a log
+$ cat /var/packages/rescriptum/var/rescriptum.log
+$ systemctl status pkgctl-rescriptum          # what DSM's service manager saw
+```
+
+A **refused configuration** — an admin token under 16 characters, a store that cannot be
+opened — is reported *after* the server knows where its log lives, so it lands in
+`rescriptum.log`; a malformed env file is reported before, and lands in `startup.log`. The
+package's `start` prints the tail of both when the server exits immediately, so Package
+Center shows you the reason rather than only the failure.
+
+**DSM does not restart the process if it dies.** The unit it generates is `Type=oneshot`
+with `RemainAfterExit=yes` and no `Restart=`, so a server that exits stays stopped until you
+start it from Package Center. That is not a regression — the Task Scheduler route did not
+restart it either — but it is worth knowing before you rely on it.
+
+A package that installs, starts, and then answers `404` to everything is almost always the
+answers directory: check `sudo -u rescriptum rescriptum-cli check`. On a NAS with an
+encrypted shared folder, that is also what a boot before the volume is unlocked looks like
+— unlock it and restart the package.
+
+## Verify
+
+```console
+$ curl http://NAS_IP:8000/health
+OK
+```
+
+## Without the package
+
+The manual route still works, and is the honest choice if you would rather not install a
+package at all.
+
+Use the **`armv7-unknown-linux-gnueabihf`** build (or `x86_64-unknown-linux-musl`, or
+`aarch64-unknown-linux-musl` for a newer ARM model) from the
+[releases page](https://github.com/z29k/rescriptum/releases), or cross-compile one yourself
+(see [building](../../development/building.md)).
 
 ```console
 $ scp rescriptum admin@nas:/volume1/netboot/rescriptum
 $ ssh admin@nas chmod +x /volume1/netboot/rescriptum
+$ ssh admin@nas mkdir -p /volume1/netboot/answers
 ```
 
 If ARMv7 misbehaves, confirm the real architecture before assuming:
@@ -32,30 +220,20 @@ $ ssh admin@nas uname -m
 armv7l
 ```
 
-A DS918+ or any x86 model wants `x86_64-unknown-linux-musl`; a DS220j and other newer ARM
-models want `aarch64-unknown-linux-musl`.
-
-The build must be **statically linked** — DSM's glibc is old enough that a dynamically
-linked binary fails at exec time, on the NAS, with an error that does not obviously say
-so:
+**Take the ARMv7 build, not a musl one you built yourself.** The published `armv7` binary
+is linked against glibc 2.17, which DSM has; a musl build of the same code installs, answers
+`--version`, and then dies the moment it wants the time. Synology's 3.10 kernels answer the
+*time64* syscalls with `EINVAL` rather than `ENOSYS`, and musl 1.2 only falls back on
+`ENOSYS` — the [build page](../../development/building.md#why-armv7-is-the-one-target-that-is-not-musl)
+has the measurement. The x86_64 and aarch64 builds are static musl and unaffected.
 
 ```console
 $ file rescriptum
-ELF 32-bit LSB executable, ARM, EABI5 version 1 (SYSV), statically linked, stripped
+ELF 32-bit LSB pie executable, ARM, EABI5 version 1 (SYSV), dynamically linked, ...
 ```
 
-## 2. Put your answers next to it
-
-```console
-$ ssh admin@nas mkdir -p /volume1/netboot/answers
-```
-
-`/volume1/netboot/` is where a DSM shared folder lives, so it is the natural home for both
-the binary and the answers. It is not a default: `RESCRIPTUM_ANSWERS_DIR` defaults to
-`/srv/answers`, which does not exist on DSM, so set it explicitly here. The env file below
-is the tidiest place to do that.
-
-## 3. Autostart
+`RESCRIPTUM_ANSWERS_DIR` defaults to `/srv/answers`, which does not exist on DSM, so set it
+explicitly. The env file below is the tidiest place to do that.
 
 **Control Panel → Task Scheduler → Create → Triggered Task → User-defined script**
 
@@ -65,17 +243,14 @@ is the tidiest place to do that.
 | User | `root` |
 | Command | see below |
 
-```sh
-RESCRIPTUM_ANSWERS_DIR=/volume1/netboot/answers /volume1/netboot/rescriptum
-```
-
-If you use a token, **do not put it in that box.** Anything in a process's arguments —
-and in DSM's case, in the task definition — is readable by every user on the machine
-through `ps`. Put the configuration in a root-only file and name it instead:
+If you use a token, **do not put it in that box.** Anything in a process's arguments — and
+in DSM's case, in the task definition — is readable by every user on the machine through
+`ps`. Put the configuration in a root-only file and name it instead:
 
 ```sh
 # /volume1/netboot/rescriptum.env   (chmod 600, owned by root)
 RESCRIPTUM_ANSWERS_DIR=/volume1/netboot/answers
+RESCRIPTUM_LOG_FILE=/volume1/netboot/rescriptum.log
 RESCRIPTUM_STORE=sqlite
 RESCRIPTUM_DB_PATH=/volume1/netboot/answers.db
 RESCRIPTUM_ADMIN_ADDR=127.0.0.1:8001
@@ -100,38 +275,11 @@ the file is readable by anyone but root, and names any key it does not recognise
 Details of the format are in the
 [configuration reference](../reference/configuration.md#the-env-file).
 
-Run the task once by hand from the Task Scheduler rather than waiting for a reboot to
-find out it does not work.
+Run the task once by hand from the Task Scheduler rather than waiting for a reboot to find
+out it does not work. Then open the port in the firewall by number, and rotate the log
+yourself — the server does not, and nothing else will either.
 
-## 4. Open the port
-
-**Control Panel → Security → Firewall** — allow TCP 8000 (or whatever you set
-`RESCRIPTUM_LISTEN_ADDR` to) from your provisioning network.
-
-DSM's firewall is the single most common reason a machine "never contacts the server".
-
-## 5. Verify
-
-```console
-$ curl http://NAS_IP:8000/health
-OK
-```
-
-## Where the log goes
-
-Nowhere, by default: DSM's scheduler discards a task's output. Name a file in the env file
-and the server writes there itself, with no shell redirection to get wrong:
-
-```sh
-RESCRIPTUM_LOG_FILE=/volume1/netboot/rescriptum.log
-```
-
-The log line is the whole diagnostic story when a PXE install will not start, so this is
-not optional. Once a rollout is routine, `RESCRIPTUM_LOG=problems` keeps the failures and
-drops the successful answers, which are the only high-volume thing in there. Rotate the
-file yourself; the server does not.
-
-## Replacing a running instance
+### Replacing a running instance
 
 ```console
 $ ./deploy.sh admin@nas
@@ -142,18 +290,20 @@ binary under a temporary name so a half-copied file is never executed, restarts 
 confirms `/health` responds. Details in
 [deployment](./deployment.md#replacing-a-running-instance).
 
-The Task Scheduler entry is still what starts it after a reboot — `deploy.sh` only
-replaces what is running now.
+The Task Scheduler entry is still what starts it after a reboot — `deploy.sh` only replaces
+what is running now. On a packaged install, use Package Center instead.
 
 ## Shutdown
 
-DSM's scheduler sends `SIGTERM` on shutdown, which the server handles: it stops accepting
-and exits. There is no state to lose either way.
+Both routes send `SIGTERM`, which the server handles: it stops accepting and exits. There
+is no state to lose either way.
 
 ## What to expect from a DS416j
 
-512 MB and an ARMv7 core is not much, and it does not need to be. A connection costs
-kilobytes rather than a thread, the directory listing is cached and invalidated by mtime
+512 MB and an ARMv7 core is not much, and it does not need to be. Measured on a DS416j
+running the package, over the LAN: **3–4 ms to compose and serve an answer**, network round
+trip included, for a machine claimed by a group and merged with its own file. A connection
+costs kilobytes rather than a thread, the directory listing is cached and invalidated by mtime
 rather than walked per request, and a group with no per-machine overrides is rendered once
 at load and served afterwards as a prepared string.
 

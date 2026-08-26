@@ -1,0 +1,11 @@
+#!/bin/sh
+# rescriptum — before removal.
+#
+# DSM stops the package before this runs, so there is nothing to stop. And this script
+# runs during an *upgrade* too — the documented order removes the old version before
+# installing the new one — so anything destructive here would run on every upgrade.
+#
+# SYNOPKG_PKG_STATUS distinguishes them (UNINSTALL vs UPGRADE) if that is ever needed.
+
+set -u
+exit 0

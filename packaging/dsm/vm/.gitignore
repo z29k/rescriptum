@@ -1,0 +1,7 @@
+storage/
+storage.clean/
+*.qcow2
+
+# The rig VM is rebuilt often and its host key changes with it; RIG_SSH_OPTS points
+# on-dsm.sh at this file precisely so those keys stay out of anybody else here.
+known_hosts

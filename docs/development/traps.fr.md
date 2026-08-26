@@ -123,6 +123,88 @@ TOML valide, un texte différent.
 l'histoire de ce projet n'ont silencieusement rien fait et n'ont été attrapées qu'en vérifiant
 le nombre de tests ensuite. Vérifiez que l'ancien texte a été trouvé avant d'écrire.
 
+## Empaqueter pour DSM
+
+**musl 1.2 ne peut pas tourner sur les noyaux ARMv7 de Synology, et le symptôme ne nomme
+rien.** Ces noyaux sont des 3.10 et répondent `EINVAL` aux appels *time64* ; musl ne se
+replie sur les appels 32 bits que sur `ENOSYS`, donc `clock_gettime`, `clock_nanosleep` et le
+futex temporisé échouent tous. Le binaire s'installe, répond à `--version`, puis panique à
+`time.rs:131` avec `Os { code: 22, kind: InvalidInput }` dès qu'il veut un horodatage — ce
+qui ressemble à un problème d'ABI ou de noyau trop vieux, et n'est ni l'un ni l'autre. La
+cible armv7 est en glibc avec un plancher 2.17 pour cette raison ; les cibles 64 bits n'ont
+pas le clivage time32/time64 et ne sont pas concernées. Prouvé par une sonde C de dix lignes
+sur la machine, pas en lisant quoi que ce soit.
+
+**`SYNOPKG_PKGDEST` vaut `/volume1/@appstore/<paquet>`, pas `/var/packages/<paquet>/target`.**
+Le second est un lien vers le premier, donc `dirname "$SYNOPKG_PKGDEST"` donne
+`/volume1/@appstore` et tout ce qu'on y accroche — `etc/`, `var/`, `shares/` — atterrit là où
+rien ne lit. La racine du paquet est un chemin fixe. Ça coûte un service qui s'installe
+parfaitement et ne démarre jamais, et un harnais sur faux arbre ne peut pas l'attraper : dans
+un arbre qu'on a construit soi-même, `dirname` tombe juste par construction.
+
+**`$SYNOPKG_TEMP_UPGRADE_FOLDER` survit à la mise à jour qui l'a créé.** Une installation
+*neuve* qui le lit y trouve la configuration d'une installation que l'utilisateur a
+supprimée, et la restaure en silence — jetons compris. La restauration doit exiger
+`SYNOPKG_PKG_STATUS = UPGRADE`.
+
+**`etc/` et `var/` survivent à une désinstallation.** Ce sont des liens vers
+`/volume1/@appconf/<pkg>` et `/volume1/@appdata/<pkg>`, que DSM conserve. Le fichier
+d'environnement, jetons inclus, reste donc sur le volume après la disparition du paquet — ce
+que la documentation doit dire, et qui fait échouer le tour *suivant* d'un banc qui ne les
+efface pas, pour des raisons appartenant au précédent.
+
+**Un compte DSM portant le nom de l'utilisateur du paquet est détruit avec lui.** Le
+`username` de `conf/privilege` crée un utilisateur système à l'installation ; un
+administrateur du même nom est masqué par lui puis supprimé à la désinstallation.
+
+**Le répertoire du pare-feu est `/usr/local/etc/services.d/`** — au pluriel. Le guide
+développeur dit `service.d`, qui n'existe pas. Le worker `port-config` acquiert **après
+`postinst`**, donc le port de l'assistant atteint bien l'entrée pare-feu dès l'installation.
+
+**`port-config` et `usr-local-linker` acquièrent quand le paquet est *activé*,** pas quand
+`postinst` tourne : vérifiés plus tôt, ils sont toujours absents.
+
+**L'unité générée n'a pas de `Restart=`** — `Type=oneshot`, `RemainAfterExit=yes`,
+`TimeoutStartSec=3600`. DSM ne relance pas le processus s'il meurt.
+
+**`postinst` tourne aussi à une mise à jour, et il tourne *avant* `postupgrade`.** Donc
+« le fichier d'environnement est absent » n'est pas la même question que « c'est une
+installation neuve » : sur une mise à jour où `etc/` n'a pas survécu, y écrire les valeurs
+par défaut détruit le port et les jetons de l'utilisateur avant que la restauration ne
+tourne. `postinst` consulte `$SYNOPKG_TEMP_UPGRADE_FOLDER` avant de décider. Trouvé en
+simulant ce cas précis, pas en lisant la séquence documentée.
+
+**Les `preuninst`/`postuninst` de l'ancienne version tournent pendant une mise à jour.**
+Tout ce qu'ils ont de destructeur tourne donc à chaque mise à jour — et le **premier `.spk`
+publié** est celui dont les scripts de désinstallation tourneront pendant la première mise
+à jour de tout le monde. Ils ne peuvent pas être corrigés après coup.
+
+**`status` qui renvoie `1` veut dire « planté, pidfile resté »**, pas « arrêté ». Un paquet
+proprement arrêté, c'est `3`. Renvoyer `1` dit à Package Center que le service est mort.
+
+**`prestart` tourne au boot**, et DSM l'appelle que vous l'ayez écrit ou non —
+`precheckstartstop` vaut `"yes"` par défaut. Un `case` qui sort non-zéro sur un verbe
+inconnu empêche le paquet de démarrer après un reboot pour toujours, avec un symptôme
+(« marche à la main, jamais après un reboot ») qui ressemble à tout sauf à un bras de `case`
+manquant.
+
+**Les scripts de cycle de vie ne sont pas root.** `run-as: package` les gouverne, pas
+seulement le service — donc un chown hors de l'arbre du paquet, ou `synopkghelper`, échoue,
+possiblement en silence.
+
+**`data-share` tourne au *démarrage* du paquet, pas à l'installation**, donc rien dans
+`postinst` ne peut supposer que le dossier partagé existe. Et un nom d'utilisateur qui ne
+correspond pas à sa liste de permissions crée le partage et l'accorde à personne, sans un
+mot.
+
+**Une strophe logrotate sans `copytruncate` arrête silencieusement la journalisation** :
+`log::init` ouvre le fichier une fois et ne le rouvre jamais, donc une rotation déplace
+l'inode sous un serveur qui continue d'écrire dans un fichier sans nom.
+
+**Un `.spk` dont le tar externe est gzippé est rejeté** avec « invalid file format » et rien
+de plus. Idem pour un qui embarque des membres `._` de macOS. `check-spk.sh` vérifie les
+deux.
+
 ## Changements de comportement à retenir
 
 **Les documents de réponse doivent maintenant être valides.** Avant la fusion, ils étaient

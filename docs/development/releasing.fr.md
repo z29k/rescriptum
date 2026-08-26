@@ -70,10 +70,26 @@ git push origin main --follow-tags
 3. Empaquette chacune en `rescriptum-<version>-<cible>.tar.gz`, avec `README.md` et `LICENSE` à
    côté du binaire, plus une **somme SHA-256** — qui fait tourner cela en root devrait pouvoir
    vérifier ce qu'il a téléchargé.
-4. Crée la GitHub Release avec `gh` et `--generate-notes`.
+4. Emballe les builds musl Linux en [paquets Synology](./building.md#le-paquet-synology),
+   `rescriptum-<version>-<build>-<abi>.spk`, et contrôle structurellement chacun avant qu'il
+   puisse être publié.
+5. Crée la GitHub Release avec `gh` et `--generate-notes`, ou verse dedans si elle existe
+   déjà.
 
 Il est relançable à la main via `workflow_dispatch` avec un tag, pour quand un job échoue après
 que le tag est déjà poussé.
+
+**Un correctif d'empaquetage seul n'a pas besoin de tag.** Les versions SPK sont faites de
+segments tous numériques et le dernier est un numéro de build de paquet, donc `v0.1.0` donne
+`0.1.0-1` ; un déclenchement manuel avec `spk_build: 2` attache
+`rescriptum-0.1.0-2-<abi>.spk` à la même Release. Une préversion ne produit aucun `.spk` —
+les archives sont le canal des préversions.
+
+**Un tag ne doit pas être la première fois qu'un `.spk` est installé sur une machine DSM.**
+Le contrôle structurel attrape une archive cassée ; seul Package Center attrape un paquet
+cassé, et le premier publié est celui dont les scripts de désinstallation tourneront pendant
+la première mise à jour de tout le monde. La liste des vérifications est dans
+[`packaging/dsm/README.md`](https://github.com/z29k/rescriptum/blob/main/packaging/dsm/README.md).
 
 Chaque action utilisée est une action officielle `actions/*`, et `gh` est déjà sur le runner.
 C'est délibéré, pour la même raison que tout le reste de cette page.

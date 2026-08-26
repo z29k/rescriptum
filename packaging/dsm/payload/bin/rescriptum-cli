@@ -1,0 +1,18 @@
+#!/bin/sh
+# `rescriptum` for a packaged install, linked into /usr/local/bin by usr-local-linker.
+#
+# `check` and `render` read their configuration from the environment, and on DSM that
+# configuration lives in the package's env file — so a bare `rescriptum check` over SSH
+# would validate /srv/answers, find nothing, and report on a directory that has nothing to
+# do with this machine. Naming the file is the whole job.
+#
+# Two details that are not decoration: ${VAR:-default} leaves someone free to point this
+# at another env file, and `exec "$@"` preserves the stdout/stderr split that makes
+# `rescriptum render … > answer.toml` a contract.
+#
+# And the diagnostic that actually proves the share's permissions is
+#     sudo -u rescriptum rescriptum-cli check
+# Run as root it succeeds whatever the ACL says, which makes success meaningless.
+RESCRIPTUM_ENV_FILE="${RESCRIPTUM_ENV_FILE:-/var/packages/rescriptum/etc/rescriptum.env}"
+export RESCRIPTUM_ENV_FILE
+exec /var/packages/rescriptum/target/bin/rescriptum "$@"

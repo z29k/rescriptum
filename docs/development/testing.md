@@ -115,6 +115,41 @@ RESCRIPTUM_ANSWERS_DIR=examples cargo run -- check
 of every format, and it is the only place they are shown composing together. Two of them
 caught real bugs — a missing doctype and an unpaired `pass` attribute. Keep them working.
 
+## The package is tested too, in three places
+
+`cargo test` does not touch the DSM package, because none of it is Rust. Three harnesses
+do, and each proves something the others cannot.
+
+| | Proves | Cost |
+|---|---|---|
+| [`packaging/dsm/check-spk.sh`](https://github.com/z29k/rescriptum/blob/main/packaging/dsm/check-spk.sh) | the archive is structurally what DSM expects — uncompressed outer tar, six `INFO` fields, an all-numeric version, 64×64 and 256×256 icons, executable scripts with no CRLF, and **the packaged binary's own `--version`** | seconds, **on every push** |
+| [`packaging/dsm/lifecycle-test.sh`](https://github.com/z29k/rescriptum/blob/main/packaging/dsm/lifecycle-test.sh) | everything the package's *scripts* decide, against a fake `/var/packages` tree: the env file written once and only once, the wizard's values **and their absence**, the service surviving its own start script and answering `/health`, the exit codes Package Center reads, an upgrade that must not touch a hand-edited configuration, an uninstall that must not touch the answers | seconds, **on every push** |
+| [`packaging/dsm/vm/on-dsm.sh`](https://github.com/z29k/rescriptum/blob/main/packaging/dsm/vm/on-dsm.sh) | DSM's own machinery — the `data-share` worker and its ACL, the `port-config` worker, the generated systemd unit, logrotate against a live descriptor, whether Package Center accepts the archive — **and that a machine asking for its configuration gets one**: a POST with hardware in the body, answered by that machine's file merged over the group claiming it | minutes, on a DSM 7 VM — and then on the DS416j |
+
+```bash
+packaging/dsm/lifecycle-test.sh                     # the first .spk in dist/ that runs here
+docker compose -f packaging/dsm/vm/docker-compose.yml up -d   # a DSM 7.2 machine
+packaging/dsm/vm/on-dsm.sh admin@<host> -p 2222     # against it
+packaging/dsm/vm/on-dsm.sh admin@nas                # the verdict
+```
+
+The VM is `vdsm/virtual-dsm`, which installs Synology's own Virtual DSM release — no loader
+image to find. KVM makes it fast rather than possible: without `/dev/kvm` it emulates, about
+ten times slower, which is what `docker-compose.emulated.yml` is for. It does want **14 GiB
+free** for the storage, hardcoded in the image.
+
+The last one is **destructive on purpose** — it upgrades over a hand-edited env file and a
+canary in the shared folder, then uninstalls, then checks both survived. Those two guards
+are the most expensive things in the package to get wrong, and the first published `.spk`
+is the one whose uninstall scripts will run during everybody's first upgrade.
+[`packaging/dsm/vm/README.md`](https://github.com/z29k/rescriptum/blob/main/packaging/dsm/vm/README.md)
+is the rig: what it is evidence about, and what it is not.
+
+The same rule as everywhere else applies to these: **break the thing they guard and watch
+them go red.** Reverting the `postinst` upgrade guard, making `postuninst` delete the
+share, returning `1` for a stopped package and refusing `prestart` turns 33 green checks
+into 25 green and 8 red — which is how we know the harness is testing anything at all.
+
 ## CI
 
 `.github/workflows/ci.yml`, on every push to `main` and `develop` and on every pull
@@ -125,7 +160,7 @@ request:
 | **gates** | `cargo fmt --all --check`, `cargo clippy --all-targets --all-features -D warnings`, `cargo test --all-features`, `cargo build --release --no-default-features` |
 | **docs** | builds the public site and runs `notabene lint` |
 | **audit** | `cargo audit --deny warnings` over the dependency tree |
-| **cross** | a full ARMv7-musl build, then asserts the binary really is `statically linked` |
+| **cross** | a full ARMv7 build against the glibc floor DSM has, asserting it needs nothing newer, then assembles both `.spk`s, checks them structurally and drives the package lifecycle |
 
 The cross job is not redundant. **SQLite is compiled from source, and `armv7-musl` is the
 least forgiving target shipped** — it is where a C dependency breaks first. Catching that

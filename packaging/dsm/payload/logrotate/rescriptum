@@ -1,0 +1,24 @@
+# DSM rotates a package's log only if the package asks, and the stanza is ours to write —
+# which means the mode is ours to get right. `copytruncate` is not a preference here:
+# log::init opens the file once, in append mode, and holds the descriptor for the life of
+# the process. There is no SIGHUP handler and no reopen, so a plain rotation would move
+# the inode out from under the server, which would carry on writing — invisibly — to a
+# file with no name. The log is the entire diagnostic story when a PXE install will not
+# start.
+#
+# The cost is the writes that land between the copy and the truncate. For a request log
+# that is an acceptable trade; the alternative is the binary carrying a feature for one
+# deployment target.
+#
+# startup.log is where the service's own stdout and stderr go: anything said before
+# log::init knows where the log lives — a configuration error, a malformed env file — and
+# it is held open for exactly as long, so it rotates the same way.
+/var/packages/rescriptum/var/rescriptum.log
+/var/packages/rescriptum/var/startup.log {
+    weekly
+    rotate 8
+    compress
+    missingok
+    notifempty
+    copytruncate
+}

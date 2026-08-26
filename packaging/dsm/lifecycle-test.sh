@@ -1,0 +1,248 @@
+#!/usr/bin/env bash
+# Drive the package's lifecycle scripts against a fake /var/packages tree, and assert every
+# outcome. Runs anywhere the packaged binary runs — no NAS, no VM, no root.
+#
+#   packaging/dsm/lifecycle-test.sh                      # the first .spk in dist/ that runs here
+#   packaging/dsm/lifecycle-test.sh dist/rescriptum-0.1.0-1-x86_64.spk
+#
+# What it covers is everything the *scripts* decide: the env file written once and only
+# once, the wizard's values and their absence, the service actually starting and answering,
+# the exit codes Package Center reads, an upgrade that must not touch a hand-edited
+# configuration, and an uninstall that must not touch the answers. That is where the
+# expensive mistakes live, and none of it needs DSM.
+#
+# What it cannot cover is DSM's own machinery: the data-share worker, the port-config
+# worker, the generated systemd unit, and whether Package Center accepts the archive at
+# all. Those are packaging/dsm/vm/on-dsm.sh, on a machine.
+#
+# The scripts under test come out of the .spk itself, not out of the working tree — the
+# point is to test what would ship.
+
+set -uo pipefail
+
+REPO=$(cd "$(dirname "$0")/../.." && pwd)
+
+pass=0
+fails=0
+ok() {
+    echo "  ✓ $*"
+    pass=$((pass + 1))
+}
+bad() {
+    echo "  ✗ $*"
+    fails=$((fails + 1))
+}
+section() { echo; echo "$*"; }
+
+# ── the package under test ─────────────────────────────────────────────────────
+SPK="${1:-}"
+if [ -z "$SPK" ]; then
+    for candidate in "$REPO"/dist/*.spk; do
+        [ -f "$candidate" ] || continue
+        SPK="$candidate"
+        break
+    done
+fi
+if [ -z "$SPK" ] || [ ! -f "$SPK" ]; then
+    echo "no .spk to test — build one with packaging/dsm/make-spk.sh" >&2
+    exit 2
+fi
+echo "$(basename "$SPK"):"
+
+WORK=$(mktemp -d "${TMPDIR:-/tmp}/spk-lifecycle.XXXXXX")
+ROOT="$WORK/var/packages/rescriptum"
+mkdir -p "$ROOT/target" "$ROOT/etc" "$ROOT/var" "$ROOT/shares/rescriptum"
+
+tar -xOf "$SPK" package.tgz | tar -xzf - -C "$ROOT/target"
+mkdir -p "$ROOT/scripts"
+tar -xOf "$SPK" scripts/preinst >"$ROOT/scripts/preinst"
+for s in postinst preuninst postuninst preupgrade postupgrade start-stop-status; do
+    tar -xOf "$SPK" "scripts/$s" >"$ROOT/scripts/$s"
+done
+chmod 755 "$ROOT/scripts"/*
+
+BIN="$ROOT/target/bin/rescriptum"
+if ! "$BIN" --version >/dev/null 2>&1; then
+    echo "  – the packaged binary does not run on this host; give this harness an .spk for it" >&2
+    rm -rf "$WORK"
+    exit 2
+fi
+
+cleanup() {
+    if [ -f "$ROOT/var/rescriptum.pid" ]; then
+        kill -KILL "$(cat "$ROOT/var/rescriptum.pid" 2>/dev/null)" 2>/dev/null
+    fi
+    rm -rf "$WORK"
+}
+trap cleanup EXIT
+
+export SYNOPKG_PKGDEST="$ROOT/target"
+# The scripts locate the package root at /var/packages/<name> — a real DSM resolves
+# SYNOPKG_PKGDEST to /volume1/@appstore/<name>, so deriving it from there is wrong. This is
+# the seam that lets them be driven against a tree we can actually write to.
+export RESCRIPTUM_PKG_ROOT="$ROOT"
+ENV_FILE="$ROOT/etc/rescriptum.env"
+SHARE="$ROOT/shares/rescriptum"
+sss() { sh "$ROOT/scripts/start-stop-status" "$@"; }
+
+# The wizard's port has to be free, or "it did not answer" would mean nothing.
+PORT=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()' 2>/dev/null || echo 18123)
+
+value_of() { sed -n "s/^$1=//p" "$ENV_FILE" | tail -n 1; }
+
+# ── 1. install ─────────────────────────────────────────────────────────────────
+section "install"
+out=$(SYNOPKG_PKG_STATUS=INSTALL pkgwizard_port="$PORT" sh "$ROOT/scripts/postinst" 2>&1)
+[ -f "$ENV_FILE" ] && ok "postinst wrote the env file" || bad "postinst wrote no env file: $out"
+mode=$(stat -f '%Lp' "$ENV_FILE" 2>/dev/null || stat -c '%a' "$ENV_FILE")
+[ "$mode" = "600" ] && ok "it is mode 600" || bad "it is mode $mode, not 600"
+[ -f "$ROOT/target/etc/rescriptum.env.example" ] && ok "the example was written too" || bad "no example env file"
+[ "$(value_of RESCRIPTUM_LISTEN_ADDR)" = "0.0.0.0:$PORT" ] && ok "the wizard's port reached the env file" || bad "listen addr is $(value_of RESCRIPTUM_LISTEN_ADDR)"
+[ "$(value_of RESCRIPTUM_ANSWERS_DIR)" = "$SHARE/answers" ] && ok "the answers default to the share" || bad "answers dir is $(value_of RESCRIPTUM_ANSWERS_DIR)"
+grep -q "^RESCRIPTUM_DB_PATH=$SHARE/answers.db\$" "$ENV_FILE" && ok "the database path is pre-set in the share" || bad "RESCRIPTUM_DB_PATH is not pre-set — switching stores would be a fatal start"
+grep -q "dst.ports=\"$PORT/tcp\"" "$ROOT/target/port_conf/rescriptum.sc" && ok "the .sc file carries the chosen port" || bad ".sc file: $(tail -1 "$ROOT/target/port_conf/rescriptum.sc")"
+
+section "install without a wizard (silent_install, or a reinstall that shows none)"
+saved=$(cat "$ENV_FILE")
+rm -f "$ENV_FILE"
+SYNOPKG_PKG_STATUS=INSTALL sh "$ROOT/scripts/postinst" >/dev/null 2>&1
+[ -f "$ENV_FILE" ] && ok "postinst still writes a complete file" || bad "postinst produced nothing without wizard values"
+[ "$(value_of RESCRIPTUM_LISTEN_ADDR)" = "0.0.0.0:8000" ] && ok "and falls back to port 8000" || bad "fell back to $(value_of RESCRIPTUM_LISTEN_ADDR)"
+
+section "a wizard port the package could not use"
+rm -f "$ENV_FILE"
+SYNOPKG_PKG_STATUS=INSTALL pkgwizard_port=80 sh "$ROOT/scripts/postinst" >/dev/null 2>&1
+[ "$(value_of RESCRIPTUM_LISTEN_ADDR)" = "0.0.0.0:8000" ] && ok "a privileged port falls back rather than failing to bind later" || bad "kept $(value_of RESCRIPTUM_LISTEN_ADDR) — the package does not run as root"
+rm -f "$ENV_FILE"
+SYNOPKG_PKG_STATUS=INSTALL pkgwizard_port='8000; rm -rf /' sh "$ROOT/scripts/postinst" >/dev/null 2>&1
+[ "$(value_of RESCRIPTUM_LISTEN_ADDR)" = "0.0.0.0:8000" ] && ok "a hostile wizard value is refused, not interpolated" || bad "listen addr became $(value_of RESCRIPTUM_LISTEN_ADDR)"
+
+section "the custom answers path"
+rm -f "$ENV_FILE"
+out=$(SYNOPKG_PKG_STATUS=INSTALL pkgwizard_answers_custom=true pkgwizard_answers_path=/volume1/netboot/answers sh "$ROOT/scripts/postinst" 2>&1)
+[ "$(value_of RESCRIPTUM_ANSWERS_DIR)" = "/volume1/netboot/answers" ] && ok "the path reaches the env file" || bad "answers dir is $(value_of RESCRIPTUM_ANSWERS_DIR)"
+case "$out" in
+*"read access"*) ok "and the package says it cannot permission it for you" ;;
+*) bad "nothing warned that the package cannot grant itself access" ;;
+esac
+
+printf '%s\n' "$saved" >"$ENV_FILE"
+chmod 600 "$ENV_FILE"
+
+# ── 2. the service ─────────────────────────────────────────────────────────────
+section "start, and stay started"
+sss status >/dev/null 2>&1
+[ $? -eq 3 ] && ok "status is 3 (not running) before the first start" || bad "status before start was $?, not 3"
+
+out=$(sss start 2>&1)
+rc=$?
+[ $rc -eq 0 ] && ok "start returns 0" || bad "start returned $rc: $out"
+[ -d "$SHARE/answers" ] && ok "start created the answers directory inside the share" || bad "no answers directory — DSM creates the share, not this"
+
+answered=no
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+    if [ "$(curl -fsS "http://127.0.0.1:$PORT/health" 2>/dev/null)" = "OK" ]; then
+        answered=yes
+        break
+    fi
+    sleep 0.5
+done
+[ "$answered" = yes ] && ok "/health answers on the port the wizard chose" || bad "/health never answered on $PORT"
+
+sleep 2
+sss status >/dev/null 2>&1
+[ $? -eq 0 ] && ok "it is still alive seconds later (not reaped when start returned)" || bad "the service did not survive its own start script"
+
+section "the exit codes Package Center reads"
+sss stop >/dev/null 2>&1
+[ $? -eq 0 ] && ok "stop returns 0" || bad "stop returned non-zero"
+sss status >/dev/null 2>&1
+[ $? -eq 3 ] && ok "a cleanly stopped package is 3" || bad "stopped status was $?, and 1 would tell Package Center it crashed"
+echo 999999 >"$ROOT/var/rescriptum.pid"
+sss status >/dev/null 2>&1
+[ $? -eq 1 ] && ok "a dead process with a pidfile left behind is 1" || bad "stale pidfile reported $?"
+sss stop >/dev/null 2>&1
+[ $? -eq 0 ] && ok "stop over a stale pidfile succeeds and clears it" || bad "stop over a stale pidfile failed"
+sss prestart >/dev/null 2>&1
+[ $? -eq 0 ] && ok "prestart says yes — it runs at boot, and a no is permanent" || bad "prestart refused"
+sss wibble >/dev/null 2>&1
+[ $? -eq 0 ] && ok "an unrecognised verb exits 0 rather than blocking boot" || bad "an unknown verb exited non-zero"
+
+section "a start that cannot succeed"
+cp "$ENV_FILE" "$WORK/env.good"
+printf 'RESCRIPTUM_ADMIN_ADDR=127.0.0.1:8199\nRESCRIPTUM_ADMIN_TOKEN=short\nRESCRIPTUM_STORE=sqlite\n' >>"$ENV_FILE"
+out=$(sss start 2>&1)
+rc=$?
+[ $rc -eq 1 ] && ok "start reports failure instead of a success that is already gone" || bad "start returned $rc for a configuration the server refuses"
+case "$out" in
+*"RESCRIPTUM_ADMIN_TOKEN"*) ok "and prints the reason, from the log the server actually used" ;;
+*) bad "the reason was not shown: $out" ;;
+esac
+cp "$WORK/env.good" "$ENV_FILE"
+
+# ── 3. the upgrade, adversarially ──────────────────────────────────────────────
+section "an upgrade must not touch a hand-edited configuration"
+printf 'RESCRIPTUM_LOG=problems\nRESCRIPTUM_ANSWER_TOKEN=a-token-nobody-should-lose\n' >>"$ENV_FILE"
+cp "$ENV_FILE" "$WORK/env.handedited"
+echo "do not delete me" >"$SHARE/answers/canary.toml"
+UPG="$WORK/upgrade"
+export SYNOPKG_TEMP_UPGRADE_FOLDER="$UPG"
+
+upgrade() { # <wipe-etc yes|no>
+    rm -rf "$UPG"
+    mkdir -p "$UPG"
+    # The documented order: preupgrade (new) → preuninst/postuninst (old) → preinst,
+    # postinst (new) → postupgrade.
+    SYNOPKG_PKG_STATUS=UPGRADE sh "$ROOT/scripts/preupgrade" >/dev/null 2>&1
+    SYNOPKG_PKG_STATUS=UPGRADE sh "$ROOT/scripts/preuninst" >/dev/null 2>&1
+    SYNOPKG_PKG_STATUS=UPGRADE sh "$ROOT/scripts/postuninst" >/dev/null 2>&1
+    [ "$1" = yes ] && rm -f "$ENV_FILE"
+    SYNOPKG_PKG_STATUS=UPGRADE sh "$ROOT/scripts/preinst" >/dev/null 2>&1
+    SYNOPKG_PKG_STATUS=UPGRADE pkgwizard_port=9999 sh "$ROOT/scripts/postinst" >/dev/null 2>&1
+    SYNOPKG_PKG_STATUS=UPGRADE sh "$ROOT/scripts/postupgrade" >/dev/null 2>&1
+}
+
+upgrade no
+diff -q "$WORK/env.handedited" "$ENV_FILE" >/dev/null && ok "etc/ survives: the file is untouched, wizard values and all" || bad "the upgrade rewrote the user's env file"
+[ -f "$SHARE/answers/canary.toml" ] && ok "the canary in the share survived" || bad "the upgrade destroyed a file in the share"
+
+upgrade yes
+diff -q "$WORK/env.handedited" "$ENV_FILE" >/dev/null && ok "etc/ wiped: postinst restored it from the upgrade folder rather than writing defaults" || bad "the user's configuration was replaced by defaults — postinst runs BEFORE postupgrade"
+mode=$(stat -f '%Lp' "$ENV_FILE" 2>/dev/null || stat -c '%a' "$ENV_FILE")
+[ "$mode" = "600" ] && ok "and it came back mode 600" || bad "the restored file is mode $mode"
+
+section "a fresh install must not resurrect a removed installation"
+# The temp folder outlives the upgrade that created it. A later fresh install that found a
+# copy of the old configuration there used to restore it — tokens and all — which is how a
+# removed-and-reinstalled package came back up with somebody's old answer token.
+rm -f "$ENV_FILE"
+SYNOPKG_PKG_STATUS=INSTALL pkgwizard_port="$PORT" sh "$ROOT/scripts/postinst" >/dev/null 2>&1
+if grep -q 'a-token-nobody-should-lose' "$ENV_FILE"; then
+    bad "a fresh install restored the previous installation's configuration"
+else
+    ok "a fresh install writes defaults even with a stale upgrade folder in place"
+fi
+cp "$WORK/env.handedited" "$ENV_FILE"
+
+section "postupgrade on its own is still a backstop"
+rm -rf "$UPG"
+mkdir -p "$UPG"
+SYNOPKG_PKG_STATUS=UPGRADE sh "$ROOT/scripts/preupgrade" >/dev/null 2>&1
+rm -f "$ENV_FILE"
+SYNOPKG_PKG_STATUS=UPGRADE sh "$ROOT/scripts/postupgrade" >/dev/null 2>&1
+diff -q "$WORK/env.handedited" "$ENV_FILE" >/dev/null && ok "restored" || bad "postupgrade did not restore the file"
+
+# ── 4. uninstall ───────────────────────────────────────────────────────────────
+section "uninstall must leave the answers alone"
+unset SYNOPKG_TEMP_UPGRADE_FOLDER
+SYNOPKG_PKG_STATUS=UNINSTALL sh "$ROOT/scripts/preuninst" >/dev/null 2>&1
+SYNOPKG_PKG_STATUS=UNINSTALL sh "$ROOT/scripts/postuninst" >/dev/null 2>&1
+[ -f "$SHARE/answers/canary.toml" ] && ok "the share and everything in it survived the uninstall" || bad "the uninstall took the user's answers with it"
+[ -d "$SHARE" ] && ok "the shared folder itself is still there" || bad "the shared folder was removed"
+
+echo
+if [ "$fails" -gt 0 ]; then
+    echo "$pass passed, $fails failed"
+    exit 1
+fi
+echo "$pass checks passed"

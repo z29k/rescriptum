@@ -1,0 +1,27 @@
+#!/bin/sh
+# rescriptum — after removal.
+#
+# This script touches the package tree and nothing else. Two reasons, and both of them
+# have cost other packages a very bad day:
+#
+#   * It runs on an upgrade as well as on an uninstall. The documented upgrade order runs
+#     the *old* version's preuninst/postuninst between preupgrade and preinst, so anything
+#     that deletes configuration or answers here deletes them on every upgrade.
+#   * The answers are the user's data. DSM deliberately does not remove a package's shared
+#     folder on uninstall "since it might delete the user's personal data as well" — and
+#     when RESCRIPTUM_STORE=sqlite the database *is* the answers. We do not do DSM's
+#     restraint for it.
+#
+# So: never the share, never the database, under any status. DSM removes /var/packages/
+# rescriptum itself, which is all the cleanup this package needs.
+
+set -u
+
+PKG="rescriptum"
+
+if [ "${SYNOPKG_PKG_STATUS:-}" = "UNINSTALL" ]; then
+    echo "$PKG: removed. The '$PKG' shared folder and everything in it — your answers, and"
+    echo "$PKG: the database if you used one — were left alone on purpose."
+fi
+
+exit 0

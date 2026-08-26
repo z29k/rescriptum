@@ -104,11 +104,12 @@ jobs:
         run: cargo audit --deny warnings
 
   cross:
-    name: Cross-compile for the NAS
+    name: Cross-compile for the NAS, and package it
     runs-on: ubuntu-latest
     # This is where a C dependency breaks first: SQLite is compiled from source, and
     # armv7-musl is the least forgiving target we ship. Catching it here beats catching
-    # it while cutting a release.
+    # it while cutting a release. The DSM packages are assembled on the same job for the
+    # same reason — they wrap these exact binaries and cost a few seconds more.
     steps:
       - uses: actions/checkout@v4
 
@@ -116,7 +117,11 @@ jobs:
         run: |
           rustup toolchain install stable --profile minimal
           rustup default stable
-          rustup target add armv7-unknown-linux-musleabihf
+          rustup target add armv7-unknown-linux-gnueabihf
+          # The x86_64 musl build is here for the package check below: it runs on the
+          # runner, which is what makes "the packaged binary reports the version INFO
+          # claims" a real assertion rather than a re-read of the same string.
+          rustup target add x86_64-unknown-linux-musl
 
       - uses: actions/cache@v4
         with:
@@ -138,13 +143,46 @@ jobs:
           echo "$HOME/zig" >> "$GITHUB_PATH"
           command -v cargo-zigbuild >/dev/null || cargo install cargo-zigbuild --locked
 
+      # The glibc floor is the point of this build, not an incidental flag: Synology's ARMv7
+      # kernels are 3.10 and answer the time64 syscalls with EINVAL rather than ENOSYS, so
+      # musl 1.2 never falls back and every clock call fails on the machine this project
+      # exists for. glibc on 32-bit uses the time32 syscalls.
       - name: Build
-        run: cargo zigbuild --release --target armv7-unknown-linux-musleabihf
+        run: cargo zigbuild --release --target armv7-unknown-linux-gnueabihf.2.17
 
-      - name: It must be static, or DSM will not run it
+      - name: It must not need a glibc the NAS does not have
         run: |
           set -euo pipefail
-          BIN=target/armv7-unknown-linux-musleabihf/release/rescriptum
+          BIN=target/armv7-unknown-linux-gnueabihf/release/rescriptum
           file "$BIN"
-          file "$BIN" | grep -q 'statically linked'
+          file "$BIN" | grep -q 'ARM'
+          # DSM 7 on armada38x ships glibc 2.20. Asking for anything newer fails at exec
+          # time, on the NAS, with an error that names a symbol version and nothing else.
+          WANT=$(readelf --dyn-syms "$BIN" | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1)
+          echo "needs at most $WANT"
+          [ "$(printf '%s\n' 'GLIBC_2.17' "$WANT" | sort -V | tail -1)" = 'GLIBC_2.17' ]
           echo "size: $(stat -c%s "$BIN") bytes"
+
+      - name: Build x86_64-musl too
+        run: cargo zigbuild --release --target x86_64-unknown-linux-musl
+
+      # Packaging breaks on the PR that breaks it, rather than at tag time. This is the
+      # cheap half of "does this package work"; the other half is installing it, which
+      # only a DSM machine can answer.
+      - name: Assemble the DSM packages
+        run: |
+          set -euo pipefail
+          packaging/dsm/make-spk.sh armv7
+          packaging/dsm/make-spk.sh x86_64
+
+      - name: Check them structurally
+        run: packaging/dsm/check-spk.sh
+
+      # Everything the package's *scripts* decide is testable without DSM — the env file
+      # written once and only once, the wizard's values and their absence, the service
+      # surviving its own start script, the exit codes Package Center reads, an upgrade
+      # that must not touch a hand-edited configuration, an uninstall that must not touch
+      # the answers. That is where the expensive mistakes live, so it runs on every push.
+      # What is left for a real machine is DSM's own machinery: packaging/dsm/vm/.
+      - name: Drive the package lifecycle
+        run: packaging/dsm/lifecycle-test.sh dist/rescriptum-*-x86_64.spk

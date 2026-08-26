@@ -1,0 +1,65 @@
+name: DSM rig
+
+# The half of the package's tests that needs a DSM machine — the data-share worker and its
+# ACL, the port-config worker, the generated systemd unit, logrotate against a live
+# descriptor, and whether Package Center accepts the archive at all.
+#
+# **It is inert until a rig exists.** It runs only by hand, only on a self-hosted runner
+# labelled `dsm-rig`, and that runner is expected to sit next to a DSM 7 VM (see
+# packaging/dsm/vm/README.md) with the same toolchain a developer has: Rust, and Zig plus
+# cargo-zigbuild if you point it at the ARMv7 machine. Everything that does *not* need a
+# machine already runs on every push, in ci.yml.
+#
+# It is destructive on the target by design: it upgrades over a hand-edited configuration
+# and then uninstalls. Point it at a machine whose answers nobody cares about.
+on:
+  workflow_dispatch:
+    inputs:
+      host:
+        description: "user@host of the DSM machine (the VM, or the NAS)"
+        required: true
+        default: "admin@localhost"
+      port:
+        description: "SSH port (2222 for the QEMU rig)"
+        required: false
+        default: "2222"
+      abi:
+        description: "x86_64, armv7 or aarch64 — blank asks the machine"
+        required: false
+        default: ""
+
+jobs:
+  rig:
+    name: Install, upgrade and uninstall on DSM
+    runs-on: [self-hosted, dsm-rig]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: The key for the rig
+        env:
+          KEY: ${{ secrets.DSM_RIG_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${KEY:-}" ]; then
+            echo "::error::set the DSM_RIG_SSH_KEY secret to a key that can reach the rig"
+            exit 1
+          fi
+          install -m 700 -d "$HOME/.ssh"
+          printf '%s\n' "$KEY" > "$HOME/.ssh/dsm-rig"
+          chmod 600 "$HOME/.ssh/dsm-rig"
+          # The rig is a machine on the maintainer's own network, reinstalled often.
+          ssh-keyscan -p "${{ inputs.port }}" -H "$(echo '${{ inputs.host }}' | cut -d@ -f2)" \
+            >> "$HOME/.ssh/known_hosts" 2>/dev/null || true
+
+      - name: Run the checks
+        run: |
+          set -euo pipefail
+          ABI=""
+          [ -n "${{ inputs.abi }}" ] && ABI="--abi ${{ inputs.abi }}"
+          # shellcheck disable=SC2086
+          packaging/dsm/vm/on-dsm.sh "${{ inputs.host }}" -p "${{ inputs.port }}" \
+            -i "$HOME/.ssh/dsm-rig" $ABI
+
+      - name: Forget the key
+        if: always()
+        run: rm -f "$HOME/.ssh/dsm-rig"

@@ -14,8 +14,8 @@ dehors du store que vous lui indiquez. Bien l'exploiter consiste surtout à déc
 le droit de servir, et à qui.
 
 - **[Déploiement](./deployment.md)** — une unité systemd, un conteneur, ou rien du tout.
-- **[Synology DSM 7](./synology.md)** — la cible d'origine : pas de systemd, donc l'autostart
-  est une entrée du planificateur de tâches.
+- **[Synology DSM 7](./synology.md)** — la cible d'origine : une installation par Package
+  Center qui crée le partage, enregistre le port et démarre au boot.
 - **[Sécurité](./security.md)** — les deux jetons, pourquoi ils se comportent différemment, et
   ce qu'aucun des deux ne protège.
 - **[Capturer les requêtes](./capture.md)** — enregistrer ce que les machines envoient

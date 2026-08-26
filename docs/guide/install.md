@@ -7,7 +7,7 @@ sidebar:
 
 # Install
 
-rescriptum is **one statically linked binary**. There is no runtime to install, no
+rescriptum is **one self-contained binary**. There is no runtime to install, no
 interpreter, no container image, and nothing written outside the directory you point it
 at. Copy it somewhere and run it.
 
@@ -18,7 +18,7 @@ Binaries for every published target are attached to each
 
 | Target | For |
 |---|---|
-| `armv7-unknown-linux-musleabihf` | Synology DS416j and other ARMv7 NAS boxes |
+| `armv7-unknown-linux-gnueabihf` | Synology DS416j and other ARMv7 NAS boxes (glibc ≥ 2.17) |
 | `aarch64-unknown-linux-musl` | modern ARM NAS, Raspberry Pi |
 | `x86_64-unknown-linux-musl` | most other Linux hosts |
 | `aarch64-apple-darwin` | local development, Apple silicon |
@@ -35,6 +35,15 @@ $ sudo install -m755 rescriptum-$VERSION-$TARGET/rescriptum /usr/local/bin/
 
 Check the sum. This binary runs as root on hardware you are about to install, which is
 about as much trust as a program gets.
+
+## On a Synology
+
+Take the `.spk` for your model instead — `rescriptum-<version>-armv7.spk` for the DS416j
+and other `armada38x` machines, `-x86_64.spk` for every Intel model — and install it with
+**Package Center → Manual Install**. It creates the shared folder, registers the port with
+the firewall, links the CLI onto `PATH` and starts at boot. Details, and what it
+deliberately does not do for you, are on the
+[Synology page](./operations/synology.md).
 
 The Linux builds are linked against musl, statically, so they do not care how old the
 host's glibc is:

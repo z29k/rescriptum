@@ -1,0 +1,13 @@
+#!/bin/sh
+# rescriptum — before the payload is unpacked.
+#
+# There is deliberately nothing to do here. The wizard's values are read in postinst, the
+# share does not exist yet (data-share runs in the FROM_ENABLE_TO_POSTUNINST window, at
+# package start), and anything that could fail here would fail an installation for a
+# reason DSM would report as "installation failed" and nothing more.
+#
+# It exists because a script that is missing when someone expects it is a worse surprise
+# than one that says why it is empty.
+
+set -u
+exit 0

@@ -91,7 +91,7 @@ EXPOSE 8000
 ENTRYPOINT ["/rescriptum"]
 ```
 
-Utilisez le build musl de la bonne architecture — il est lié statiquement, ce qui est ce qui
+Utilisez le build de la bonne architecture — les builds musl sont liés statiquement, ce qui est ce qui
 fait fonctionner `FROM scratch`. Montez le répertoire de réponses en lecture seule.
 
 ## Le dimensionner
@@ -122,7 +122,7 @@ $ ./deploy.sh admin@nas /volume1/netboot        # un autre répertoire distant
 
 Ce qu'il fait, dans l'ordre :
 
-1. **Construit** pour la cible (`TARGET`, par défaut `armv7-unknown-linux-musleabihf`).
+1. **Construit** pour la cible (`TARGET`, par défaut `armv7-unknown-linux-gnueabihf`).
 2. **Vérifie les réponses locales** avec `rescriptum check` et refuse de continuer si quoi
    que ce soit échoue — expédier un jeu de réponses cassé est pire que ne pas déployer.
 3. **Copie le binaire sous un nom temporaire**, puis le renomme en place. Remplacer un
@@ -135,7 +135,7 @@ Ce qu'il fait, dans l'ordre :
 
 | Environnement | Défaut |
 |---|---|
-| `TARGET` | `armv7-unknown-linux-musleabihf` |
+| `TARGET` | `armv7-unknown-linux-gnueabihf` |
 | `ANSWERS` | `<répertoire-distant>/answers` |
 | `PORT` | `8000` |
 

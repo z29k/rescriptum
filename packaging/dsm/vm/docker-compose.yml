@@ -1,0 +1,56 @@
+# A DSM 7.2 machine to test the package against, in one command.
+#
+#   docker compose -f packaging/dsm/vm/docker-compose.yml up -d
+#
+# This is the least-friction rig there is: the image downloads Synology's own Virtual DSM
+# release, so there is no loader to find and nothing to patch. Two things to know before
+# reaching for it:
+#
+#   * **KVM makes it usable, it does not make it possible.** On a Linux x86_64 host with
+#     /dev/kvm the machine runs at near-native speed; check with `ls -l /dev/kvm`, or
+#     `sudo kvm-ok` after `apt install cpu-checker`, and on Proxmox set the guest's CPU type
+#     to `host`. Without it — a Mac, an ARM host — QEMU emulates, about ten times slower,
+#     and the image handles that itself: use docker-compose.emulated.yml, which binds no
+#     device. Ten times slower is a long first boot, not a wall.
+#   * Synology's EULA for Virtual DSM does not permit installation on non-Synology
+#     hardware. That is the operator's call to make, not this repository's.
+#
+# DSM 7.2 is what it installs by default, which is close to the DS416j's own 7.2.1 — so the
+# rig resembles the target, which is the whole point of having one.
+#
+# First run, once:
+#   1. http://<host>:5000 → work through DSM's setup wizard, create the admin account.
+#      On macOS that port is AirPlay Receiver's, so use DSM_WEB_PORT=5050 (or turn AirPlay
+#      off in System Settings → General → AirDrop & Handoff);
+#   2. Control Panel → Terminal & SNMP → **Enable SSH service** (the rig drives the machine
+#      over SSH, on 2222 below);
+#   3. take a snapshot of ./storage — a broken package then costs a restore, not an
+#      afternoon:  docker compose down && cp -a storage storage.clean
+#
+# Then, from a checkout:
+#   ./build.sh x86_64-unknown-linux-musl
+#   packaging/dsm/vm/on-dsm.sh admin@<host> -p 2222
+services:
+  dsm:
+    container_name: rescriptum-dsm
+    image: vdsm/virtual-dsm
+    environment:
+      DISK_SIZE: "16G"
+      RAM_SIZE: "2G"
+      CPU_CORES: "2"
+    devices:
+      - /dev/kvm
+    cap_add:
+      - NET_ADMIN
+    ports:
+      # DSM's web UI — the first-run wizard lives here.
+      - ${DSM_WEB_PORT:-5000}:5000
+      # SSH. Not in the upstream example, and the rig cannot work without it: on-dsm.sh
+      # copies two .spk files and remote-check.sh to the machine and runs them as root.
+      - ${DSM_SSH_PORT:-2222}:22
+      # rescriptum itself, so /health can be checked from outside the box too.
+      - ${DSM_APP_PORT:-8000}:8000
+    volumes:
+      - ${DSM_STORAGE:-./storage}:/storage
+    restart: "no"
+    stop_grace_period: 2m

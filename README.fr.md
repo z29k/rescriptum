@@ -129,14 +129,19 @@ Chacun de ces points est un lien vers la
   enregistrer ce que les machines envoient réellement, le rejouer hors ligne avec
   `render --body`.
 - **[Assez petit pour un NAS](https://z29k.github.io/rescriptum/fr/guide/operations/synology)** —
-  builds musl statiques pour ARMv7, aarch64 et x86_64. Synology DSM 7 n'a pas de systemd, il a
-  donc sa propre page ; partout ailleurs c'est une unité systemd ou un conteneur.
+  builds pour ARMv7, aarch64 et x86_64 — musl statique, sauf ARMv7 qui vise la glibc de DSM
+  parce que musl 1.2 ne tourne pas sur les noyaux 3.10 de Synology — plus un **paquet DSM 7** qui crée le
+  dossier partagé, enregistre le port auprès du pare-feu et démarre au boot. Partout
+  ailleurs c'est une unité systemd ou un conteneur.
 
 ## Installation
 
 Téléchargez un binaire depuis la [page des releases](https://github.com/z29k/rescriptum/releases)
-— Linux `armv7`, `aarch64` et `x86_64` (musl, statique), plus macOS — vérifiez sa somme
+— Linux `armv7` (glibc ≥ 2.17), `aarch64` et `x86_64` (musl, statique), plus macOS — vérifiez sa somme
 SHA-256, et lancez-le. Il n'y a rien à installer.
+
+Sur un Synology, prenez plutôt le `.spk` et passez par **Package Center → Installation
+manuelle**.
 
 ```console
 $ RESCRIPTUM_ANSWERS_DIR=/srv/answers ./rescriptum

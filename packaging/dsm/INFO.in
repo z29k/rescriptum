@@ -1,0 +1,28 @@
+# The SPK's metadata, before substitution. `make-spk.sh` fills @VERSION@, @ARCH@ and
+# @EXTRACTSIZE@ in and drops every `#` line, so what ships is key="value" and nothing
+# else — DSM's own parser is not something to try comments on.
+#
+# Six fields are required: package, version, os_min_ver, description, arch, maintainer.
+# Most of the optional ones are deliberately absent:
+#
+#   startable   deprecated after DSM 6.1-14907, replaced by ctl_stop
+#   ctl_stop    already defaults to "yes"; it exists to *forbid* stopping
+#   thirdparty  DSM 4.0-4.3 only
+#   adminport   points Package Center at a package's web UI, which we do not have — and
+#               it drags in checkport, which would refuse to install over a port collision
+#               on a port the user is free to change afterwards in the env file
+#   os_max_ver  a ceiling written today would be wrong within a year; if a future DSM
+#               breaks the package, the answer is a new release
+package="rescriptum"
+version="@VERSION@"
+os_min_ver="7.0-40000"
+displayname="rescriptum"
+description="Serves unattended-installation answers, composed per machine, to whichever installer asks."
+maintainer="z29k"
+maintainer_url="https://github.com/z29k/rescriptum"
+arch="@ARCH@"
+helpurl="https://z29k.github.io/rescriptum/"
+# Kilobytes, measured from the unpacked payload. Left unset this does not mean "unknown":
+# it means "the SPK's own byte size", which understates a compressed payload — a wrong
+# number rather than a missing one.
+extractsize="@EXTRACTSIZE@"

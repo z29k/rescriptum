@@ -9,7 +9,7 @@
 # script only replaces a running instance.
 #
 # Environment:
-#   TARGET   rust target triple      (default armv7-unknown-linux-musleabihf)
+#   TARGET   rust target triple      (default armv7-unknown-linux-gnueabihf)
 #   ANSWERS  answers directory       (default <remote-dir>/answers)
 #   PORT     listen port             (default 8000)
 
@@ -18,7 +18,7 @@ cd "$(dirname "$0")"
 
 HOST="${1:-}"
 REMOTE_DIR="${2:-/volume1/netboot}"
-TARGET="${TARGET:-armv7-unknown-linux-musleabihf}"
+TARGET="${TARGET:-armv7-unknown-linux-gnueabihf}"
 PORT="${PORT:-8000}"
 ANSWERS="${ANSWERS:-$REMOTE_DIR/answers}"
 

@@ -113,6 +113,81 @@ key's original decor, so the output can read `value= 3` — valid TOML, differen
 project's history silently no-opped and were only caught by checking test counts
 afterwards. Assert the old text was found before writing.
 
+## Packaging for DSM
+
+**musl 1.2 cannot run on Synology's ARMv7 kernels, and the symptom names nothing.** Those
+kernels are 3.10 and answer the *time64* syscalls with `EINVAL`; musl falls back to the
+32-bit ones only on `ENOSYS`, so `clock_gettime`, `clock_nanosleep` and the timed futex all
+fail. The binary installs, answers `--version`, and panics at `time.rs:131` with
+`Os { code: 22, kind: InvalidInput }` the moment it wants a timestamp — which looks like an
+ABI or a too-old-kernel problem and is neither. The armv7 target is glibc with a 2.17 floor
+for this reason; 64-bit targets have no time32/time64 split and are unaffected. Proven with
+a ten-line C probe on the machine, not by reading anything.
+
+**`SYNOPKG_PKGDEST` is `/volume1/@appstore/<package>`, not `/var/packages/<package>/target`.**
+The second is a symlink to the first, so `dirname "$SYNOPKG_PKGDEST"` is `/volume1/@appstore`
+and everything hung off it — `etc/`, `var/`, `shares/` — lands where nothing reads it. The
+package root is a fixed path. This one costs a service that installs perfectly and never
+starts, and a fake-tree harness cannot catch it: in a tree you built yourself, `dirname` is
+right by construction.
+
+**`$SYNOPKG_TEMP_UPGRADE_FOLDER` outlives the upgrade that created it.** A *fresh* install
+that reads it finds the configuration of an installation the user removed, and silently
+restores it — tokens and all. Restoring from it has to require `SYNOPKG_PKG_STATUS = UPGRADE`.
+
+**`etc/` and `var/` survive an uninstall.** They are symlinks into `/volume1/@appconf/<pkg>`
+and `/volume1/@appdata/<pkg>`, which DSM keeps. So the env file, tokens included, stays on
+the volume after the package is gone — which the documentation has to say, and which makes
+a rig that does not clear them fail on the *next* run for reasons belonging to the last one.
+
+**A DSM account named after the package user is destroyed with it.** `conf/privilege`'s
+`username` creates a system user at install; an administrator of the same name is shadowed
+by it and removed on uninstall.
+
+**The firewall directory is `/usr/local/etc/services.d/`** — plural. The developer guide says
+`service.d`, which does not exist. The `port-config` worker acquires **after `postinst`**, so
+the wizard's port does reach the firewall entry on a fresh install.
+
+**`port-config` and `usr-local-linker` acquire when the package is *enabled*,** not when
+`postinst` runs: checked any earlier they are always absent.
+
+**The generated unit has no `Restart=`** — `Type=oneshot`, `RemainAfterExit=yes`,
+`TimeoutStartSec=3600`. DSM does not restart the process if it dies.
+
+**`postinst` runs on an upgrade too, and it runs *before* `postupgrade`.** So "the env
+file is absent" is not the same question as "this is a fresh install": on an upgrade where
+`etc/` did not survive, writing defaults there destroys the user's port and tokens before
+the restore ever runs. `postinst` checks `$SYNOPKG_TEMP_UPGRADE_FOLDER` before it decides.
+Found by simulating that exact case, not by reading the documented sequence.
+
+**The old version's `preuninst`/`postuninst` run during an upgrade.** Anything destructive
+in them therefore runs every time somebody upgrades — and the *first published* `.spk` is
+the one whose uninstall scripts will run during everybody's first upgrade. They cannot be
+fixed later.
+
+**`status` returning `1` means "crashed, stale pidfile"**, not "stopped". A cleanly stopped
+package is `3`. Returning `1` tells Package Center the service died.
+
+**`prestart` runs at boot**, and DSM calls it whether or not you wrote it —
+`precheckstartstop` defaults to `"yes"`. A `case` that exits non-zero on an unrecognised
+verb stops the package from ever starting after a reboot, with a symptom ("works by hand,
+never after a reboot") that looks like anything but a missing case arm.
+
+**The lifecycle scripts are not root.** `run-as: package` governs them, not only the
+service — so a chown outside the package tree, or `synopkghelper`, fails, possibly
+silently.
+
+**`data-share` runs at package *start*, not at install**, so nothing in `postinst` may
+assume the shared folder exists. And a username that does not match its permission list
+creates the share and grants it to nobody, without a word.
+
+**A logrotate stanza without `copytruncate` silently ends logging**: `log::init` opens the
+file once and never reopens it, so a rotation moves the inode out from under a server that
+carries on writing to a file with no name.
+
+**A `.spk` whose outer tar is gzipped is rejected** with "invalid file format" and no
+further detail. So is one carrying macOS `._` members. `check-spk.sh` asserts both.
+
 ## Behaviour changes worth remembering
 
 **Answer documents must now be valid.** Before merging they were served as opaque bytes, so
