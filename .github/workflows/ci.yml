@@ -6,6 +6,12 @@ on:
   push:
     branches: [main, develop]
   pull_request:
+  # Re-runnable by hand, which the other three workflows already are. Added the day a
+  # GitHub Actions outage left a run stuck in `queued` with no jobs: it could not be
+  # rerun ("already running"), cancelled ("already completed") or force-cancelled ("not
+  # queued yet"), and with no dispatch trigger there was no way to ask for a fresh one
+  # short of pushing a commit nobody wanted to write.
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
