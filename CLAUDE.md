@@ -903,9 +903,12 @@ Release target matrix (settled):
 
 ## Project conventions
 
-This is intended as a public open-source GitHub project (remote to be added once a V1 is
-acceptable), serving both personal and professional use — so treat robustness, release
-management across branches, and documentation quality as requirements rather than polish.
+This **is** a public open-source GitHub project — <https://github.com/z29k/rescriptum>, MIT,
+with the documentation site at <https://z29k.github.io/rescriptum/> — serving both personal
+and professional use, so treat robustness, release management across branches, and
+documentation quality as requirements rather than polish. Being public is not a milestone
+still ahead: it is the condition every change now lands under. A force-push is immediate and
+irreversible, and so is a published release.
 
 Deliverables per the spec: `src/main.rs` (split into modules if size warrants), `Cargo.toml`,
 a commented `examples/example.toml` covering `global` / `network` / `disk-setup`, `build.sh`,
