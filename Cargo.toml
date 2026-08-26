@@ -1,6 +1,6 @@
 [package]
 name = "rescriptum"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.85"
 description = "Serves each machine its own install config, composed from layers a whole rack can share. Proxmox, Debian, RHEL, Ubuntu, SUSE, Windows."

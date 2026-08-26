@@ -43,7 +43,7 @@ réglage de niveau de confiance, donc tout paquet non-Synology l'affiche. Notre 
 à nous, c'est la somme SHA-256 publiée à côté du `.spk` :
 
 ```console
-$ shasum -a 256 -c rescriptum-0.1.0-1-armv7.spk.sha256
+$ shasum -a 256 -c rescriptum-0.2.0-1-armv7.spk.sha256
 ```
 
 L'assistant pose deux questions — **où vivent les réponses** et **sur quel port écouter** —

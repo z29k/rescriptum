@@ -25,7 +25,7 @@ Binaries for every published target are attached to each
 | `x86_64-apple-darwin` | local development, Intel Macs |
 
 ```console
-$ VERSION=0.1.0 TARGET=x86_64-unknown-linux-musl
+$ VERSION=0.2.0 TARGET=x86_64-unknown-linux-musl
 $ curl -fsSLO https://github.com/z29k/rescriptum/releases/download/v$VERSION/rescriptum-$VERSION-$TARGET.tar.gz
 $ curl -fsSLO https://github.com/z29k/rescriptum/releases/download/v$VERSION/rescriptum-$VERSION-$TARGET.tar.gz.sha256
 $ shasum -a 256 -c rescriptum-$VERSION-$TARGET.tar.gz.sha256

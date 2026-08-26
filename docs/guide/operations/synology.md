@@ -42,7 +42,7 @@ setting, so every non-Synology package shows it. Our verification is the SHA-256
 published beside the `.spk`:
 
 ```console
-$ shasum -a 256 -c rescriptum-0.1.0-1-armv7.spk.sha256
+$ shasum -a 256 -c rescriptum-0.2.0-1-armv7.spk.sha256
 ```
 
 The wizard asks two things — **where the answers live** and **which port to listen on** —
