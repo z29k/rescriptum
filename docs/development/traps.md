@@ -115,6 +115,15 @@ afterwards. Assert the old text was found before writing.
 
 ## Packaging for DSM
 
+**A shell script that works on macOS is not a shell script that works on CI.** Two found by
+running the harnesses in a Linux container rather than trusting them: `stat -f '%Lp'` is the
+format flag on BSD and *filesystem status* on GNU — where it **succeeds**, printing overlayfs
+trivia into a variable that was supposed to hold a file mode, so the fallback never fires.
+Ask GNU first (`stat -c '%a' || stat -f '%Lp'`), which fails cleanly on macOS. And `shasum`
+is a Perl script that a minimal Debian does not have: `sha256sum` is coreutils and is
+everywhere on Linux. Ubuntu runners carry both, which is exactly how a script like that ships
+broken to everyone else.
+
 **musl 1.2 cannot run on Synology's ARMv7 kernels, and the symptom names nothing.** Those
 kernels are 3.10 and answer the *time64* syscalls with `EINVAL`; musl falls back to the
 32-bit ones only on `ENOSYS`, so `clock_gettime`, `clock_nanosleep` and the timed futex all

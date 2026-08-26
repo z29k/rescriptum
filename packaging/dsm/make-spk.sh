@@ -186,7 +186,17 @@ mkdir -p "$OUT"
 SPK="$OUT/rescriptum-$FULL_VERSION-$ABI.spk"
 archive "$SPKDIR" "$SPK"
 
-( cd "$OUT" && shasum -a 256 "$(basename "$SPK")" >"$(basename "$SPK").sha256" )
+# sha256sum is coreutils and is everywhere on Linux; shasum is a Perl script that a
+# minimal image does not have, and macOS has only the second. Ubuntu runners happen to
+# carry both, which is exactly how a script like this ships broken.
+sha256_of() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$1"
+    else
+        shasum -a 256 "$1"
+    fi
+}
+( cd "$OUT" && sha256_of "$(basename "$SPK")" >"$(basename "$SPK").sha256" )
 
 printf '    %-34s %8s KB installed   arch=%s\n' "$(basename "$SPK")" "$EXTRACTSIZE" "$ARCH"
 echo "    $SPK"

@@ -125,6 +125,16 @@ le nombre de tests ensuite. Vérifiez que l'ancien texte a été trouvé avant d
 
 ## Empaqueter pour DSM
 
+**Un script shell qui marche sur macOS n'est pas un script qui marche en CI.** Deux cas
+trouvés en faisant tourner les harnais dans un conteneur Linux plutôt qu'en leur faisant
+confiance : `stat -f '%Lp'` est le drapeau de format sur BSD et *statut du système de
+fichiers* sur GNU — où il **réussit**, en déversant des informations d'overlayfs dans une
+variable censée contenir un mode de fichier, si bien que le repli ne se déclenche jamais.
+Demander d'abord à GNU (`stat -c '%a' || stat -f '%Lp'`), qui échoue proprement sur macOS.
+Et `shasum` est un script Perl qu'une Debian minimale n'a pas : `sha256sum` vient de
+coreutils et existe partout sur Linux. Les runners Ubuntu ont les deux, ce qui est
+exactement la façon dont un script pareil part cassé chez tous les autres.
+
 **musl 1.2 ne peut pas tourner sur les noyaux ARMv7 de Synology, et le symptôme ne nomme
 rien.** Ces noyaux sont des 3.10 et répondent `EINVAL` aux appels *time64* ; musl ne se
 replie sur les appels 32 bits que sur `ENOSYS`, donc `clock_gettime`, `clock_nanosleep` et le

@@ -47,6 +47,10 @@ echo "==> copying to $HOST:$REMOTE_DIR"
 scp -q "$BIN" "$HOST:$REMOTE_DIR/rescriptum.new"
 
 echo "==> restarting"
+# The delimiter is deliberately unquoted: $REMOTE_DIR, $ANSWERS and $PORT are *ours*, and
+# have to be interpolated here before the script is sent. Everything meant for the remote
+# shell is escaped.
+# shellcheck disable=SC2087
 ssh "$HOST" bash -s <<REMOTE
 set -euo pipefail
 cd "$REMOTE_DIR"

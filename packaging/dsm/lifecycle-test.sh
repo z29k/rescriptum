@@ -90,11 +90,18 @@ PORT=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); pr
 
 value_of() { sed -n "s/^$1=//p" "$ENV_FILE" | tail -n 1; }
 
+# GNU first, and the order is the whole point: on BSD `stat -f` is the format flag, on GNU
+# it means "filesystem status" — and it *succeeds*, printing a block of overlayfs trivia
+# instead of failing over to the next branch. Asking GNU first fails cleanly on macOS.
+file_mode() {
+    stat -c '%a' "$1" 2>/dev/null || stat -f '%Lp' "$1" 2>/dev/null
+}
+
 # ── 1. install ─────────────────────────────────────────────────────────────────
 section "install"
 out=$(SYNOPKG_PKG_STATUS=INSTALL pkgwizard_port="$PORT" sh "$ROOT/scripts/postinst" 2>&1)
 [ -f "$ENV_FILE" ] && ok "postinst wrote the env file" || bad "postinst wrote no env file: $out"
-mode=$(stat -f '%Lp' "$ENV_FILE" 2>/dev/null || stat -c '%a' "$ENV_FILE")
+mode=$(file_mode "$ENV_FILE")
 [ "$mode" = "600" ] && ok "it is mode 600" || bad "it is mode $mode, not 600"
 [ -f "$ROOT/target/etc/rescriptum.env.example" ] && ok "the example was written too" || bad "no example env file"
 [ "$(value_of RESCRIPTUM_LISTEN_ADDR)" = "0.0.0.0:$PORT" ] && ok "the wizard's port reached the env file" || bad "listen addr is $(value_of RESCRIPTUM_LISTEN_ADDR)"
@@ -208,7 +215,7 @@ diff -q "$WORK/env.handedited" "$ENV_FILE" >/dev/null && ok "etc/ survives: the 
 
 upgrade yes
 diff -q "$WORK/env.handedited" "$ENV_FILE" >/dev/null && ok "etc/ wiped: postinst restored it from the upgrade folder rather than writing defaults" || bad "the user's configuration was replaced by defaults — postinst runs BEFORE postupgrade"
-mode=$(stat -f '%Lp' "$ENV_FILE" 2>/dev/null || stat -c '%a' "$ENV_FILE")
+mode=$(file_mode "$ENV_FILE")
 [ "$mode" = "600" ] && ok "and it came back mode 600" || bad "the restored file is mode $mode"
 
 section "a fresh install must not resurrect a removed installation"
