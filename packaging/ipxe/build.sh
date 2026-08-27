@@ -1,0 +1,139 @@
+#!/usr/bin/env bash
+# Build the branded iPXE loaders rescriptum ships.
+#
+#   ./build.sh                 # every loader the table names, into ./out
+#   ./build.sh --out DIR
+#
+# Needs a C toolchain, GNU make, perl, and — for the EFI targets — the cross binutils
+# for that architecture. On Debian:
+#
+#   apt install build-essential liblzma-dev mtools gcc-aarch64-linux-gnu
+#
+# ## Why we build iPXE at all
+#
+# Three independent reasons converged on it, and any one would have been enough:
+#
+#   1. **The entry point.** A stock loader either re-loads itself forever (the
+#      documented chainloading loop) or chains to the public boot.netboot.xyz. Only an
+#      embedded script gets a machine talking to *this* server, and only a build we
+#      control can carry one.
+#   2. **The name on the first line**, before anything else is on screen, and a
+#      framebuffer console that a stock binary may not have compiled in at all.
+#   3. **The feature set.** We choose what is compiled in — PNG, the menu commands,
+#      sanboot, the console — rather than discovering at a customer site that a variant
+#      lacks one.
+#
+# ## The GPL obligation, met by construction
+#
+# iPXE is GPLv2 (with the UBDL exception) and rescriptum is MIT. What makes that a
+# non-conversation is that the loaders are **separate files, never linked into our
+# binary**: mere aggregation, obvious and auditable. This script, `branding.h`,
+# `embed.ipxe` and `PINNED` are the written offer — everything needed to reproduce what
+# we ship, in the same repository as the thing that serves it.
+
+set -euo pipefail
+cd "$(dirname "$0")"
+
+OUT="$PWD/out"
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --out) OUT="$2"; shift 2 ;;
+    -h|--help) sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    *) echo "unexpected argument: $1" >&2; exit 2 ;;
+  esac
+done
+
+# shellcheck disable=SC1091
+. ./PINNED
+
+WORK="${WORK:-$PWD/.work}"
+mkdir -p "$OUT" "$WORK"
+
+if [ ! -d "$WORK/ipxe/.git" ]; then
+  echo "cloning iPXE into $WORK/ipxe"
+  git clone --quiet "$IPXE_REPO" "$WORK/ipxe"
+fi
+
+# Pinned by SHA. A fetch first, because a shallow or stale clone may not have it yet.
+git -C "$WORK/ipxe" fetch --quiet --tags origin
+git -C "$WORK/ipxe" checkout --quiet "$IPXE_COMMIT"
+echo "iPXE at $IPXE_COMMIT (${IPXE_TAG:-no tag})"
+
+cp branding.h "$WORK/ipxe/src/config/local/branding.h"
+
+# What has to be compiled in, and why each one is here rather than a default:
+#   IMAGE_PNG        the logo behind the menu
+#   CONSOLE_FRAMEBUFFER  the console that can show it
+#   IMAGE_TRUST_CMD  so a site that wants signed images can have them
+#   PARAM_CMD/NSLOOKUP_CMD/PING_CMD/REBOOT_CMD/POWEROFF_CMD  the diagnostics menu
+#   VLAN_CMD         a boot VLAN is the recommendation that actually works
+cat > "$WORK/ipxe/src/config/local/general.h" <<'CONFIG'
+/* rescriptum: what the menu and the diagnostics entries need. */
+#define IMAGE_PNG
+#define CONSOLE_FRAMEBUFFER
+#define IMAGE_TRUST_CMD
+#define PARAM_CMD
+#define NSLOOKUP_CMD
+#define PING_CMD
+#define REBOOT_CMD
+#define POWEROFF_CMD
+#define VLAN_CMD
+#define NTP_CMD
+#define CONSOLE_CMD
+CONFIG
+
+build() {
+  local target="$1" output="$2"
+  echo "building $target"
+  make -C "$WORK/ipxe/src" -j"$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2)" \
+    "bin/$target" EMBED="$PWD/embed.ipxe" >/dev/null 2>&1 ||
+    make -C "$WORK/ipxe/src" "bin/$target" EMBED="$PWD/embed.ipxe"
+  cp "$WORK/ipxe/src/bin/$target" "$OUT/$output"
+}
+
+build_efi() {
+  local arch="$1" target="$2" output="$3"
+  echo "building $arch/$target"
+  make -C "$WORK/ipxe/src" -j"$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2)" \
+    ARCH="$arch" "bin-$arch-efi/$target" EMBED="$PWD/embed.ipxe" >/dev/null 2>&1 ||
+    make -C "$WORK/ipxe/src" ARCH="$arch" "bin-$arch-efi/$target" EMBED="$PWD/embed.ipxe"
+  cp "$WORK/ipxe/src/bin-$arch-efi/$target" "$OUT/$output"
+}
+
+# The names here are the ones `src/boot/loaders.rs` hands out and
+# `boot dhcp-snippet` writes into somebody's DHCP server. **They must not drift**:
+# `boot check` compares this directory against that table, and a snippet naming a file
+# that is not here fails silently at the ROM.
+build undionly.kpxe ipxe-undionly.kpxe
+build ipxe.pxe ipxe.kpxe
+
+build_efi x86_64 ipxe.efi ipxe-x86_64.efi
+build_efi x86_64 snp.efi ipxe-x86_64-snp.efi
+build_efi x86_64 snponly.efi ipxe-x86_64-snponly.efi
+
+build_efi arm64 ipxe.efi ipxe-arm64.efi
+build_efi arm64 snp.efi ipxe-arm64-snp.efi
+build_efi arm64 snponly.efi ipxe-arm64-snponly.efi
+
+# The same build emits the media a machine with no PXE ROM can still use: an ISO for
+# IPMI virtual media, and a USB image for a stick. Free, since the objects already exist.
+build_efi x86_64 ipxe.iso ipxe-x86_64.iso || echo "note: the ISO target needs mtools/xorriso"
+build_efi x86_64 ipxe.usb ipxe-x86_64.usb || echo "note: the USB target needs mtools"
+
+( cd "$OUT" && sha256sum ./* > SHA256SUMS 2>/dev/null || shasum -a 256 ./* > SHA256SUMS )
+
+cat > "$OUT/NOTICE" <<NOTICE
+These loaders are iPXE, built from $IPXE_REPO at $IPXE_COMMIT (${IPXE_TAG:-no tag}),
+with rescriptum's branding.h and embed.ipxe applied and nothing else patched.
+
+iPXE is free software under the GNU General Public License version 2 (with the UBDL
+exception). rescriptum itself is MIT and does not link against it: these are separate
+files served alongside, which is mere aggregation.
+
+The complete corresponding source is the commit above plus packaging/ipxe/ in
+https://github.com/z29k/rescriptum — branding.h, embed.ipxe, PINNED and build.sh.
+NOTICE
+
+echo
+echo "loaders in $OUT:"
+ls -la "$OUT"

@@ -1,0 +1,19 @@
+# The upstream iPXE commit every rescriptum release builds from, and the GPLv2 written
+# offer this repository makes: the source for the loaders we ship is this commit, plus
+# branding.h and embed.ipxe beside this file. Nothing else is patched.
+#
+# **Pinned by SHA, not by tag.** A tag is a pointer somebody can move; a release that
+# quietly changed what every machine boots is not an appliance. The tag is recorded
+# alongside only so a human can tell at a glance how old the pin is.
+#
+# Bump it deliberately, and re-run the rig afterwards: what a loader does before our
+# embedded script runs is upstream's code, and it is the half no test in this repository
+# covers.
+#
+# NOT YET BUILT. This pin was chosen from the tag list, not from a build — see the
+# "Status" section of README.md beside this file. The first CI run is what turns it from
+# a plausible version into a verified one, and if v2.0.0 does not build cleanly the
+# answer is v1.21.1 (988d2c13cdf0f0b4140685af35ced70ac5b3283c), the release before it.
+IPXE_COMMIT=12798ec29aa8a64d8675c4378b99f5fe28447afb
+IPXE_TAG=v2.0.0
+IPXE_REPO=https://github.com/ipxe/ipxe.git

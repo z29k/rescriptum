@@ -49,8 +49,55 @@ jobs:
         run: cargo test --all-features
 
       # The smallest build has to keep working, or the NAS target rots unnoticed.
-      - name: Build without SQLite
+      # Both features off, and then each on its own: the combination that ships is not
+      # the only one that has to compile.
+      - name: Build without SQLite or boot media
         run: cargo build --release --no-default-features
+
+      - name: Build with boot media but no SQLite
+        run: cargo build --release --no-default-features --features boot
+
+  loaders:
+    name: Branded iPXE loaders
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # A C toolchain and the ARM64 cross binutils. iPXE's EFI targets need the
+      # architecture's own `ld` and `objcopy`; the BIOS ones build with the host's.
+      - name: Toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential liblzma-dev mtools xorriso gcc-aarch64-linux-gnu
+          aarch64-linux-gnu-ld --version | head -1
+
+      - name: Build the loaders
+        run: packaging/ipxe/build.sh --out "$GITHUB_WORKSPACE/loaders"
+
+      # **The chain of custody.** What the rig boots and what a release publishes have to
+      # be the same bytes, never a rebuild of them — a loader rebuilt after the run that
+      # proved it is a loader nobody has booted.
+      - name: What was built
+        run: |
+          ls -la "$GITHUB_WORKSPACE/loaders"
+          cat "$GITHUB_WORKSPACE/loaders/SHA256SUMS"
+
+      # Ask the server whether the directory satisfies the table it serves from. A
+      # snippet naming a loader that is not here fails silently at the ROM, and this is
+      # the only thing that catches it.
+      - name: Does the server agree the set is complete?
+        run: |
+          cargo build --release
+          RESCRIPTUM_BOOT_DIR="$GITHUB_WORKSPACE/loaders" \
+          RESCRIPTUM_PUBLIC_HOST=192.0.2.10 \
+            ./target/release/rescriptum boot check
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ipxe-loaders
+          path: ${{ github.workspace }}/loaders
+          if-no-files-found: error
 
   docs:
     name: Documentation
