@@ -46,25 +46,27 @@ tell operators to paste is wrong, nothing here boots.
 
 ## The shape, and why
 
-Three services on one network with `internal: true`:
+**One container**, holding the loaders, the server, dnsmasq and a QEMU machine on a
+private bridge with no uplink. Nothing crosses Docker's network, which means nothing can
+be filtered by it — the rig's network really is its whole world.
 
-- **`loaders`** builds the branded iPXE from `packaging/ipxe/` — the same script and the
-  same pin a release uses. A stock loader would re-load itself forever or chain to the
-  public netboot.xyz; testing the chain means testing ours.
-- **`server`** is the real binary, built from the working tree rather than from whatever
-  is lying in `./target`.
-- **`dhcp`** is dnsmasq, configured from our own generated snippet.
-- **`client`** is QEMU with its NIC **bridged onto the network**, not behind QEMU's
-  user-mode stack — that stack carries its own DHCP server, and a rig built on it would
-  test everything except the handoff it exists to test.
+[`run-compose.sh`](run-compose.sh) is the four-service variant the plan describes:
+loaders, server, dnsmasq and client as separate containers on a Docker network with
+`internal: true`. It is the more honest shape and it works on a Linux host. **It does not
+work on Docker Desktop**, and the reason is worth recording because it is not obvious: a
+QEMU guest bridged into a container has a MAC of its own, and Docker Desktop's virtual
+switch does not forward frames from a MAC it did not assign.
 
-`internal: true` is not tidiness. **A rig that runs a DHCP server has to be unable to
-answer anything on the host's LAN**, which is the same "did installing this break the
-network" hygiene the product itself lives by. It also means nothing inside can reach the
-internet, which is why the loaders are built into their image rather than at run time.
+That was measured rather than assumed. Container-to-container TCP works (a SYN and its
+SYN-ACK captured on the receiving side); a DHCP broadcast from the guest reaches nothing
+at all — `tcpdump` on the DHCP container captures zero packets while the client's own
+`tap0` and `eth0` counters show the frames leaving. The guest's MAC even turns up in the
+bridge's forwarding table on the *wrong* port.
 
-**No `/dev/kvm` anywhere.** KVM would make this fast; the rig has to pass without it,
-because the development machine is a Mac. Ten times slower is a long run, not a wall.
+**No `/dev/kvm` in either.** KVM would make this fast; the rig has to pass without it,
+because the development machine is a Mac. It needs `NET_ADMIN` to build the bridge and
+`/dev/net/tun` for the tap the guest sits on, and nothing else — no host network, no
+published port.
 
 ## What running it for the first time cost
 
@@ -124,16 +126,33 @@ it guards disappear:
 
 That last one turns the blast-radius table in the guide from a claim into a recorded run.
 
-## Status
+## Status: green, and it has been red
 
-**The loader half is verified; the QEMU half has not been run here.**
+**Run, on this machine, under TCG.** All four markers reached:
 
-What is proven: `packaging/ipxe/build.sh` produces all eight loaders from the pinned
-commit, they carry our branding and `embed.ipxe` verbatim, and `rescriptum boot check`
-agrees the set satisfies the loader table.
+```
+  ok   the DHCP handoff answered, from our own generated snippet
+  ok   a loader was fetched over TFTP
+  ok   the unclaimed machine fell through to its local disk
+  ok   the claimed machine fetched its sentinel
 
-What is not: that a machine boots them. `run.sh` has not been driven end to end on this
-machine, so **treat a green run as unproven rather than as evidence** until somebody has
-watched each row of the table above go red first. That is the same discipline
-`lifecycle-test.sh` already lives under, and the reason is the same: a green harness that
-has never been red proves nothing.
+rig: all markers reached
+```
+
+That is the whole chain: a DHCP offer built from `boot dhcp-snippet`'s own output, our
+branded loader over TFTP, its embedded script, the bootstrap, the answer engine — and
+then either a machine's own unattended answer or the menu and a fall through to its disk.
+
+And it has been **watched failing**, which is what makes the green mean anything:
+
+| Break | What went red |
+|---|---|
+| Delete `ipxe-undionly.kpxe` | `boot check` says MISSING and the run stops before a client boots |
+| Delete the claimed machine's answer | that marker alone goes red — and the machine still falls through to its disk, so the fallthrough covers a deleted answer too |
+
+The rows in the table above that have *not* been run yet are the moved media port, the
+missing template fact, and the stopped server. Those are the next ones to watch go red.
+
+**What is still not proven is what real firmware does.** The rig runs one emulator with
+one NIC model, and the standing rule is unchanged: nothing ships on harness evidence
+alone.

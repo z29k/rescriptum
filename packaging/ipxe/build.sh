@@ -32,13 +32,15 @@
 # we ship, in the same repository as the thing that serves it.
 
 set -euo pipefail
-cd "$(dirname "$0")"
+# Resolved before the `cd`, so `--help` can read the script itself however it was called.
+SELF="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
+cd "$(dirname "$SELF")"
 
 OUT="$PWD/out"
 while [ $# -gt 0 ]; do
   case "$1" in
     --out) OUT="$2"; shift 2 ;;
-    -h|--help) sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,12p' "$SELF" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unexpected argument: $1" >&2; exit 2 ;;
   esac
 done

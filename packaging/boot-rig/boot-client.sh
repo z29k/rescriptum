@@ -59,8 +59,14 @@ fi
 # A scratch copy, so a run cannot alter the image the next one boots.
 cp /rig/local-disk.img "/tmp/${NAME}.img"
 
+# **`pc`, not `q35`, for the BIOS run.** q35 has no IDE controller, so a disk attached
+# with `if=ide` is simply not there — SeaBIOS says "could not read the boot disk" and the
+# fallthrough marker can never be reached. The first run of this rig failed exactly that
+# way, and it read as a broken menu rather than a machine with no disk.
+MACHINE=pc
 FIRMWARE_ARGS=()
 if [ "${FIRMWARE}" = "uefi" ]; then
+  MACHINE=q35
   cp /usr/share/OVMF/OVMF_VARS.fd "/tmp/${NAME}.vars.fd"
   FIRMWARE_ARGS=(
     -drive "if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE.fd"
@@ -74,7 +80,7 @@ fi
 # `-nographic` puts the serial console on stdout. KVM is never requested: the rig has to
 # pass under TCG, because the development machine is a Mac.
 timeout "${LIMIT}" qemu-system-x86_64 \
-  -machine q35 \
+  -machine "${MACHINE}" \
   -m 1024 \
   -nographic \
   -no-reboot \
