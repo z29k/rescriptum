@@ -99,6 +99,46 @@ jobs:
           path: ${{ github.workspace }}/loaders
           if-no-files-found: error
 
+  rig:
+    name: The boot chain, end to end
+    runs-on: ubuntu-latest
+    # **The tripwire, not the contract.** The dev rig is what decides; this re-proves the
+    # BIOS chain on every push without a single real machine. GitHub's runners are
+    # somebody else's machines with somebody else's limits, so it is sized so it cannot
+    # fail for capacity reasons — BIOS only, TCG, one claimed and one unclaimed client,
+    # no OS image, a few minutes. If it ever needs hardware virtualisation to pass, it
+    # has grown too big.
+    #
+    # Runners are x86_64, so this is native rather than the emulation a Mac does — and
+    # there is still no /dev/kvm, which is exactly the constraint the rig is built for.
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the rig
+        run: docker build -f packaging/boot-rig/Dockerfile.rig -t rescriptum-rig:one .
+
+      # Four markers: the DHCP handoff answered from our own generated snippet, a loader
+      # fetched over TFTP, an unclaimed machine on its own disk, and a claimed machine at
+      # its own answer.
+      - name: Boot a claimed and an unclaimed machine
+        run: |
+          docker run --rm --cap-add NET_ADMIN --device /dev/net/tun \
+            -e UNCLAIMED_SECONDS=180 -e CLAIMED_SECONDS=180 \
+            rescriptum-rig:one bios
+
+      # **Watched failing, in CI as well as by hand.** A green rig that has never been
+      # red proves nothing, and the cheapest way to keep that true is to break one link
+      # on every run and require the break to show.
+      - name: And it must go red when a loader is missing
+        run: |
+          if docker run --rm --cap-add NET_ADMIN --device /dev/net/tun \
+               --entrypoint sh rescriptum-rig:one \
+               -c 'rm /srv/boot/ipxe-undionly.kpxe && exec /rig/rig-in-one.sh bios'; then
+            echo "the rig passed with a loader missing — it is not testing what it claims" >&2
+            exit 1
+          fi
+
   docs:
     name: Documentation
     runs-on: ubuntu-latest

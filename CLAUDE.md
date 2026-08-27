@@ -532,6 +532,17 @@ could not check. Note it needs `Resolution::format_name` (the extension), not
   this server being broken.
 - **iPXE's BIOS targets need an x86 compiler and its ARM64 ones need
   `CROSS_COMPILE=aarch64-linux-gnu-`.** Both failures read like a broken Makefile.
+- **A container that died looks exactly like one still starting.** Three of the boot
+  rig's first five failures hid behind that; anything that waits on a service has to
+  check it is still running and print its log when it is not.
+- **A service on an `internal` Docker network cannot reach apt.** Install at image-build
+  time or it fails silently and the container exits 127 later.
+- **dnsmasq logs to syslog unless told otherwise** (`--log-facility=-`), and a container
+  has no syslog — so a marker grepping its output could never have matched.
+- **A `q35` QEMU machine has no IDE controller**, so `-drive if=ide` is simply not there
+  and SeaBIOS says "could not read the boot disk". Use `pc` for a BIOS guest.
+- **`sed -n … "$0"` cannot find a relatively-invoked script after a `cd`.** Resolve the
+  path first, or `--help` breaks for everyone who does not type an absolute path.
 - **The size figures in this file go stale.** They moved ~375 KB when armv7 changed from
   musl to glibc. Re-measure before concluding anything from them; a stale baseline once
   turned a 71% budget spend into an apparent 293% overrun.
@@ -871,6 +882,13 @@ the image and not derived from `DISK_SIZE`. `run-vm.sh` is the loader-image fall
 `cargo test` does not run those). `docs/development/testing.md` has the per-suite table;
 the rules that decide where a test goes:
 
+- **The whole boot chain belongs in `packaging/boot-rig/`**, which is not Rust and which
+  `cargo test` does not run. `run.sh` boots a claimed and an unclaimed machine in QEMU
+  and asserts four markers; CI runs the same thing plus one deliberate break. **A QEMU
+  guest bridged into a container has a MAC of its own, and Docker Desktop's virtual
+  switch does not forward frames from a MAC it did not assign** — measured, which is why
+  the primary rig is one container on a private bridge rather than four on a Docker
+  network.
 - **TFTP belongs in `tests/tftp.rs`**, speaking the protocol over real UDP. A transfer is
   a conversation, and every bug worth catching lives in the turn-taking: the first run
   found two, both of the "works by hand, never after a reboot" kind.
