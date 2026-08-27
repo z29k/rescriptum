@@ -190,7 +190,7 @@ Ceux-ci sont affichés et le serveur continue :
 | API d'administration hors boucle locale | `warning: the admin API is not bound to loopback — …` |
 | `RESCRIPTUM_ANSWER_TOKEN` de moins de 16 caractères | un avertissement, **pas** une erreur — refuser de démarrer laisserait un parc incapable de s'installer |
 | Tout problème dans le jeu de réponses | une ligne `warning:` chacun, le même jeu que signale `check` |
-| `RESCRIPTUM_PUBLIC_HOST` non défini | `warning: … is not set — derived <adresse>, which is what every generated URL will name`. Les hôtes multi-domiciliés et derrière NAT se trompent souvent ici |
+| `RESCRIPTUM_PUBLIC_HOST` non défini | La réponse de la table de routage, ou l'unique adresse d'interface s'il n'y a pas de route par défaut. Journalisé dans les deux cas, en avertissement **nommant les autres adresses** s'il y en a. Un hôte derrière du NAT se trompe toujours en silence |
 | Répertoire de médias absent ou illisible | une ligne `warning: media: …` — un parc ne doit jamais être incapable de s'installer parce qu'une image est bizarre |
 
 ## Options de compilation

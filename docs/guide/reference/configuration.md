@@ -185,7 +185,7 @@ These are printed and the server carries on:
 | Admin API not on loopback | `warning: the admin API is not bound to loopback — …` |
 | `RESCRIPTUM_ANSWER_TOKEN` under 16 characters | a warning, **not** an error — refusing to start would leave a fleet unable to install |
 | Any problem in the answer set | one `warning:` line each, the same set `check` reports |
-| `RESCRIPTUM_PUBLIC_HOST` unset | `warning: … is not set — derived <address>, which is what every generated URL will name`. Multi-homed and NAT hosts get this wrong |
+| `RESCRIPTUM_PUBLIC_HOST` unset | The routing table's answer, or the sole interface address when there is no default route. Logged either way, as a warning **naming the other addresses** when there are any. A NAT host still gets it wrong silently |
 | Media directory missing or unlistable | one `warning: media: …` line — a fleet must never be unable to install because one image is odd |
 
 ## Compile-time options

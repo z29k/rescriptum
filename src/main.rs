@@ -181,11 +181,27 @@ async fn serve(cfg: Arc<Config>) -> ExitCode {
         // answer will ever appear.
         let (host, derived) = cfg.public_host();
         if derived {
-            log::server(&format!(
-                "warning: RESCRIPTUM_PUBLIC_HOST is not set — derived {host}, which is what \
-                 every generated URL will name. Multi-homed and NAT hosts get this wrong; \
-                 set it explicitly if that address is not reachable from the machines."
-            ));
+            // Naming the alternatives is what makes this actionable. A generic "this
+            // might be wrong" sends an operator off to look at interfaces; a list they
+            // can read in place tells them in one glance whether the guess is the
+            // address their machines can reach.
+            let others: Vec<String> = config::local_addresses()
+                .into_iter()
+                .filter(|a| *a != host)
+                .collect();
+            if others.is_empty() {
+                log::server(&format!(
+                    "RESCRIPTUM_PUBLIC_HOST is not set — using {host}, the only address this \
+                     host has. Every generated URL will name it."
+                ));
+            } else {
+                log::server(&format!(
+                    "warning: RESCRIPTUM_PUBLIC_HOST is not set — derived {host}, which is \
+                     what every generated URL will name. This host also has {}. If the \
+                     machines reach it on one of those instead, set it explicitly.",
+                    others.join(", ")
+                ));
+            }
         }
         log::server(&format!(
             "media listening on {bound} — serving {} as http://{host}",

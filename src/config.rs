@@ -531,12 +531,85 @@ fn join(host: &str, listen_addr: &str) -> String {
 ///
 /// 192.0.2.1 is TEST-NET-1, a documentation address that exists to be written down and
 /// never answered. Connecting a UDP socket to it sends nothing; it only makes the
-/// kernel choose a source address, which is the answer we are after.
-fn derive_public_host() -> Option<String> {
+/// kernel choose a source address, which is the answer we are after — and on a host
+/// with one interface it is simply the right one.
+pub fn derive_public_host() -> Option<String> {
+    choose_host(routed_address(), &local_addresses())
+}
+
+/// The choice itself, separated from the two syscalls that feed it so it can be tested.
+fn choose_host(routed: Option<String>, addresses: &[String]) -> Option<String> {
+    if routed.is_some() {
+        return routed;
+    }
+    // No default route — an isolated provisioning segment, which is a perfectly ordinary
+    // way to run this. The routing table has nothing to say, but the interface list
+    // still does: with exactly one address there is no choice to get wrong. With
+    // several there is, and guessing one silently is worse than saying nothing.
+    (addresses.len() == 1).then(|| addresses[0].clone())
+}
+
+fn routed_address() -> Option<String> {
     let socket = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
     socket.connect("192.0.2.1:9").ok()?;
     let address = socket.local_addr().ok()?.ip();
     (!address.is_unspecified()).then(|| address.to_string())
+}
+
+/// Every address this host actually has, loopback and link-local excluded.
+///
+/// The derivation above picks the interface the *default route* uses, which is right on
+/// a host with one address and a coin toss on a NAS with two NICs or a bond. Knowing
+/// what else is available is what turns "this might be wrong" into something an
+/// operator can act on without going to look — and looking is the step nobody takes
+/// before a rack is already failing to boot.
+pub fn local_addresses() -> Vec<String> {
+    #[cfg(not(unix))]
+    {
+        Vec::new()
+    }
+    #[cfg(unix)]
+    {
+        use std::net::{Ipv4Addr, Ipv6Addr};
+
+        let mut list: *mut libc::ifaddrs = std::ptr::null_mut();
+        if unsafe { libc::getifaddrs(&mut list) } != 0 {
+            return Vec::new();
+        }
+        let mut found: Vec<String> = Vec::new();
+        let mut node = list;
+        while !node.is_null() {
+            let entry = unsafe { &*node };
+            node = entry.ifa_next;
+            if entry.ifa_addr.is_null() {
+                continue;
+            }
+            let family = unsafe { (*entry.ifa_addr).sa_family } as i32;
+            let address = if family == libc::AF_INET {
+                let raw = unsafe { &*(entry.ifa_addr as *const libc::sockaddr_in) };
+                let octets = u32::from_be(raw.sin_addr.s_addr);
+                let v4 = Ipv4Addr::from(octets);
+                (!v4.is_loopback() && !v4.is_link_local() && !v4.is_unspecified())
+                    .then(|| v4.to_string())
+            } else if family == libc::AF_INET6 {
+                let raw = unsafe { &*(entry.ifa_addr as *const libc::sockaddr_in6) };
+                let v6 = Ipv6Addr::from(raw.sin6_addr.s6_addr);
+                // No link-local: an fe80:: address needs a scope to be usable, and a
+                // scope is not something that survives being written into a script.
+                let link_local = v6.segments()[0] & 0xffc0 == 0xfe80;
+                (!v6.is_loopback() && !link_local && !v6.is_unspecified()).then(|| v6.to_string())
+            } else {
+                None
+            };
+            if let Some(address) = address
+                && !found.contains(&address)
+            {
+                found.push(address);
+            }
+        }
+        unsafe { libc::freeifaddrs(list) };
+        found
+    }
 }
 
 /// One configuration variable, **described** rather than merely read.
@@ -642,9 +715,12 @@ pub const KNOWN: [Known; 26] = [
     },
     Known {
         key: "RESCRIPTUM_PUBLIC_HOST",
+        // Not a constant: the default is this host's own LAN address, which is only
+        // knowable at runtime. `settings()` fills it in, the way it does the CPU count.
         default: None,
         secret: false,
-        help: "The host this server names itself by. A host, never a URL. Derived if unset.",
+        help: "The host this server names itself by. A host, never a URL. \
+               Unset, the address of the interface that reaches the network is used.",
     },
     Known {
         key: "RESCRIPTUM_MEDIA_DIR",
@@ -790,6 +866,11 @@ pub fn settings(
 
             let default = match known.key {
                 "RESCRIPTUM_WORKERS" => Some(default_workers().to_string()),
+                // **The other default that cannot be a constant.** The server derives
+                // this at startup, so a panel showing an empty field would be showing
+                // something other than what the server will use — and the operator has
+                // no way to tell whether the guess is right without reading a log.
+                "RESCRIPTUM_PUBLIC_HOST" => derive_public_host(),
                 _ => known.default.map(str::to_string),
             };
             let value = from_env.or(from_file).or_else(|| default.clone());
@@ -1160,6 +1241,69 @@ mod tests {
             });
             assert!(c.validate().is_ok(), "{value} must be accepted");
             assert_eq!(c.public_host(), (value.to_string(), false));
+        }
+    }
+
+    #[test]
+    fn the_settings_table_shows_the_address_the_server_would_actually_use() {
+        // **A panel with an empty field here is showing something other than what the
+        // server does.** The value is derived at startup, so the table has to derive it
+        // too — the same treatment the CPU count already gets, and for the same reason.
+        let s = settings(None, |_| None);
+        let host = setting(&s, "RESCRIPTUM_PUBLIC_HOST");
+        assert!(host.set, "a derived value is still a value in force");
+        assert_eq!(
+            host.value, host.default,
+            "unset means the derived default is what is in force"
+        );
+        assert_eq!(
+            host.value,
+            Config::from_lookup(|_| None).public_host().0.into(),
+            "and it is the same address the server itself would pick"
+        );
+    }
+
+    #[test]
+    fn without_a_default_route_a_single_interface_still_answers() {
+        // An isolated provisioning segment has no default route, which is exactly the
+        // network this server is most often put on. One address there is not a guess.
+        let one = vec!["10.0.0.4".to_string()];
+        assert_eq!(choose_host(None, &one), Some("10.0.0.4".to_string()));
+
+        // Two, and there is a real choice — one that only the operator can make.
+        let two = vec!["10.0.0.4".to_string(), "192.168.1.4".to_string()];
+        assert_eq!(choose_host(None, &two), None);
+        assert_eq!(choose_host(None, &[]), None);
+
+        // A route beats the interface list even when the list is unambiguous: the
+        // kernel knows which way traffic actually leaves.
+        assert_eq!(
+            choose_host(Some("172.16.0.9".to_string()), &two),
+            Some("172.16.0.9".to_string())
+        );
+    }
+
+    #[test]
+    fn the_host_knows_what_addresses_it_has() {
+        // Loopback and link-local are excluded: the first is not reachable from a
+        // machine, and the second needs a scope that does not survive being written
+        // into a script.
+        let addresses = local_addresses();
+        for address in &addresses {
+            assert!(!address.starts_with("127."), "{address} is loopback");
+            assert!(!address.starts_with("169.254."), "{address} is link-local");
+            assert!(!address.starts_with("fe80:"), "{address} is link-local");
+            assert_ne!(address, "::1");
+        }
+        // The derived host, when there is one, is one of them — it is chosen from this
+        // set by the routing table rather than invented.
+        if let Some(derived) = derive_public_host()
+            && !addresses.is_empty()
+        {
+            assert!(
+                addresses.contains(&derived),
+                "derived {derived} is not among {addresses:?}"
+            );
         }
     }
 

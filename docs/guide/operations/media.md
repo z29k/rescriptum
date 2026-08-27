@@ -288,18 +288,27 @@ listeners, and a value carrying one port would pin every generated script to one
 Each URL appends its own listener's port. A value with any of the three is refused at
 startup, naming which.
 
-Left unset, it asks the routing table which of this host's addresses faces outward, and
-**says so loudly at startup**:
+Left unset, it asks the routing table which of this host's addresses faces outward — and
+on a segment with no default route, falls back to the interface list, which on a host with
+one address is not a guess at all. Either way it **says at startup what it settled on**,
+and whether there was anything to settle:
+
+```
+RESCRIPTUM_PUBLIC_HOST is not set — using 192.0.2.10, the only address this host has.
+Every generated URL will name it.
+```
 
 ```
 warning: RESCRIPTUM_PUBLIC_HOST is not set — derived 192.0.2.10, which is what every
-generated URL will name. Multi-homed and NAT hosts get this wrong; set it explicitly if
-that address is not reachable from the machines.
+generated URL will name. This host also has 10.8.0.4. If the machines reach it on one of
+those instead, set it explicitly.
 ```
 
-Take the warning seriously on a multi-homed or NAT host. A wrong guess produces a machine
-that boots, chains, and hangs on an address that does not exist — and that log line is
-the only place the answer will ever appear.
+The second is the one to take seriously: a wrong guess produces a machine that boots,
+chains, and hangs on an address that does not exist. Naming the alternatives is what makes
+that answerable from the log itself, rather than by going to look at the host. NAT is the
+case neither line can catch — the address is genuinely this host's, and genuinely not the
+one the machines reach.
 
 ## Keeping it honest
 

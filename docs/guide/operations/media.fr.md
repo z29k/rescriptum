@@ -299,18 +299,27 @@ généré sur l'un d'eux. Chaque URL ajoute le port de son propre listener. Une 
 portant l'un des trois est refusée au démarrage, en nommant lequel.
 
 Laissée vide, elle demande à la table de routage laquelle des adresses de cet hôte fait
-face à l'extérieur, et **le dit haut et fort au démarrage** :
+face à l'extérieur — et sur un segment sans route par défaut, se rabat sur la liste des
+interfaces, ce qui sur un hôte à une seule adresse n'est pas une déduction du tout. Dans
+les deux cas elle **dit au démarrage ce qu'elle a retenu**, et s'il y avait quelque chose
+à trancher :
+
+```
+RESCRIPTUM_PUBLIC_HOST is not set — using 192.0.2.10, the only address this host has.
+Every generated URL will name it.
+```
 
 ```
 warning: RESCRIPTUM_PUBLIC_HOST is not set — derived 192.0.2.10, which is what every
-generated URL will name. Multi-homed and NAT hosts get this wrong; set it explicitly if
-that address is not reachable from the machines.
+generated URL will name. This host also has 10.8.0.4. If the machines reach it on one of
+those instead, set it explicitly.
 ```
 
-Prenez l'avertissement au sérieux sur un hôte multi-domicilié ou derrière du NAT. Une
-mauvaise déduction produit une machine qui démarre, enchaîne, et se bloque sur une adresse
-qui n'existe pas — et cette ligne de journal est le seul endroit où la réponse
-apparaîtra jamais.
+C'est la seconde qu'il faut prendre au sérieux : une mauvaise déduction produit une machine
+qui démarre, enchaîne, et se bloque sur une adresse qui n'existe pas. Nommer les autres
+adresses est ce qui rend la question tranchable depuis le journal lui-même, plutôt qu'en
+allant regarder l'hôte. Le NAT est le cas qu'aucune des deux lignes ne peut attraper :
+l'adresse est bien celle de cet hôte, et bien celle que les machines n'atteignent pas.
 
 ## Le garder honnête
 
