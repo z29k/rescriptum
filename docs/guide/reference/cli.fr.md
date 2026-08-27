@@ -125,6 +125,31 @@ Contrairement à toutes les autres sous-commandes, celle-ci fonctionne quand la 
 est trop cassée pour démarrer un serveur — un fichier qui ne parse pas, un jeton d'un
 caractère trop court. C'est l'état dont on se sert d'elle pour *sortir*.
 
+## `media`
+
+Les médias de démarrage : les images d'installation que ce serveur détient. Chacune de
+ces commandes exige `RESCRIPTUM_MEDIA_DIR` ; sans elle, elles le disent et sortent en
+`1`. Voir [Servir les médias de démarrage](../operations/media.md).
+
+```console
+$ rescriptum media list                    # ce qui est détenu : famille, architecture, version, empreinte
+$ rescriptum media add FILE [--sha256 D]   # enregistrer une image déjà dans le répertoire
+$ rescriptum media check                   # revérifier chaque empreinte enregistrée
+$ rescriptum media ipxe ID                 # imprimer la réponse .ipxe qui démarre une image
+```
+
+`media add` prend un fichier **déjà dans le répertoire de médias** — rien n'est
+téléchargé et rien n'est copié. Il le hache avec une progression, l'analyse, et écrit un
+fichier compagnon `.media` à côté. `--sha256` est vérifié avant tout enregistrement :
+un écart n'écrit rien et sort en `1`.
+
+Le code de sortie de `media check` est un contrat, comme celui de `check`. `deploy.sh`
+s'y fie.
+
+`media ipxe` imprime sur **stdout** et met tout le reste sur stderr, de sorte que
+`rescriptum media ipxe pve-8.4 > groups/rack-a.ipxe` produit un document de réponse
+utilisable — ce qu'il est, rien de plus. Il imprime un script, il n'en installe pas.
+
 ## Codes de sortie
 
 | Code | Signifie |

@@ -123,6 +123,30 @@ Unlike every other subcommand, this one works when the configuration is too brok
 a server — a file that will not parse, a token one character short. That is the state
 people run it *to get out of*.
 
+## `media`
+
+Boot media: the installer images this server holds. Every one of these needs
+`RESCRIPTUM_MEDIA_DIR`; without it they say so and exit `1`. See
+[Serving boot media](../operations/media.md).
+
+```console
+$ rescriptum media list                    # what is held: family, architecture, version, digest
+$ rescriptum media add FILE [--sha256 D]   # register one already in the directory
+$ rescriptum media check                   # re-verify every recorded digest
+$ rescriptum media ipxe ID                 # print the .ipxe answer that boots one image
+```
+
+`media add` takes a file **already inside the media directory** — nothing is downloaded
+and nothing is copied. It hashes it with progress, probes it, and writes a `.media`
+sidecar beside it. `--sha256` is checked before anything is recorded: a mismatch writes
+nothing and exits `1`.
+
+`media check`'s exit status is a contract, like `check`'s. `deploy.sh` keys on it.
+
+`media ipxe` prints to **stdout** and puts everything else on stderr, so
+`rescriptum media ipxe pve-8.4 > groups/rack-a.ipxe` produces a usable answer document —
+which is all it is. It prints a script; it does not install one.
+
 ## Exit statuses
 
 | Status | Means |

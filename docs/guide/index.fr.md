@@ -90,8 +90,13 @@ validateur de l'installateur lui-même quand il est dans le PATH.
 
 ## Ce que ce n'est pas
 
-- **Pas un serveur PXE/TFTP/DHCP.** Il répond à une seule question — *quelle configuration
-  reçoit cette machine ?* — et laisse le netboot à ce que vous faites déjà tourner.
+- **Pas un serveur DHCP, sous aucune forme.** Ni répondeur, ni proxy, ni derrière un
+  drapeau. Les sites qui déploient ceci en ont déjà un, et le faire pointer vers un
+  serveur de démarrage est un problème résolu depuis trente ans.
+- **Pas un serveur TFTP** — pas encore. Il sait servir le noyau, l'initrd et l'image de
+  l'installeur en HTTP (voir [Servir les médias de démarrage](./operations/media.md)),
+  ce dont se sert chaque étape après la première. Livrer le *chargeur* reste l'affaire de
+  ce que vous faites déjà tourner.
 - **Pas un validateur de schéma.** Il prouve que vos documents sont bien formés et
   fusionnent proprement. Savoir si le résultat est du *Proxmox* valide est le travail de
   `proxmox-auto-install-assistant`, et `check` l'appellera s'il est installé.

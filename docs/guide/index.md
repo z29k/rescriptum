@@ -82,8 +82,12 @@ one is on PATH.
 
 ## What it is not
 
-- **Not a PXE/TFTP/DHCP server.** It answers one question — *what configuration does this
-  machine get?* — and leaves netbooting to whatever you already run.
+- **Not a DHCP server, in any form.** Not a responder, not a proxy, not behind a flag.
+  Sites that deploy this already run one, and pointing it at a boot server is a solved
+  problem with thirty years of tooling.
+- **Not a TFTP server** — not yet. It can serve the installer's kernel, initrd and image
+  over HTTP (see [Serving boot media](./operations/media.md)), which is what every stage
+  after the first one uses. Handing over the *loader* is still whatever you already run.
 - **Not a schema validator.** It proves your documents are well-formed and merge cleanly.
   Whether the result is valid *Proxmox* is `proxmox-auto-install-assistant`'s job, and
   `check` will call it when it is installed.

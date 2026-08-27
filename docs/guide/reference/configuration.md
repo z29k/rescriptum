@@ -29,6 +29,12 @@ no configuration *format* to learn and no command line to get wrong.
 | `RESCRIPTUM_CAPTURE_DIR` | unset | Record request bodies here. Unset means no capture |
 | `RESCRIPTUM_LOG` | `all` | `all`, `problems` or `off` — see [below](#logging) |
 | `RESCRIPTUM_LOG_FILE` | unset | A file to append to, or `stdout` / `stderr`. Unset means stderr |
+| `RESCRIPTUM_MEDIA_DIR` | unset | Installer images. **Unset means no media and no media listener** |
+| `RESCRIPTUM_MEDIA_ADDR` | `0.0.0.0:8001` | The media listener, when there is a media directory |
+| `RESCRIPTUM_MEDIA_TIMEOUT_SECS` | `600` | Whole-transfer deadline. Deliberately not the answer listener's 10 |
+| `RESCRIPTUM_MEDIA_MAX_CONNECTIONS` | `16` | Concurrent transfers. Low on purpose: each holds its permit for minutes |
+| `RESCRIPTUM_PUBLIC_HOST` | derived | The host generated URLs name. **A host, never a URL** |
+| `RESCRIPTUM_BOOT_ALLOW` | unset | Client CIDRs allowed to fetch boot media. Unset means anyone who can reach the port |
 
 `/srv` is where the filesystem hierarchy standard puts data served by the system, which is
 what an answers directory is. Both defaults live there so that a bare `rescriptum` does
@@ -153,6 +159,9 @@ These stop the server rather than warning, because starting anyway would be wors
 | `RESCRIPTUM_ADMIN_TOKEN` under 16 characters | short enough to guess |
 | The listen address cannot be bound | nothing to do |
 | The store cannot be opened | nothing to serve |
+| `RESCRIPTUM_MEDIA_ADDR` set with no `RESCRIPTUM_MEDIA_DIR` | a listener with nothing to serve |
+| `RESCRIPTUM_MEDIA_ADDR` equal to the answer or admin address | the second bind loses, and which one depends on start order |
+| `RESCRIPTUM_PUBLIC_HOST` carrying a scheme, a port or a path | it is written into URLs for two listeners; one port in the value pins every generated script to one of them |
 
 ## Startup warnings
 
@@ -166,12 +175,25 @@ These are printed and the server carries on:
 | Admin API not on loopback | `warning: the admin API is not bound to loopback — …` |
 | `RESCRIPTUM_ANSWER_TOKEN` under 16 characters | a warning, **not** an error — refusing to start would leave a fleet unable to install |
 | Any problem in the answer set | one `warning:` line each, the same set `check` reports |
+| `RESCRIPTUM_PUBLIC_HOST` unset | `warning: … is not set — derived <address>, which is what every generated URL will name`. Multi-homed and NAT hosts get this wrong |
+| Media directory missing or unlistable | one `warning: media: …` line — a fleet must never be unable to install because one image is odd |
 
 ## Compile-time options
 
 | Feature | Default | Effect |
 |---|---|---|
-| `sqlite` | on | The SQLite store and the admin API. `cargo build --no-default-features` drops both — 944,928 bytes instead of 2,103,456 on ARMv7 |
+| `sqlite` | on | The SQLite store and the admin API |
+| `boot` | on | The media catalogue, the ISO reader and the media listener |
+
+Measured on ARMv7 (gnueabihf, glibc floor 2.17). Re-measure rather than quoting these:
+they moved by about 375 KB when that target changed from musl.
+
+| Build | Bytes |
+|---|---|
+| both (default) | 2,602,056 |
+| `sqlite` only | 2,482,000 |
+| `boot` only | 1,436,704 |
+| neither | 1,316,648 |
 
 ## Fixed limits
 

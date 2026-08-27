@@ -25,6 +25,7 @@ it is allowed to serve and to whom.
 - **[The admin API](./admin-api.md)** — manage answers over HTTP, on its own listener,
   with a write that cannot break the fleet.
 - **[Troubleshooting](./troubleshooting.md)** — the log line is the whole diagnostic
+- [Serving boot media](./media.md) — the installer's own kernel, initrd and image, from the same server.
   story.
 
 ## The shape of a deployment

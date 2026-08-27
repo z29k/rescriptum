@@ -29,6 +29,12 @@ pas de *format* de configuration à apprendre ni de ligne de commande à se trom
 | `RESCRIPTUM_CAPTURE_DIR` | non défini | Enregistre les corps de requête ici. Non défini = pas de capture |
 | `RESCRIPTUM_LOG` | `all` | `all`, `problems` ou `off` — voir [plus bas](#journalisation) |
 | `RESCRIPTUM_LOG_FILE` | non défini | Un fichier où ajouter, ou `stdout` / `stderr`. Non défini = stderr |
+| `RESCRIPTUM_MEDIA_DIR` | non défini | Images d'installation. **Non défini = pas de média et pas de listener média** |
+| `RESCRIPTUM_MEDIA_ADDR` | `0.0.0.0:8001` | Le listener média, quand un répertoire de médias existe |
+| `RESCRIPTUM_MEDIA_TIMEOUT_SECS` | `600` | Échéance du transfert entier. Volontairement pas les 10 s du point de réponse |
+| `RESCRIPTUM_MEDIA_MAX_CONNECTIONS` | `16` | Transferts simultanés. Bas exprès : chacun retient son jeton des minutes durant |
+| `RESCRIPTUM_PUBLIC_HOST` | déduit | L'hôte que nomment les URL générées. **Un hôte, jamais une URL** |
+| `RESCRIPTUM_BOOT_ALLOW` | non défini | CIDR clients autorisés à récupérer les médias. Non défini = quiconque atteint le port |
 
 `/srv` est l'endroit où la norme de hiérarchie des fichiers range les données servies par le
 système, ce qu'est précisément un répertoire de réponses. Les deux valeurs par défaut y vivent,
@@ -158,6 +164,9 @@ Celles-ci arrêtent le serveur au lieu d'avertir, parce que démarrer quand mêm
 | `RESCRIPTUM_ADMIN_TOKEN` de moins de 16 caractères | assez court pour être deviné |
 | L'adresse d'écoute ne peut pas être bindée | rien à faire |
 | Le store ne peut pas être ouvert | rien à servir |
+| `RESCRIPTUM_MEDIA_ADDR` défini sans `RESCRIPTUM_MEDIA_DIR` | un listener sans rien à servir |
+| `RESCRIPTUM_MEDIA_ADDR` égal à l'adresse de réponse ou d'administration | le second bind perd, et lequel dépend de l'ordre de démarrage |
+| `RESCRIPTUM_PUBLIC_HOST` portant un schéma, un port ou un chemin | il est écrit dans les URL de deux listeners ; un port dans la valeur épingle chaque script généré sur l'un d'eux |
 
 ## Avertissements de démarrage
 
@@ -171,12 +180,25 @@ Ceux-ci sont affichés et le serveur continue :
 | API d'administration hors boucle locale | `warning: the admin API is not bound to loopback — …` |
 | `RESCRIPTUM_ANSWER_TOKEN` de moins de 16 caractères | un avertissement, **pas** une erreur — refuser de démarrer laisserait un parc incapable de s'installer |
 | Tout problème dans le jeu de réponses | une ligne `warning:` chacun, le même jeu que signale `check` |
+| `RESCRIPTUM_PUBLIC_HOST` non défini | `warning: … is not set — derived <adresse>, which is what every generated URL will name`. Les hôtes multi-domiciliés et derrière NAT se trompent souvent ici |
+| Répertoire de médias absent ou illisible | une ligne `warning: media: …` — un parc ne doit jamais être incapable de s'installer parce qu'une image est bizarre |
 
 ## Options de compilation
 
 | Feature | Défaut | Effet |
 |---|---|---|
-| `sqlite` | activée | Le store SQLite et l'API d'administration. `cargo build --no-default-features` retire les deux — 944 928 octets au lieu de 2 103 456 sur ARMv7 |
+| `sqlite` | activée | Le store SQLite et l'API d'administration |
+| `boot` | activée | Le catalogue de médias, le lecteur ISO et le listener média |
+
+Mesuré sur ARMv7 (gnueabihf, plancher glibc 2.17). Remesurez plutôt que de citer ces
+chiffres : ils ont bougé d'environ 375 Ko quand cette cible est passée de musl à glibc.
+
+| Build | Octets |
+|---|---|
+| les deux (défaut) | 2 602 056 |
+| `sqlite` seule | 2 482 000 |
+| `boot` seule | 1 436 704 |
+| aucune | 1 316 648 |
 
 ## Limites fixes
 
