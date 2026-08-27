@@ -274,10 +274,20 @@ RESCRIPTUM_PUBLIC_HOST=192.168.1.10
 ```
 
 Every generated script names this address. Left empty it is derived by asking the routing
-table, and **a NAS is often multi-homed** — the derived answer is then the wrong
-interface, and the symptom is a machine that boots, chains, and hangs on an address that
-does not exist. The startup log says which address was guessed; that line is the only
-place the answer appears.
+table, and the settings panel shows what that came out as rather than an empty box — so on
+a NAS with one interface there is nothing here to fill in.
+
+**A NAS with two is the case worth reading.** The derived answer is one of them, and the
+startup log names the others beside it:
+
+```
+warning: RESCRIPTUM_PUBLIC_HOST is not set — derived 192.168.1.10, which is what every
+generated URL will name. This host also has 10.0.0.10. If the machines reach it on one of
+those instead, set it explicitly.
+```
+
+Getting it wrong produces a machine that boots, chains, and hangs on an address that does
+not exist, which is a slow thing to diagnose from the machine's end.
 
 ## The log
 

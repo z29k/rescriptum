@@ -620,7 +620,7 @@ Environment variables only — plus an optional file to read some of them from:
 | `RESCRIPTUM_MEDIA_ADDR` | `0.0.0.0:8001` | The media listener, when there is a media directory |
 | `RESCRIPTUM_MEDIA_TIMEOUT_SECS` | `600` | Whole-transfer deadline — deliberately not the answer listener's 10 |
 | `RESCRIPTUM_MEDIA_MAX_CONNECTIONS` | `16` | Concurrent transfers; low on purpose |
-| `RESCRIPTUM_PUBLIC_HOST` | derived, with a warning | The host generated URLs name. **A host, never a URL** |
+| `RESCRIPTUM_PUBLIC_HOST` | the routing table's answer, else a sole interface | The host generated URLs name. **A host, never a URL**. Warns and names the alternatives when the host has several |
 | `RESCRIPTUM_BOOT_ALLOW` | unset | Client CIDRs allowed to fetch boot media |
 
 A zero or unparseable numeric value falls back to the default rather than starting a server

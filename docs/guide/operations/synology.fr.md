@@ -295,10 +295,20 @@ RESCRIPTUM_PUBLIC_HOST=192.168.1.10
 ```
 
 Chaque script généré nomme cette adresse. Laissée vide, elle est déduite en interrogeant
-la table de routage, et **un NAS est souvent multi-domicilié** — la déduction porte alors
-sur la mauvaise interface, et le symptôme est une machine qui démarre, enchaîne, et se
-bloque sur une adresse qui n'existe pas. Le journal de démarrage dit quelle adresse a été
-devinée ; cette ligne est le seul endroit où la réponse apparaît.
+la table de routage, et le panneau de réglages affiche ce que cela a donné plutôt qu'une
+case vide — donc sur un NAS à une seule interface, il n'y a rien à remplir ici.
+
+**C'est le NAS à deux interfaces qui mérite la lecture.** La déduction en retient une, et
+le journal de démarrage nomme les autres à côté :
+
+```
+warning: RESCRIPTUM_PUBLIC_HOST is not set — derived 192.168.1.10, which is what every
+generated URL will name. This host also has 10.0.0.10. If the machines reach it on one of
+those instead, set it explicitly.
+```
+
+Se tromper produit une machine qui démarre, enchaîne, et se bloque sur une adresse qui
+n'existe pas — long à diagnostiquer depuis la machine.
 
 ## Le journal
 

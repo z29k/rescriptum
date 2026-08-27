@@ -298,6 +298,30 @@ else
     bad "the package user cannot check its own answers"
 fi
 
+# **What the settings panel will show.** `api.cgi` answers `action=config` by shelling out
+# to exactly this, so the JSON here is the panel's data — asking the CGI itself would need
+# a DSM session, and would test the same values through a login.
+#
+# The address is the one field with no constant behind it: it is derived at startup from
+# this machine's own routing table. A blank one shipped once, because the table of known
+# variables had no default and the derivation lived only in the server — so the panel
+# showed an empty box while the server used an address, and the operator had no way to
+# see which. Only a real machine has interfaces to get this wrong on.
+json=$(sudo -u "$PKG" /usr/local/bin/$PKG-cli config --json 2>/dev/null)
+host=$(printf '%s' "$json" | tr '{' '\n' |
+    grep '"key":"RESCRIPTUM_PUBLIC_HOST"' |
+    sed -n 's/.*"value":"\([^"]*\)".*/\1/p')
+if [ -n "$host" ]; then
+    ok "the panel would show an address for this NAS: $host"
+    if ip -4 -o addr show 2>/dev/null | grep -qw "$host"; then
+        ok "  and it is one this machine actually has"
+    else
+        bad "  but no interface here has it — the derivation picked something imaginary"
+    fi
+else
+    bad "RESCRIPTUM_PUBLIC_HOST came back empty — the panel shows a blank the server does not have"
+fi
+
 # ── 5. logrotate, and the descriptor that must not move ────────────────────────
 section "logrotate"
 STANZA=$(find /usr/local/etc/logrotate.d /etc/logrotate.d /usr/syno/etc/logrotate.d -name "*$PKG*" 2>/dev/null | head -n 1)
