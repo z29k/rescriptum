@@ -85,6 +85,7 @@ fn main() -> ExitCode {
         Some((cmd, rest)) if cmd == "import" => return cli::import(&cfg, rest),
         Some((cmd, rest)) if cmd == "export" => return cli::export(&cfg, rest),
         Some((cmd, rest)) if cmd == "media" => return cli::media(&cfg, rest),
+        Some((cmd, rest)) if cmd == "boot" => return cli::boot(&cfg, rest),
         Some((cmd, _)) => {
             eprintln!("unknown argument {cmd:?}\n");
             eprint!("{}", cli::USAGE);

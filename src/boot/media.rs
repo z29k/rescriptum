@@ -125,6 +125,49 @@ async fn handle(req: Request<Incoming>, media: Arc<Media>, peer: SocketAddr) -> 
         return catalogue(&media, &peer_label, json).await;
     }
 
+    // The two generated scripts. Both live here rather than in the answer set because
+    // **they have to work when the answer set is empty**, which is the state every new
+    // install starts in.
+    if path == "/ipxe/bootstrap" {
+        let script = super::menu::bootstrap(&media.cfg.endpoints());
+        log::request(&peer_label, 200, "media: GET /ipxe/bootstrap 200");
+        return script_response(script);
+    }
+    if path == "/ipxe/menu" {
+        let catalog = Arc::clone(&media.catalog);
+        let listing = match tokio::task::spawn_blocking(move || catalog.listing()).await {
+            Ok(Ok(listing)) => listing,
+            _ => {
+                log::request(&peer_label, 500, "media: GET /ipxe/menu 500");
+                return text(StatusCode::INTERNAL_SERVER_ERROR, "500\n");
+            }
+        };
+        let style = super::menu::Style {
+            title: media
+                .cfg
+                .boot_title
+                .clone()
+                .unwrap_or_else(super::menu::Style::default_title),
+            timeout_millis: media.cfg.boot_timeout_millis(),
+        };
+        let script = super::menu::menu(&listing, &media.cfg.endpoints(), &style);
+        log::request(
+            &peer_label,
+            200,
+            &format!(
+                "media: GET /ipxe/menu 200 entries={}",
+                listing.entries.len()
+            ),
+        );
+        return script_response(script);
+    }
+
+    // The TFTP root over HTTP: the loaders (UEFI HTTP Boot fetches them here rather
+    // than over TFTP), the logo, and anything else `boot sync` put there.
+    if let Some(name) = path.strip_prefix("/boot/") {
+        return boot_asset(&media, name, &peer_label, method == Method::HEAD).await;
+    }
+
     let Some((id, what)) = route(&path) else {
         log::request(
             &peer_label,
@@ -590,6 +633,94 @@ async fn catalogue(media: &Media, peer: &str, json: bool) -> Response<Body> {
         out.push_str(&format!("problem: {problem}\n"));
     }
     text(StatusCode::OK, out)
+}
+
+/// A generated iPXE script. `text/plain` because that is what iPXE reads, and no
+/// caching: the menu is a rendering of a catalogue that changes when an ISO is dropped
+/// in, and a cached one would show yesterday's images.
+fn script_response(script: String) -> Response<Body> {
+    Response::builder()
+        .status(StatusCode::OK)
+        .header("Content-Type", "text/plain; charset=us-ascii")
+        .header("Cache-Control", "no-store")
+        .header("Content-Length", script.len().to_string())
+        .body(Body::once(Bytes::from(script)))
+        .expect("a built response")
+}
+
+/// A file from the boot directory, over HTTP.
+///
+/// **UEFI HTTP Boot fetches its loader here rather than over TFTP**, which is the
+/// shortest chain there is — option 60 `HTTPClient` plus a URL in 67, and no TFTP at
+/// all. The same files, the same directory, a faster transport.
+async fn boot_asset(media: &Media, name: &str, peer: &str, head_only: bool) -> Response<Body> {
+    let Some(root) = media.cfg.boot_dir.clone() else {
+        log::request(
+            peer,
+            404,
+            &format!("media: GET /boot/{name} 404 no boot directory"),
+        );
+        return text(
+            StatusCode::NOT_FOUND,
+            "404 Not Found — RESCRIPTUM_BOOT_DIR is not set\n",
+        );
+    };
+
+    let wanted = name.to_string();
+    let found = tokio::task::spawn_blocking(move || {
+        // The same containment rule TFTP uses, for the same reason and by the same
+        // means: strip anything that could climb, then check the resolved path is still
+        // inside the canonicalised root. A symlink out of the tree fails the second
+        // check even though it passes the first.
+        let root = root.canonicalize().ok()?;
+        let mut path = root.clone();
+        for segment in wanted.split('/') {
+            if segment.is_empty() || segment == "." {
+                continue;
+            }
+            if segment == ".." {
+                return None;
+            }
+            path.push(segment);
+        }
+        let resolved = path.canonicalize().ok()?;
+        if !resolved.starts_with(&root) || !resolved.is_file() {
+            return None;
+        }
+        let size = std::fs::metadata(&resolved).ok()?.len();
+        Some((resolved, size))
+    })
+    .await;
+
+    let Ok(Some((path, size))) = found else {
+        log::request(peer, 404, &format!("media: GET /boot/{name} 404"));
+        return text(StatusCode::NOT_FOUND, "404 Not Found\n");
+    };
+
+    log::request(
+        peer,
+        200,
+        &format!("media: GET /boot/{name} 200 bytes={size}"),
+    );
+    let body = if head_only {
+        Body::empty()
+    } else {
+        Body::stream(
+            vec![Segment::File {
+                path,
+                offset: 0,
+                length: size,
+            }],
+            size,
+        )
+    };
+    Response::builder()
+        .status(StatusCode::OK)
+        .header("Content-Type", "application/octet-stream")
+        .header("Content-Length", size.to_string())
+        .header("Accept-Ranges", "none")
+        .body(body)
+        .unwrap_or_else(|_| text(StatusCode::INTERNAL_SERVER_ERROR, "500\n"))
 }
 
 /// Whether a peer is inside `RESCRIPTUM_BOOT_ALLOW`, which is a comma-separated list of

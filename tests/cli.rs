@@ -971,3 +971,206 @@ fn config_value_prints_one_setting_but_never_a_credential() {
     assert!(!u.ok, "{u}");
     assert!(u.stdout.is_empty(), "{u}");
 }
+
+// ---- boot ------------------------------------------------------------------
+
+/// A snippet is generated so an operator can *copy* rather than compose, so the shape
+/// of what comes out is the contract — and stdout has to be the file, with everything
+/// else on stderr, for `> dhcp.conf` to work.
+#[cfg(feature = "boot")]
+fn snippet(case: &Case, args: &[&str]) -> Run {
+    let mut all = vec!["boot", "dhcp-snippet"];
+    all.extend_from_slice(args);
+    case.run_env(
+        &[
+            ("RESCRIPTUM_ANSWERS_DIR", case.dir.as_path()),
+            ("RESCRIPTUM_PUBLIC_HOST", Path::new("192.0.2.10")),
+        ],
+        &all,
+    )
+}
+
+#[test]
+#[cfg(feature = "boot")]
+fn every_dhcp_format_names_the_loaders_the_tftp_table_actually_serves() {
+    // **The two are generated from one table precisely so a test can pin them
+    // together.** A snippet naming a loader the server does not hand out fails
+    // silently, at the ROM, with nothing on any console — it is the least diagnosable
+    // failure in the whole chain, and nothing else would catch it.
+    let case = Case::new(&[]);
+    let served = rescriptum::boot::loaders::loaders();
+
+    for format in ["dnsmasq", "isc", "kea", "powershell", "pfsense", "mikrotik"] {
+        let r = snippet(&case, &["--format", format]);
+        assert!(r.ok, "{format}: {r}");
+        assert!(r.stdout.contains("192.0.2.10"), "{format}: {r}");
+
+        for loader in &served {
+            // pfSense and RouterOS are interfaces rather than files, and both say in
+            // their own output which architectures they cannot express.
+            if matches!(format, "pfsense" | "mikrotik") && loader.contains("arm64") {
+                continue;
+            }
+            assert!(
+                r.stdout.contains(loader),
+                "{format} does not name {loader}: {r}"
+            );
+        }
+    }
+}
+
+#[test]
+#[cfg(feature = "boot")]
+fn a_snippet_goes_to_stdout_and_warnings_go_to_stderr() {
+    // `boot dhcp-snippet > dhcpd.conf` has to produce a file that can be included.
+    let case = Case::new(&[]);
+    let r = snippet(&case, &["--format", "isc"]);
+    assert!(r.ok, "{r}");
+    assert!(r.stdout.starts_with("# rescriptum "), "{r}");
+    assert!(
+        r.stderr.is_empty(),
+        "nothing on stderr when nothing is wrong: {r}"
+    );
+}
+
+#[test]
+#[cfg(feature = "boot")]
+fn a_derived_public_host_warns_on_stderr_without_spoiling_the_snippet() {
+    // A DHCP server handing out an address the machines cannot reach is the hardest
+    // failure in this chain to diagnose, so it is said — but on stderr, so the snippet
+    // is still usable when redirected.
+    let case = Case::new(&[]);
+    let r = case.run_env(
+        &[("RESCRIPTUM_ANSWERS_DIR", case.dir.as_path())],
+        &["boot", "dhcp-snippet"],
+    );
+    assert!(r.ok, "{r}");
+    assert!(r.stderr.contains("RESCRIPTUM_PUBLIC_HOST"), "{r}");
+    assert!(r.stdout.starts_with("# rescriptum "), "{r}");
+}
+
+#[test]
+#[cfg(feature = "boot")]
+fn an_unknown_dhcp_format_lists_the_ones_that_exist() {
+    let case = Case::new(&[]);
+    let r = snippet(&case, &["--format", "bind"]);
+    assert!(!r.ok, "{r}");
+    assert!(
+        r.stderr.contains("dnsmasq"),
+        "the error must name what does work: {r}"
+    );
+    // `netsh` is deliberately not an alias, because it cannot express this.
+    let r = snippet(&case, &["--format", "netsh"]);
+    assert!(!r.ok, "{r}");
+}
+
+#[test]
+#[cfg(feature = "boot")]
+fn boot_check_fails_when_a_snippet_names_a_loader_that_is_not_there() {
+    // The exit code is a contract, like `check`'s: `deploy.sh` keys on it.
+    let case = Case::new(&[]);
+    let boot_dir = case.dir.join("boot");
+    fs::create_dir_all(&boot_dir).expect("boot dir");
+
+    let r = case.run_env(
+        &[
+            ("RESCRIPTUM_ANSWERS_DIR", case.dir.as_path()),
+            ("RESCRIPTUM_BOOT_DIR", boot_dir.as_path()),
+        ],
+        &["boot", "check"],
+    );
+    assert!(!r.ok, "an empty boot directory must fail: {r}");
+    assert!(r.stdout.contains("MISSING"), "{r}");
+    assert!(
+        r.stdout.contains("get nothing, and stop"),
+        "the reason has to say what the machine will do: {r}"
+    );
+
+    // Put every loader there and it passes.
+    for loader in rescriptum::boot::loaders::loaders() {
+        fs::write(boot_dir.join(loader), b"not really a loader").expect("write");
+    }
+    let r = case.run_env(
+        &[
+            ("RESCRIPTUM_ANSWERS_DIR", case.dir.as_path()),
+            ("RESCRIPTUM_BOOT_DIR", boot_dir.as_path()),
+        ],
+        &["boot", "check"],
+    );
+    assert!(r.ok, "{r}");
+    assert!(
+        r.stdout
+            .contains("ok — the loaders a snippet names are all here"),
+        "{r}"
+    );
+}
+
+#[test]
+#[cfg(feature = "boot")]
+fn boot_check_says_nothing_is_wrong_when_boot_assets_are_simply_off() {
+    // Off is a normal state, not a failure: media can be served with no TFTP at all.
+    let case = Case::new(&[]);
+    let r = case.run(&["boot", "check"]);
+    assert!(r.ok, "{r}");
+    assert!(r.stdout.contains("boot assets are off"), "{r}");
+}
+
+#[test]
+#[cfg(feature = "boot")]
+fn boot_check_warns_when_the_media_port_is_not_the_one_loaders_embed() {
+    // The embedded script in every loader already shipped chains to a fixed port and
+    // can read no configuration — it is baked in before any deployment exists.
+    let case = Case::new(&[]);
+    let boot_dir = case.dir.join("boot");
+    let media_dir = case.dir.join("media");
+    fs::create_dir_all(&boot_dir).expect("boot dir");
+    fs::create_dir_all(&media_dir).expect("media dir");
+    for loader in rescriptum::boot::loaders::loaders() {
+        fs::write(boot_dir.join(loader), b"x").expect("write");
+    }
+
+    let r = case.run_env(
+        &[
+            ("RESCRIPTUM_ANSWERS_DIR", case.dir.as_path()),
+            ("RESCRIPTUM_BOOT_DIR", boot_dir.as_path()),
+            ("RESCRIPTUM_MEDIA_DIR", media_dir.as_path()),
+            ("RESCRIPTUM_MEDIA_ADDR", Path::new("0.0.0.0:9999")),
+        ],
+        &["boot", "check"],
+    );
+    assert!(!r.ok, "{r}");
+    assert!(r.stdout.contains("8001"), "{r}");
+    assert!(r.stdout.contains("already shipped"), "{r}");
+}
+
+#[test]
+#[cfg(feature = "boot")]
+fn the_bootstrap_and_the_menu_can_be_printed_for_review() {
+    // Everything a machine will execute has to be readable by a human before it runs on
+    // a rack, which is the same argument `render` makes for answers.
+    let case = Case::new(&[]);
+    let r = case.run_env(
+        &[
+            ("RESCRIPTUM_ANSWERS_DIR", case.dir.as_path()),
+            ("RESCRIPTUM_PUBLIC_HOST", Path::new("192.0.2.10")),
+        ],
+        &["boot", "bootstrap"],
+    );
+    assert!(r.ok, "{r}");
+    assert!(r.stdout.starts_with("#!ipxe\n"), "{r}");
+    assert!(r.stdout.contains("${netX/mac}"), "{r}");
+
+    let media_dir = case.dir.join("media");
+    fs::create_dir_all(&media_dir).expect("media dir");
+    let r = case.run_env(
+        &[
+            ("RESCRIPTUM_ANSWERS_DIR", case.dir.as_path()),
+            ("RESCRIPTUM_MEDIA_DIR", media_dir.as_path()),
+            ("RESCRIPTUM_PUBLIC_HOST", Path::new("192.0.2.10")),
+        ],
+        &["boot", "menu"],
+    );
+    assert!(r.ok, "{r}");
+    assert!(r.stdout.contains("item local"), "{r}");
+    assert!(r.stdout.is_ascii(), "a BIOS text console is not UTF-8: {r}");
+}

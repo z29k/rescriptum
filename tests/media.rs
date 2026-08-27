@@ -847,3 +847,103 @@ fn a_derived_public_host_is_announced_loudly() {
     assert!(log.contains("RESCRIPTUM_PUBLIC_HOST is not set"), "{log}");
     assert!(log.contains("derived"), "{log}");
 }
+
+// ---- the generated scripts -------------------------------------------------
+
+#[test]
+fn the_bootstrap_is_served_when_the_answer_set_is_empty() {
+    // **This is the whole reason it lives on the media listener.** It has to work
+    // before anybody has written a single answer, which is the state every new install
+    // starts in — and it is what puts a MAC in the query string, without which the
+    // selection engine matches nothing but the default.
+    let s = Server::start(&[]);
+    let r = s.get("/ipxe/bootstrap");
+
+    assert!(status(&r).starts_with("HTTP/1.1 200"), "{}", head_of(&r));
+    let script = String::from_utf8_lossy(body_of(&r)).to_string();
+    assert!(script.starts_with("#!ipxe\n"), "{script}");
+    assert!(script.contains("mac=${netX/mac}"), "{script}");
+    assert!(script.contains("/ipxe/boot?"), "{script}");
+    // And an unclaimed machine falls through to the menu, which is `default.toml`'s
+    // job description applied to a different format.
+    assert!(script.contains("|| chain"), "{script}");
+    assert!(script.contains("/ipxe/menu"), "{script}");
+}
+
+#[test]
+fn the_menu_is_rendered_from_the_catalogue_at_request_time() {
+    // Not a file kept in sync: drop an ISO in the directory and it is in the menu on
+    // the next fetch. That is the same instinct as answers being discovered.
+    let s = Server::start(&[("pve-8.4.iso", pve_image())]);
+    let script = String::from_utf8_lossy(body_of(&s.get("/ipxe/menu"))).to_string();
+    assert!(script.contains("item pve-8.4"), "{script}");
+    assert!(script.contains(":pve-8.4"), "a label to goto: {script}");
+
+    fs::write(s.media_dir().join("late.iso"), pve_image()).expect("write");
+    std::thread::sleep(Duration::from_millis(1200));
+    let script = String::from_utf8_lossy(body_of(&s.get("/ipxe/menu"))).to_string();
+    assert!(script.contains("item late"), "{script}");
+}
+
+#[test]
+fn the_menu_is_never_cached() {
+    // A cached menu shows yesterday's images, and the operator who just dropped an ISO
+    // in has no way to tell that from a broken catalogue.
+    let s = Server::start(&[]);
+    let r = s.get("/ipxe/menu");
+    assert_eq!(header(&r, "cache-control").as_deref(), Some("no-store"));
+}
+
+#[test]
+fn the_menu_falls_through_to_the_local_disk() {
+    // **The safety behaviour that must not be lost.** A machine that PXE-boots by
+    // accident, and that nothing claims, ends up on its own disk after a few seconds —
+    // it never sits at a menu waiting for a human who is not coming, and it never
+    // installs anything.
+    let s = Server::start(&[]);
+    let script = String::from_utf8_lossy(body_of(&s.get("/ipxe/menu"))).to_string();
+    assert!(
+        script.contains("--default local target || goto local"),
+        "{script}"
+    );
+    assert!(script.contains(":local\n"), "{script}");
+}
+
+#[test]
+fn a_boot_asset_is_served_over_http_for_uefi_http_boot() {
+    // Firmware that HTTP-boots fetches its loader here rather than over TFTP — the
+    // shortest chain there is, and it skips TFTP entirely.
+    let s = Server::start_env(&[], &[]);
+    let boot_dir = s.media_dir().parent().expect("base").join("boot");
+    fs::create_dir_all(&boot_dir).expect("boot dir");
+    fs::write(boot_dir.join("ipxe-x86_64.efi"), b"a loader, pretend").expect("write");
+
+    // A fresh server, now with the boot directory named.
+    let s = Server::start_env(&[], &[("RESCRIPTUM_BOOT_DIR", boot_dir.to_str().unwrap())]);
+    let r = s.get("/boot/ipxe-x86_64.efi");
+    assert!(status(&r).starts_with("HTTP/1.1 200"), "{}", head_of(&r));
+    assert_eq!(body_of(&r), b"a loader, pretend");
+
+    // And nothing outside that directory.
+    for path in ["/boot/../../etc/passwd", "/boot/nope.efi"] {
+        let r = s.get(path);
+        assert!(
+            status(&r).starts_with("HTTP/1.1 404"),
+            "{path}: {}",
+            head_of(&r)
+        );
+    }
+    let _ = fs::remove_dir_all(&boot_dir);
+}
+
+#[test]
+fn a_boot_asset_route_with_no_boot_directory_says_which_setting_is_missing() {
+    let s = Server::start(&[]);
+    let r = s.get("/boot/ipxe-x86_64.efi");
+    assert!(status(&r).starts_with("HTTP/1.1 404"), "{}", head_of(&r));
+    assert!(
+        String::from_utf8_lossy(body_of(&r)).contains("RESCRIPTUM_BOOT_DIR"),
+        "a 404 that names the setting beats one that does not: {:?}",
+        String::from_utf8_lossy(body_of(&r))
+    );
+}

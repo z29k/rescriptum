@@ -12,9 +12,11 @@
 
 pub mod catalog;
 pub mod cpio;
+pub mod dhcp;
 pub mod iso;
 pub mod loaders;
 pub mod media;
+pub mod menu;
 pub mod privileges;
 pub mod probe;
 pub mod sha256;

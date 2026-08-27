@@ -32,6 +32,10 @@ USAGE:
     rescriptum media add FILE     register one: verify, probe, record its digest
     rescriptum media check        re-verify every recorded digest, report what drifted
     rescriptum media ipxe ID      print the .ipxe answer that boots one image
+    rescriptum boot dhcp-snippet  their DHCP server's two lines, generated
+    rescriptum boot check         are the loaders a snippet names actually here?
+    rescriptum boot bootstrap     print the stage-two script
+    rescriptum boot menu          print the built-in menu
     rescriptum --help
 
 ENVIRONMENT:
@@ -57,6 +61,10 @@ BOOT MEDIA (off unless RESCRIPTUM_MEDIA_DIR is set):
     RESCRIPTUM_MEDIA_MAX_CONNECTIONS  concurrent transfers   (default 16)
     RESCRIPTUM_PUBLIC_HOST        the host generated URLs name  (a host, not a URL)
     RESCRIPTUM_BOOT_ALLOW         CIDRs allowed to fetch media  (default: anyone)
+    RESCRIPTUM_BOOT_DIR           loaders and menus, served over TFTP
+    RESCRIPTUM_TFTP_ADDR          TFTP listener              (default 0.0.0.0:69)
+    RESCRIPTUM_BOOT_TIMEOUT_SECS  menu timeout               (default 15)
+    RESCRIPTUM_USER / _GROUP      drop to these after binding port 69
 
 VALIDATING A MERGED ANSWER:
     rescriptum render 98:fa:9b:50:d8:10 > /tmp/answer.toml
@@ -801,6 +809,223 @@ fn truncate(text: &str, width: usize) -> String {
     }
     let kept: String = text.chars().take(width.saturating_sub(1)).collect();
     format!("{kept}…")
+}
+
+// ---- boot -----------------------------------------------------------------
+
+#[cfg(not(feature = "boot"))]
+pub fn boot(_cfg: &Config, _args: &[String]) -> ExitCode {
+    eprintln!("this binary was built without the `boot` feature, so it has no boot commands");
+    ExitCode::FAILURE
+}
+
+/// `boot dhcp-snippet` / `boot check` / `boot bootstrap` / `boot menu`.
+#[cfg(feature = "boot")]
+pub fn boot(cfg: &Config, args: &[String]) -> ExitCode {
+    match args.split_first() {
+        Some((cmd, rest)) if cmd == "dhcp-snippet" => boot_snippet(cfg, rest),
+        Some((cmd, rest)) if cmd == "check" && rest.is_empty() => boot_check(cfg),
+        Some((cmd, rest)) if cmd == "bootstrap" && rest.is_empty() => {
+            print!("{}", crate::boot::menu::bootstrap(&cfg.endpoints()));
+            ExitCode::SUCCESS
+        }
+        Some((cmd, rest)) if cmd == "menu" && rest.is_empty() => boot_menu(cfg),
+        _ => {
+            eprintln!(
+                "usage: rescriptum boot dhcp-snippet [--format F] [--one-loader]\n\
+                 \x20      rescriptum boot check\n\
+                 \x20      rescriptum boot bootstrap\n\
+                 \x20      rescriptum boot menu\n\
+                 \n\
+                 \x20      --format: dnsmasq | isc | kea | powershell | pfsense | mikrotik"
+            );
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// The DHCP configuration an operator pastes into a server we do not speak to.
+///
+/// stdout is the snippet and stderr is everything else, so redirecting it produces a
+/// file that can be included as-is.
+#[cfg(feature = "boot")]
+fn boot_snippet(cfg: &Config, args: &[String]) -> ExitCode {
+    use crate::boot::dhcp;
+
+    let mut format = dhcp::Format::Dnsmasq;
+    let mut one_loader = false;
+    let mut rest = args.iter();
+    while let Some(arg) = rest.next() {
+        match arg.as_str() {
+            "--one-loader" => one_loader = true,
+            "--format" => match rest.next().map(|f| dhcp::Format::parse(f)) {
+                Some(Some(parsed)) => format = parsed,
+                Some(None) => {
+                    eprintln!(
+                        "unknown --format. Known: {}",
+                        dhcp::Format::ALL
+                            .iter()
+                            .map(|f| f.label())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    );
+                    return ExitCode::FAILURE;
+                }
+                None => {
+                    eprintln!("--format wants a name");
+                    return ExitCode::FAILURE;
+                }
+            },
+            other => {
+                eprintln!("unexpected argument {other:?}");
+                return ExitCode::FAILURE;
+            }
+        }
+    }
+
+    let (host, derived) = cfg.public_host();
+    if derived {
+        eprintln!(
+            "# warning: RESCRIPTUM_PUBLIC_HOST is not set, so this snippet points machines \
+             at {host}, derived by asking the routing table. A DHCP server handing out an \
+             address the machines cannot reach is the hardest failure here to diagnose."
+        );
+    }
+    print!(
+        "{}",
+        dhcp::snippet(
+            format,
+            &dhcp::Handoff {
+                host,
+                media: cfg.endpoints().media,
+                version: env!("CARGO_PKG_VERSION"),
+                one_loader,
+            }
+        )
+    );
+    ExitCode::SUCCESS
+}
+
+#[cfg(feature = "boot")]
+fn boot_menu(cfg: &Config) -> ExitCode {
+    let Some(dir) = &cfg.media_dir else {
+        eprintln!("there is no media directory: RESCRIPTUM_MEDIA_DIR names one, and nothing does");
+        return ExitCode::FAILURE;
+    };
+    let catalog = crate::boot::catalog::Catalog::new(dir);
+    let listing = match catalog.listing() {
+        Ok(listing) => listing,
+        Err(e) => {
+            eprintln!("cannot read {}: {e}", dir.display());
+            return ExitCode::FAILURE;
+        }
+    };
+    let style = crate::boot::menu::Style {
+        title: cfg
+            .boot_title
+            .clone()
+            .unwrap_or_else(crate::boot::menu::Style::default_title),
+        timeout_millis: cfg.boot_timeout_millis(),
+    };
+    print!(
+        "{}",
+        crate::boot::menu::menu(&listing, &cfg.endpoints(), &style)
+    );
+    ExitCode::SUCCESS
+}
+
+/// `boot check` — is the boot chain actually complete?
+///
+/// **The failure this exists for is silent at the ROM.** A generated snippet names a
+/// loader; if that file is not on disk, the machine asks for it, gets nothing, and
+/// stops with no message anybody sees. Nothing else in the chain will notice.
+#[cfg(feature = "boot")]
+fn boot_check(cfg: &Config) -> ExitCode {
+    use crate::boot::loaders;
+
+    let mut failures = 0usize;
+    let mut notes: Vec<String> = Vec::new();
+
+    let Some(dir) = &cfg.boot_dir else {
+        println!("boot assets are off — RESCRIPTUM_BOOT_DIR names a directory, and nothing does");
+        println!("  nothing to check; TFTP is not running either");
+        return ExitCode::SUCCESS;
+    };
+    println!("checking boot assets in {}", dir.display());
+
+    // Every loader the table can hand out, plus the `snp` variants that exist because
+    // the plain UEFI build cannot always see the NIC.
+    for loader in loaders::loaders() {
+        let path = dir.join(loader);
+        if path.is_file() {
+            let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+            println!("  ok   {loader} ({})", human(size));
+        } else {
+            // Named by a snippet, absent from the disk: the silent failure.
+            println!(
+                "  MISSING {loader} — every machine the snippet sends here will ask for it, \
+                 get nothing, and stop"
+            );
+            failures += 1;
+        }
+        for variant in loaders::variants(loader) {
+            if variant != loader && !dir.join(&variant).is_file() {
+                notes.push(format!(
+                    "{variant} is absent — it is the one to reach for when the plain UEFI \
+                     build cannot see a NIC"
+                ));
+            }
+        }
+    }
+
+    // The embedded script in every loader already shipped chains to a fixed port, and
+    // it can read no configuration — it is baked in before any deployment exists.
+    let media = cfg.media_addr();
+    let port = media.rsplit_once(':').map(|(_, p)| p).unwrap_or("");
+    let expected = crate::config::DEFAULT_MEDIA_ADDR
+        .rsplit_once(':')
+        .map(|(_, p)| p)
+        .unwrap_or("8001");
+    if port != expected {
+        println!(
+            "  WARNING the media listener is on port {port}, but every loader already shipped \
+             embeds a script chaining to :{expected}. The generated autoexec.ipxe and the \
+             script's own relative fallback are the recovery; moving it back is the fix."
+        );
+        failures += 1;
+    }
+
+    // The logo, which the menu asks for and tolerates the absence of.
+    if !dir.join("logo.png").is_file() {
+        notes.push(
+            "logo.png is absent — the menu's `console --picture` tolerates that and falls \
+             back to the text console, so this is cosmetic"
+                .to_string(),
+        );
+    }
+
+    let (host, derived) = cfg.public_host();
+    if derived {
+        notes.push(format!(
+            "RESCRIPTUM_PUBLIC_HOST is not set; generated scripts will name {host}"
+        ));
+    }
+
+    println!(
+        "  {} loader(s) the table can hand out",
+        loaders::loaders().len()
+    );
+    for note in &notes {
+        println!("  note: {note}");
+    }
+
+    if failures == 0 {
+        println!("  ok — the loaders a snippet names are all here");
+        ExitCode::SUCCESS
+    } else {
+        println!("  {failures} problem(s)");
+        ExitCode::FAILURE
+    }
 }
 
 // ---- config ---------------------------------------------------------------
