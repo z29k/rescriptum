@@ -35,6 +35,12 @@ pas de *format* de configuration à apprendre ni de ligne de commande à se trom
 | `RESCRIPTUM_MEDIA_MAX_CONNECTIONS` | `16` | Transferts simultanés. Bas exprès : chacun retient son jeton des minutes durant |
 | `RESCRIPTUM_PUBLIC_HOST` | déduit | L'hôte que nomment les URL générées. **Un hôte, jamais une URL** |
 | `RESCRIPTUM_BOOT_ALLOW` | non défini | CIDR clients autorisés à récupérer les médias. Non défini = quiconque atteint le port |
+| `RESCRIPTUM_BOOT_DIR` | non défini | Chargeurs et menus, distribués en TFTP. **Non défini = pas de TFTP du tout** |
+| `RESCRIPTUM_TFTP_ADDR` | `0.0.0.0:69` | Le listener TFTP. Le port 69 est privilégié ; voir `RESCRIPTUM_USER` |
+| `RESCRIPTUM_BOOT_TIMEOUT_SECS` | `15` | Secondes avant que le menu ne retombe sur le disque local |
+| `RESCRIPTUM_BOOT_LOGO` | intégré | Un PNG à afficher derrière le menu |
+| `RESCRIPTUM_BOOT_TITLE` | intégré | La barre de titre du menu |
+| `RESCRIPTUM_USER` / `_GROUP` | non défini | Basculer dessus **après** avoir lié. L'ordre inverse échoue au déploiement |
 
 `/srv` est l'endroit où la norme de hiérarchie des fichiers range les données servies par le
 système, ce qu'est précisément un répertoire de réponses. Les deux valeurs par défaut y vivent,
@@ -167,6 +173,10 @@ Celles-ci arrêtent le serveur au lieu d'avertir, parce que démarrer quand mêm
 | `RESCRIPTUM_MEDIA_ADDR` défini sans `RESCRIPTUM_MEDIA_DIR` | un listener sans rien à servir |
 | `RESCRIPTUM_MEDIA_ADDR` égal à l'adresse de réponse ou d'administration | le second bind perd, et lequel dépend de l'ordre de démarrage |
 | `RESCRIPTUM_PUBLIC_HOST` portant un schéma, un port ou un chemin | il est écrit dans les URL de deux listeners ; un port dans la valeur épingle chaque script généré sur l'un d'eux |
+| `RESCRIPTUM_TFTP_ADDR` défini sans `RESCRIPTUM_BOOT_DIR` | un listener sans chargeur à distribuer |
+| Le répertoire de démarrage ne peut pas être résolu | chaque contrôle de chemin s'y compare |
+| TFTP ne peut pas se lier | le port 69 est privilégié ; le message le dit et nomme les trois façons de l'obtenir |
+| `RESCRIPTUM_USER` nomme un compte inexistant | rien à devenir |
 
 ## Avertissements de démarrage
 

@@ -150,6 +150,33 @@ s'y fie.
 `rescriptum media ipxe pve-8.4 > groups/rack-a.ipxe` produit un document de réponse
 utilisable — ce qu'il est, rien de plus. Il imprime un script, il n'en installe pas.
 
+## `boot`
+
+La moitié démarrage réseau : les chargeurs de TFTP, la configuration DHCP générée, et les
+deux scripts qu'une machine exécute. Voir
+[Démarrer une machine par le réseau](../operations/netboot.md).
+
+```console
+$ rescriptum boot dhcp-snippet [--format F] [--one-loader]
+$ rescriptum boot check        # les chargeurs qu'un extrait nomme sont-ils sur le disque ?
+$ rescriptum boot bootstrap    # imprimer le script de l'étape deux
+$ rescriptum boot menu         # imprimer le menu intégré
+```
+
+`--format` vaut `dnsmasq` (par défaut), `isc`, `kea`, `powershell`, `pfsense` ou
+`mikrotik`. L'extrait part sur **stdout** et les avertissements sur stderr, de sorte que
+`boot dhcp-snippet > dhcpd.conf` produit un fichier incluable tel quel.
+
+Le code de sortie de `boot check` est un contrat, comme celui de `check`. Ce qu'il
+attrape est la panne la moins diagnosticable de la chaîne : **un extrait nommant un
+chargeur absent du disque échoue silencieusement au niveau de la ROM**, sans rien sur
+aucune console. Il signale aussi que le listener média a quitté le port que les chargeurs
+distribués ont gravé.
+
+`boot bootstrap` et `boot menu` impriment ce qu'une machine exécutera, pour la même
+raison que `render` imprime une réponse : tout ce qu'une baie exécute devrait d'abord
+être lisible par un humain.
+
 ## Codes de sortie
 
 | Code | Signifie |

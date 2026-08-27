@@ -85,14 +85,11 @@ one is on PATH.
 - **Not a DHCP server, in any form.** Not a responder, not a proxy, not behind a flag.
   Sites that deploy this already run one, and pointing it at a boot server is a solved
   problem with thirty years of tooling.
-- **Not a TFTP server** — not yet. It can serve the installer's kernel, initrd and image
-  over HTTP (see [Serving boot media](./operations/media.md)), which is what every stage
-  after the first one uses. Handing over the *loader* is still whatever you already run.
+- **Not a config management system.** It hands over a document at install time and then
+  has nothing more to do with the machine — nothing it installs depends on it afterwards.
 - **Not a schema validator.** It proves your documents are well-formed and merge cleanly.
   Whether the result is valid *Proxmox* is `proxmox-auto-install-assistant`'s job, and
   `check` will call it when it is installed.
-- **Not a config management system.** It hands over a document at install time and then
-  has nothing more to do with the machine.
 
 ## Two deployment realities
 
@@ -114,6 +111,7 @@ nothing parsed per request — grouping is the fast path, not just the tidy one.
 - [Preparing installer media](./iso.md) — the URL to bake into each ISO.
 - [Writing answers](./answers/index.md) — selection, formats, groups, templating.
 - [Running it](./operations/index.md) — deployment, security, storage, troubleshooting.
+- [Boot media](./operations/media.md) and [netbooting](./operations/netboot.md) — serve the installer itself, not only its answer.
 
 Working on rescriptum rather than with it? The [Development](../development/index.md)
 space is the other half of this site.

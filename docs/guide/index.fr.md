@@ -93,15 +93,12 @@ validateur de l'installateur lui-même quand il est dans le PATH.
 - **Pas un serveur DHCP, sous aucune forme.** Ni répondeur, ni proxy, ni derrière un
   drapeau. Les sites qui déploient ceci en ont déjà un, et le faire pointer vers un
   serveur de démarrage est un problème résolu depuis trente ans.
-- **Pas un serveur TFTP** — pas encore. Il sait servir le noyau, l'initrd et l'image de
-  l'installeur en HTTP (voir [Servir les médias de démarrage](./operations/media.md)),
-  ce dont se sert chaque étape après la première. Livrer le *chargeur* reste l'affaire de
-  ce que vous faites déjà tourner.
+- **Pas un système de gestion de configuration.** Il livre un document au moment de
+  l'installation et n'a ensuite plus rien à voir avec la machine — rien de ce qu'il
+  installe n'en dépend ensuite.
 - **Pas un validateur de schéma.** Il prouve que vos documents sont bien formés et
   fusionnent proprement. Savoir si le résultat est du *Proxmox* valide est le travail de
   `proxmox-auto-install-assistant`, et `check` l'appellera s'il est installé.
-- **Pas un système de gestion de configuration.** Il remet un document au moment de
-  l'installation et n'a plus rien à voir avec la machine ensuite.
 
 ## Deux réalités de déploiement
 
@@ -125,6 +122,7 @@ propre.
 - [Préparer les médias d'installation](./iso.md) — l'URL à graver dans chaque ISO.
 - [Écrire des réponses](./answers/index.md) — sélection, formats, groupes, templating.
 - [L'exploiter](./operations/index.md) — déploiement, sécurité, stockage, dépannage.
+- [Médias de démarrage](./operations/media.md) et [démarrage réseau](./operations/netboot.md) — servir l'installeur lui-même, pas seulement sa réponse.
 
 Vous travaillez *sur* rescriptum plutôt qu'avec ? L'espace
 [Développement](../development/index.md) est l'autre moitié de ce site.

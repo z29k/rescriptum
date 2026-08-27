@@ -26,6 +26,7 @@ it is allowed to serve and to whom.
   with a write that cannot break the fleet.
 - **[Troubleshooting](./troubleshooting.md)** — the log line is the whole diagnostic
 - [Serving boot media](./media.md) — the installer's own kernel, initrd and image, from the same server.
+- [Netbooting a machine](./netboot.md) — TFTP, the loader, the menu, and their DHCP server's two lines.
   story.
 
 ## The shape of a deployment

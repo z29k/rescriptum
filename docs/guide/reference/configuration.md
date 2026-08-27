@@ -35,6 +35,12 @@ no configuration *format* to learn and no command line to get wrong.
 | `RESCRIPTUM_MEDIA_MAX_CONNECTIONS` | `16` | Concurrent transfers. Low on purpose: each holds its permit for minutes |
 | `RESCRIPTUM_PUBLIC_HOST` | derived | The host generated URLs name. **A host, never a URL** |
 | `RESCRIPTUM_BOOT_ALLOW` | unset | Client CIDRs allowed to fetch boot media. Unset means anyone who can reach the port |
+| `RESCRIPTUM_BOOT_DIR` | unset | Loaders and menus, handed out over TFTP. **Unset means no TFTP at all** |
+| `RESCRIPTUM_TFTP_ADDR` | `0.0.0.0:69` | The TFTP listener. Port 69 is privileged; see `RESCRIPTUM_USER` |
+| `RESCRIPTUM_BOOT_TIMEOUT_SECS` | `15` | Seconds before the menu falls through to local boot |
+| `RESCRIPTUM_BOOT_LOGO` | built-in | A PNG to show behind the menu |
+| `RESCRIPTUM_BOOT_TITLE` | built-in | The menu's title bar |
+| `RESCRIPTUM_USER` / `_GROUP` | unset | Drop to these **after** binding. The other order fails on deployment |
 
 `/srv` is where the filesystem hierarchy standard puts data served by the system, which is
 what an answers directory is. Both defaults live there so that a bare `rescriptum` does
@@ -162,6 +168,10 @@ These stop the server rather than warning, because starting anyway would be wors
 | `RESCRIPTUM_MEDIA_ADDR` set with no `RESCRIPTUM_MEDIA_DIR` | a listener with nothing to serve |
 | `RESCRIPTUM_MEDIA_ADDR` equal to the answer or admin address | the second bind loses, and which one depends on start order |
 | `RESCRIPTUM_PUBLIC_HOST` carrying a scheme, a port or a path | it is written into URLs for two listeners; one port in the value pins every generated script to one of them |
+| `RESCRIPTUM_TFTP_ADDR` set with no `RESCRIPTUM_BOOT_DIR` | a listener with no loaders to hand out |
+| The boot directory cannot be resolved | every path check compares against it |
+| TFTP cannot bind | port 69 is privileged; the message says so and names the three ways to have it |
+| `RESCRIPTUM_USER` names an account that does not exist | nothing to become |
 
 ## Startup warnings
 

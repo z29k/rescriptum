@@ -147,6 +147,30 @@ nothing and exits `1`.
 `rescriptum media ipxe pve-8.4 > groups/rack-a.ipxe` produces a usable answer document —
 which is all it is. It prints a script; it does not install one.
 
+## `boot`
+
+The netboot half: TFTP's loaders, the generated DHCP configuration, and the two scripts
+a machine executes. See [Netbooting a machine](../operations/netboot.md).
+
+```console
+$ rescriptum boot dhcp-snippet [--format F] [--one-loader]
+$ rescriptum boot check        # are the loaders a snippet names actually on disk?
+$ rescriptum boot bootstrap    # print the stage-two script
+$ rescriptum boot menu         # print the built-in menu
+```
+
+`--format` is `dnsmasq` (the default), `isc`, `kea`, `powershell`, `pfsense` or
+`mikrotik`. The snippet goes to **stdout** and warnings to stderr, so
+`boot dhcp-snippet > dhcpd.conf` produces a file that can be included as-is.
+
+`boot check`'s exit status is a contract, like `check`'s. What it catches is the least
+diagnosable failure in the chain: **a snippet naming a loader that is not on disk fails
+silently at the ROM**, with nothing on any console. It also warns when the media listener
+has moved off the port shipped loaders embed.
+
+`boot bootstrap` and `boot menu` print what a machine will execute, for the same reason
+`render` prints an answer: everything a rack runs should be readable by a human first.
+
 ## Exit statuses
 
 | Status | Means |
