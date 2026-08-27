@@ -73,7 +73,7 @@ RESCRIPTUM_MEDIA_ADDR = "Là où les machines récupèrent noyaux, initrds et im
 RESCRIPTUM_MEDIA_TIMEOUT_SECS = "Durée maximale d'un transfert d'image. Volontairement pas les dix secondes du point de réponse."
 RESCRIPTUM_MEDIA_MAX_CONNECTIONS = "Téléchargements à la fois. Bas exprès : chacun retient sa place des minutes durant, et ce NAS a un disque."
 RESCRIPTUM_BOOT_ALLOW = "Réseaux clients autorisés à récupérer les médias, en CIDR. Vide, quiconque atteint le port."
-RESCRIPTUM_BOOT_DIR = "Où vivent les chargeurs. Ils ne sont pas dans ce paquet — c'est iPXE, en GPLv2 — donc déposez-les ici, puis lancez « rescriptum-cli boot check ». Servis en TFTP et en HTTP sur /boot/, ce que récupère l'amorçage HTTP UEFI."
+RESCRIPTUM_BOOT_DIR = "Où vivent les chargeurs. Ce paquet les fournit : le dossier arrive rempli, et une mise à jour les rafraîchit. Servis en TFTP et en HTTP sur /boot/, ce que récupère l'amorçage HTTP UEFI. Pointez ailleurs pour gérer les chargeurs vous-même."
 RESCRIPTUM_TFTP_ADDR = "Vide signifie 0.0.0.0:69, ce qu'attendent tous les chargeurs et tous les extraits DHCP générés. Le port 69 est privilégié : l'ouvrir demande une commande root, une fois — setcap cap_net_bind_service=+ep sur le binaire. Une mise à jour la perd ; une tâche au démarrage dans le Planificateur de tâches la rend durable. Sans elle le serveur avertit, continue de répondre et de servir les images, et seul le TFTP est coupé. Mettez « off » si un autre service de ce NAS livre les chargeurs à sa place."
 RESCRIPTUM_BOOT_TIMEOUT_SECS = "Combien de temps le menu de démarrage attend avant qu'une machine retombe sur son propre disque."
 RESCRIPTUM_BOOT_LOGO = "Un PNG affiché derrière le menu de démarrage, à la place de celui intégré."

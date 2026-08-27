@@ -300,21 +300,20 @@ Notez qu'il demande un chargeur au port plutôt que d'essayer de l'ouvrir. Ouvri
 prouve le contraire de ce qu'on croit : une ouverture qui *réussit* signifie que personne
 n'écoute.
 
-**Posez les chargeurs dans le dossier `boot` du partage.** Ils ne sont pas dans le paquet —
-c'est iPXE, en GPLv2, et ils ont leur place à côté plutôt que soudés dedans. Chaque version
-publiée attache `rescriptum-boot-assets-<version>.tar.gz` ; décompressez-le et copiez son
-contenu dans le dossier via File Station ou SMB, puis :
+**Les chargeurs sont dans le paquet.** Le dossier `boot` du partage arrive rempli au
+premier démarrage, et une mise à jour les rafraîchit — il n'y a pas de second
+téléchargement. C'est iPXE, en GPLv2, des fichiers séparés servis à côté plutôt que soudés
+dans quoi que ce soit, et le `NOTICE` posé avec eux nomme le commit amont exact dont ils
+sont issus.
 
 ```console
 $ rescriptum-cli boot check
+  ok   0.0.0.0:69 handed over ipxe-undionly.kpxe
 ```
 
-Ou construisez-les vous-même sur n'importe quelle machine Linux avec une chaîne de
-compilation C, depuis le même commit épinglé que la release :
-
-```console
-$ packaging/ipxe/build.sh --out /chemin/vers/rescriptum/boot
-```
+Les remplacer est possible, mais pas en modifiant ce dossier : une mise à jour réécrit les
+noms de fichiers que ce paquet fournit. Pointez plutôt `RESCRIPTUM_BOOT_DIR` ailleurs, et
+rien ici n'y écrira jamais.
 
 Puis faites pointer le DHCP vers ce NAS — **Panneau de configuration → Serveur DHCP → PXE**
 si le NAS sert le DHCP, ou votre propre serveur avec ce qu'imprime :

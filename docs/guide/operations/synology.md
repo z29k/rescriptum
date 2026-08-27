@@ -277,21 +277,19 @@ $ rescriptum-cli boot check
 Note it asks the port for a loader rather than trying to bind it. Binding proves the
 opposite of what it looks like: a bind that *succeeds* means nothing is listening.
 
-**Put the loaders in the share's `boot` folder.** They are not in the package — they are
-iPXE, GPLv2, and belong beside it rather than welded into it. Every release attaches
-`rescriptum-boot-assets-<version>.tar.gz`; unpack it and copy the contents into the folder
-over File Station or SMB, then:
+**The loaders are in the package.** The share's `boot` folder arrives filled the first
+time you start it, and an upgrade refreshes them — there is no second download. They are
+iPXE, GPLv2, separate files served alongside rather than linked into anything, and the
+`NOTICE` beside them names the exact upstream commit they were built from.
 
 ```console
 $ rescriptum-cli boot check
+  ok   0.0.0.0:69 handed over ipxe-undionly.kpxe
 ```
 
-Or build them yourself on any Linux box with a C toolchain, from the same pinned commit
-the release uses:
-
-```console
-$ packaging/ipxe/build.sh --out /path/to/rescriptum/boot
-```
+Replacing them is possible but not by editing that folder — an upgrade rewrites the
+filenames this package ships. Point `RESCRIPTUM_BOOT_DIR` somewhere else instead, and
+nothing here will ever write to it.
 
 Then point DHCP at this NAS — **Control Panel → DHCP Server → PXE** if the NAS serves DHCP,
 or your own server with what this prints:

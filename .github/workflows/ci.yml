@@ -205,6 +205,9 @@ jobs:
   cross:
     name: Cross-compile for the NAS, and package it
     runs-on: ubuntu-latest
+    # The packages carry the loaders now, and they come from the job that built them —
+    # so this waits rather than rebuilding iPXE a second time.
+    needs: loaders
     # This is where a C dependency breaks first: SQLite is compiled from source, and
     # armv7-musl is the least forgiving target we ship. Catching it here beats catching
     # it while cutting a release. The DSM packages are assembled on the same job for the
@@ -268,9 +271,18 @@ jobs:
       # Packaging breaks on the PR that breaks it, rather than at tag time. This is the
       # cheap half of "does this package work"; the other half is installing it, which
       # only a DSM machine can answer.
+      # The loaders the package ships, from the job that already built and verified them
+      # — never a rebuild here. What `check-spk.sh` and the lifecycle harness look at has
+      # to be the same bytes the `loaders` job proved satisfy the table.
+      - uses: actions/download-artifact@v4
+        with:
+          name: ipxe-loaders
+          path: packaging/ipxe/out
+
       - name: Assemble the DSM packages
         run: |
           set -euo pipefail
+          ls packaging/ipxe/out
           packaging/dsm/make-spk.sh armv7
           packaging/dsm/make-spk.sh x86_64
 

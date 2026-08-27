@@ -114,7 +114,10 @@ These are deliberate design decisions, not oversights. Do not "improve" them wit
   has to be a deliberate act.
 - `packaging/ipxe/` — the branded loaders: `branding.h`, the embedded script, a
   SHA-pinned upstream commit and `build.sh`. **No binaries in git, ever**; this directory
-  is the GPLv2 written offer. `packaging/boot-rig/` — the boot rig, three services on an
+  is the GPLv2 written offer. The built loaders **do** ship — inside the `.spk` and as
+  `rescriptum-boot-assets-<version>.tar.gz` — because a TFTP server with nothing to hand
+  out boots nothing. That is aggregation, not linking, and the `NOTICE` naming the pinned
+  commit travels with them everywhere they go. `packaging/boot-rig/` — the boot rig, three services on an
   `internal: true` network, so a harness that runs DHCP cannot answer on the host's LAN.
 - `src/facts.rs` — what a request says about the machine: query parameters, a flattened
   JSON body, and the raw haystack.
@@ -768,6 +771,11 @@ does not let an unsigned package run as root — measured, four routes, in
 `docs/development/traps.md` with the error codes — but `setcap cap_net_bind_service=+ep`
 on the installed binary works, after which the package binds `udp/69` as its own
 unprivileged user alongside 8000 and 8001. All three are registered with the firewall.
+**The package ships the loaders**, so the share's `boot` folder arrives filled and `start`
+refreshes it when the stamp does not name this version; a TFTP server with nothing to hand
+out boots nothing, and a second download is how a working appliance becomes a support
+thread. Verified on the machine by fetching `ipxe-undionly.kpxe` over TFTP with an
+independent client and comparing it byte for byte.
 **The capability belongs to the file, so an upgrade drops it**; the env file says so and
 points at a Task Scheduler boot-up task. `RESCRIPTUM_TFTP_ADDR` is therefore left unset —
 its default *is* port 69, which is what every loader and every generated snippet expects.

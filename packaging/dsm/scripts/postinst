@@ -179,11 +179,17 @@ RESCRIPTUM_MEDIA_DIR=$SHARE_MEDIA
 # boot folder below is a working alternative rather than the intended one.
 # RESCRIPTUM_TFTP_ADDR=0.0.0.0:69
 
-# Where the loaders live. They are not in this package: they are iPXE, GPLv2, and belong
-# beside it rather than welded into it. Put them here over File Station or SMB, then
-# check with 'rescriptum-cli boot check'. They are served over TFTP from the address
-# above *and* over HTTP at /boot/ on port $MEDIA_PORT, which is what UEFI HTTP Boot
-# fetches and where the boot menu looks for its logo.
+# Where the loaders live — **and this package ships them**, so the folder is already
+# filled in when you first start it. They are iPXE, GPLv2, separate files never linked
+# into our binary; the NOTICE beside them names the exact upstream commit they were built
+# from. Served over TFTP from the address above *and* over HTTP at /boot/ on port
+# $MEDIA_PORT, which is what UEFI HTTP Boot fetches and where the boot menu looks for its
+# logo. 'rescriptum-cli boot check' says whether the set is complete and whether a loader
+# can actually be handed over.
+#
+# An upgrade refreshes the files this package ships and touches nothing else in the
+# folder. If you manage loaders yourself, point this somewhere else and nothing will ever
+# write to it.
 RESCRIPTUM_BOOT_DIR=$SHARE_BOOT
 BODY
 }

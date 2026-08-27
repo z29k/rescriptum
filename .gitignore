@@ -12,6 +12,10 @@ node_modules/
 
 # ── Build output / generated ─────────────────────────────────
 dist/
+# The built loaders. **No binaries in git, ever** — packaging/ipxe/ is the written
+# offer, and build.sh reproduces them from the pinned commit.
+packaging/ipxe/out/
+packaging/ipxe/.work/
 build/
 .astro/
 .output/

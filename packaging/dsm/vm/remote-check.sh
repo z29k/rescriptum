@@ -212,6 +212,79 @@ if [ -x /usr/bin/setcap ]; then
     [ "$(curl -fsS "http://127.0.0.1:$PORT/health" 2>/dev/null)" = OK ] &&
         ok "and answers are unaffected by gaining it" ||
         bad "the package stopped answering after setcap"
+
+    # ── the only question that matters ─────────────────────────────────────────
+    # Binding a port proves nothing to a machine that is trying to boot. **Fetch the
+    # loader the way a PXE ROM does** — a real TFTP read of the whole file — and compare
+    # it byte for byte with what the package shipped. Everything above this line is
+    # scaffolding for this one check.
+    LOADER=ipxe-undionly.kpxe
+    if [ -f "$SHARE/boot/$LOADER" ]; then
+        ok "the loader is in the folder TFTP serves from"
+        # **The whole file, with a client that is not ours.** The server's probe reads one
+        # block, which proves the port, the root and the permissions — but a TFTP transfer
+        # answers from a *fresh source port*, so everything after block 1 depends on the
+        # machine's own firewall and routing. That is the half `tests/tftp.rs` cannot see,
+        # and it is a real DSM risk rather than a hypothetical one.
+        #
+        # curl on DSM is built without the tftp protocol, and there is no tftp, atftp,
+        # busybox or nc on the box — python3 is what is actually there. If it is missing
+        # too (the DS416j may not have it), this degrades to the probe rather than lying.
+        if command -v python3 >/dev/null 2>&1; then
+            cat >/tmp/tftpget.py <<'PYEOF'
+import socket, sys
+host, name, out = sys.argv[1], sys.argv[2], sys.argv[3]
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+s.settimeout(5)
+s.sendto(b"\x00\x01" + name.encode() + b"\x00octet\x00", (host, 69))
+data, expect, peer = b"", 1, None
+while True:
+    packet, addr = s.recvfrom(2048)
+    peer = peer or addr
+    op = int.from_bytes(packet[0:2], "big")
+    if op == 5:
+        sys.exit("tftp error: " + packet[4:].decode("utf-8", "replace"))
+    if op != 3:
+        sys.exit("unexpected opcode %d" % op)
+    block = int.from_bytes(packet[2:4], "big")
+    if block != expect:
+        sys.exit("out of order: wanted %d, got %d" % (expect, block))
+    body = packet[4:]
+    data += body
+    s.sendto(b"\x00\x04" + block.to_bytes(2, "big"), peer)
+    expect = (expect + 1) & 0xFFFF
+    # A transfer ends on a short block, and short includes empty.
+    if len(body) < 512:
+        break
+open(out, "wb").write(data)
+PYEOF
+            rm -f /tmp/fetched.bin
+            if python3 /tmp/tftpget.py 127.0.0.1 "$LOADER" /tmp/fetched.bin 2>/tmp/tftpget.err; then
+                want=$(md5sum "$SHARE/boot/$LOADER" | cut -d' ' -f1)
+                got=$(md5sum /tmp/fetched.bin 2>/dev/null | cut -d' ' -f1)
+                if [ "$got" = "$want" ]; then
+                    ok "**a full TFTP fetch of $LOADER returns it byte for byte** — the package serves iPXE"
+                    note "$(wc -c </tmp/fetched.bin | tr -d ' ') bytes, md5 $got"
+                else
+                    bad "the TFTP fetch returned something else (want $want, got ${got:-nothing})"
+                fi
+            else
+                bad "the TFTP fetch failed: $(cat /tmp/tftpget.err 2>/dev/null)"
+            fi
+            rm -f /tmp/tftpget.py /tmp/tftpget.err /tmp/fetched.bin
+        else
+            note "no python3 here to fetch with; falling back to the server's own probe"
+        fi
+        # The server's own probe, which is what `boot check` reports and the panel shows.
+        if "$ROOT/target/bin/$PKG-cli" boot check 2>/dev/null | grep -q "handed over"; then
+            ok "and boot check agrees a loader is handed over"
+        else
+            bad "boot check does not see a loader being handed over"
+            "$ROOT/target/bin/$PKG-cli" boot check 2>&1 | grep -E "BROKEN|MISSING" | sed 's/^/    /'
+        fi
+    else
+        bad "no $LOADER in $SHARE/boot — the package shipped none, so TFTP has nothing to hand out"
+    fi
 else
     note "no /usr/bin/setcap on this machine — the only route to port 69 is closed here"
 fi

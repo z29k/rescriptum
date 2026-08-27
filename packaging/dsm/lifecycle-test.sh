@@ -32,6 +32,7 @@ bad() {
     echo "  ✗ $*"
     fails=$((fails + 1))
 }
+note() { echo "  · $*"; }
 section() { echo; echo "$*"; }
 
 # ── the package under test ─────────────────────────────────────────────────────
@@ -171,6 +172,25 @@ rc=$?
 # setting is enabled is one nobody discovers.
 [ -d "$SHARE/media" ] && ok "and the media folder, ready for an ISO" || bad "no $SHARE/media"
 [ -d "$SHARE/boot" ] && ok "and the boot folder, which is what TFTP hands loaders out of" || bad "no $SHARE/boot"
+
+# **The package has to arrive with loaders in it.** A TFTP server with nothing to hand out
+# boots nothing, and an install that leaves this folder empty is an appliance that does not
+# work until somebody finds a second download. They are iPXE, GPLv2, separate files never
+# linked into our binary — mere aggregation, with the NOTICE as the written offer.
+if [ -f "$ROOT/target/boot/ipxe-undionly.kpxe" ]; then
+    ok "the package carries the loaders"
+    [ -f "$SHARE/boot/ipxe-undionly.kpxe" ] && ok "and start put them where TFTP serves from" || bad "start did not seed $SHARE/boot"
+    [ -f "$SHARE/boot/NOTICE" ] && ok "with the GPLv2 notice beside them" || bad "no NOTICE in $SHARE/boot — the written offer has to travel with the binaries"
+    # The server's own opinion, which is the one that matters: does this directory satisfy
+    # the table `boot dhcp-snippet` writes into somebody's DHCP server?
+    if RESCRIPTUM_BOOT_DIR="$SHARE/boot" RESCRIPTUM_TFTP_ADDR=off "$ROOT/target/bin/rescriptum" boot check >/dev/null 2>&1; then
+        ok "and the server agrees the set is complete"
+    else
+        bad "boot check refuses the seeded folder: $(RESCRIPTUM_BOOT_DIR="$SHARE/boot" RESCRIPTUM_TFTP_ADDR=off "$ROOT/target/bin/rescriptum" boot check 2>&1 | grep -E 'MISSING|BROKEN' | head -2)"
+    fi
+else
+    note "this .spk carries no loaders — build them with packaging/ipxe/build.sh and repack to test the seeding"
+fi
 
 answered=no
 for _ in 1 2 3 4 5 6 7 8 9 10; do

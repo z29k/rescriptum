@@ -198,6 +198,19 @@ check_one() {
     [ -x "$work/target/bin/rescriptum" ] || bad "the payload's binary is not executable"
     ok "the payload carries the binary, the wrapper, the .sc file and the logrotate stanza"
 
+    # **The loaders, because a TFTP server with nothing to hand out boots nothing.** They
+    # are iPXE, GPLv2, separate files never linked into our binary — mere aggregation —
+    # and the NOTICE naming the upstream commit is the written offer that has to travel
+    # with them. A package without it would be a licence problem, not just an omission.
+    if [ -f "$work/target/boot/ipxe-undionly.kpxe" ]; then
+        ok "and the loaders it hands out ($(ls "$work/target/boot" | wc -l | tr -d ' ') files)"
+        [ -s "$work/target/boot/NOTICE" ] &&
+            ok "with the GPLv2 written offer beside them" ||
+            bad "the loaders ship without a NOTICE — that is the written offer GPLv2 requires"
+    else
+        bad "no loaders in the payload — the package would install a TFTP server with nothing to hand out"
+    fi
+
     # The stanza's whole point: log::init opens the file once and never reopens it, so a
     # rotation without copytruncate silently ends logging.
     grep -q '^[[:space:]]*copytruncate' "$work/target/logrotate/rescriptum" &&

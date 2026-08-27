@@ -198,7 +198,7 @@ jobs:
 
   package-dsm:
     name: Synology packages
-    needs: [verify, build]
+    needs: [verify, build, loaders]
     runs-on: ubuntu-latest
     # Nothing is compiled here: the binaries are already built and statically linked, and
     # an .spk is a release format — the same artifact, wrapped for one platform's package
@@ -222,6 +222,14 @@ jobs:
           VERSION="${{ needs.verify.outputs.version }}"
           SPK_BUILD="${{ inputs.spk_build || '1' }}"
           mkdir -p bins
+          # **The loaders go inside the package.** A TFTP server with nothing to hand out
+          # boots nothing, and telling a NAS owner to find a second download is how a
+          # working appliance becomes a support thread. They are iPXE, GPLv2, separate
+          # files never linked into our binary — mere aggregation, and the NOTICE beside
+          # them is the written offer that travels with them.
+          tar -xzf "artifacts/boot-assets/rescriptum-boot-assets-$VERSION.tar.gz" -C .
+          export RESCRIPTUM_LOADERS="$PWD/rescriptum-boot-assets-$VERSION"
+          ls "$RESCRIPTUM_LOADERS"
           # One .spk per *build*; the arch line inside each covers the platforms that
           # build serves. aarch64 (arch="armv8") joins this list once the binary has been
           # run on one of its platforms — make-spk.sh already knows the mapping.
