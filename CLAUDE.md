@@ -89,6 +89,16 @@ These are deliberate design decisions, not oversights. Do not "improve" them wit
   unit test twice, and lets the two copies drift.
 - `src/store/` — where documents come from. `mod.rs` defines the thin `Store` / `StoreWrite`
   traits, `file.rs` a flat directory of documents, `sqlite.rs` a bundled-SQLite database.
+- `src/boot/` — **boot media**: where the installer itself comes from, as opposed to what
+  it is told. `iso.rs` reads ISO9660 far enough to turn a path into an offset and a
+  length (a file in an image is one contiguous extent, so serving a kernel is a *seek*,
+  never an extraction); `probe.rs` places an image from a table of markers; `catalog.rs`
+  discovers what is held, cached behind the directory mtime like the answer listing;
+  `media.rs` is the listener, on its own socket; `stanza.rs` holds what each installer
+  family needs on the wire; `cpio.rs` and `sha256.rs` are hand-written and dependency-free.
+  Behind the `boot` cargo feature, default on. `select.rs` knows none of this exists, and
+  the only seam is that `media ipxe` **prints an ordinary `.ipxe` answer document** —
+  selection, layering and templating then apply unchanged.
 - `src/facts.rs` — what a request says about the machine: query parameters, a flattened
   JSON body, and the raw haystack.
 - `src/format/` — one interface per document format. `xml.rs` holds the XML tree and its
@@ -339,8 +349,18 @@ Both are write-capable (`StoreWrite`), which is what the admin API will use:
 `import <dir>` and `export <dir>` move between the two. The round trip is byte-identical, which
 is worth keeping true — it is what makes the database safe to adopt and safe to leave.
 
-The `sqlite` cargo feature is on by default and can be turned off: 2,103,456 bytes with it,
-944,928 without, on armv7.
+Two cargo features, both on by default and both removable: `sqlite` and `boot` (the media
+catalogue, the ISO reader and the media listener). Measured on armv7-gnueabihf, floor 2.17
+— **re-measure rather than trusting an older figure here: the numbers moved by ~375 KB
+when the target changed from musl to glibc, and a stale baseline once turned a 71% budget
+spend into an apparent 293% overrun.**
+
+| Build | Bytes |
+|---|---|
+| `sqlite` + `boot` (default) | 2,602,056 |
+| `sqlite` only | 2,482,000 |
+| `boot` only | 1,436,704 |
+| neither | 1,316,648 |
 
 ## The admin API
 
@@ -457,6 +477,23 @@ could not check. Note it needs `Resolution::format_name` (the extension), not
   model: they are that machine's answers for two operating systems.
 - **Assert on parsed values, not on formatting.** Replacing a table with a scalar leaves the
   key's original decor, so the output can read `value= 3` — valid TOML, different text.
+- **`HeaderName::from_static` panics on a name that is not lower-case.** It compiles.
+  At runtime it kills the connection before anything is written, so the symptom is an
+  *empty response*, not an error. Put the header in the response builder, which takes any
+  casing.
+- **A guard against two listeners sharing a port must exempt `:0`.** Port zero asks the
+  kernel for any free port, so two of them never collide — and it is what every
+  integration test uses.
+- **A self dev-dependency re-enables default features unless told not to.** Without
+  `default-features = false`, `rescriptum = { path = "." , features = [...] }` turns
+  `sqlite` and `boot` back on for every test build, so `--no-default-features` tests the
+  full binary and reports coverage that does not exist.
+- **`;` in an iPXE script separates commands only as a whole whitespace-delimited token**
+  (`split_command` in iPXE's `core/exec.c`). So `ds=nocloud-net;s=http://…` is one
+  argument and must **not** be escaped, while `foo ; bar` is two commands.
+- **The size figures in this file go stale.** They moved ~375 KB when armv7 changed from
+  musl to glibc. Re-measure before concluding anything from them; a stale baseline once
+  turned a 71% budget spend into an apparent 293% overrun.
 
 ## Core algorithm (the part worth understanding up front)
 
@@ -527,6 +564,12 @@ Environment variables only — plus an optional file to read some of them from:
 | `RESCRIPTUM_TIMEOUT_SECS` | `10` | Header-read timeout **and** whole-connection deadline |
 | `RESCRIPTUM_LOG` | `all` | `all` \| `problems` (drops the requests that worked) \| `off` |
 | `RESCRIPTUM_LOG_FILE` | unset | A file to append to, or `stdout`/`stderr`. Unopenable is fatal |
+| `RESCRIPTUM_MEDIA_DIR` | unset | Installer images. **Unset is the whole off switch for boot media** |
+| `RESCRIPTUM_MEDIA_ADDR` | `0.0.0.0:8001` | The media listener, when there is a media directory |
+| `RESCRIPTUM_MEDIA_TIMEOUT_SECS` | `600` | Whole-transfer deadline — deliberately not the answer listener's 10 |
+| `RESCRIPTUM_MEDIA_MAX_CONNECTIONS` | `16` | Concurrent transfers; low on purpose |
+| `RESCRIPTUM_PUBLIC_HOST` | derived, with a warning | The host generated URLs name. **A host, never a URL** |
+| `RESCRIPTUM_BOOT_ALLOW` | unset | Client CIDRs allowed to fetch boot media |
 
 A zero or unparseable numeric value falls back to the default rather than starting a server
 that accepts and never answers.
@@ -567,6 +610,10 @@ cargo build
 cargo run -- check               # validate an answers directory
 cargo run -- config              # show the configuration and where each value comes from
 cargo run -- render <mac>        # print one machine's composed answer
+cargo run -- media list          # the installer images held
+cargo run -- media add FILE      # register one: verify, probe, record its digest
+cargo run -- media check         # re-verify every recorded digest
+cargo run -- media ipxe ID       # the .ipxe answer that boots one image
 cargo test                       # all tests
 cargo test <name>                # single test by name substring
 cargo test -- --nocapture        # show stdout from tests
@@ -779,9 +826,16 @@ the image and not derived from `DISK_SIZE`. `run-vm.sh` is the loader-image fall
 
 ## Testing expectations
 
-333 tests, plus the package's own harnesses (see *The DSM package*, and note that
+426 tests, plus the package's own harnesses (see *The DSM package*, and note that
 `cargo test` does not run those). `docs/development/testing.md` has the per-suite table;
 the rules that decide where a test goes:
+
+- **Boot media belongs in `tests/media.rs`**, against the real binary with both listeners
+  up. Every abuse case there ends by proving the server still answers, and one case proves
+  the property the separate socket exists for: **answers keep succeeding while four image
+  transfers are in flight**. There is deliberately **no binary ISO fixture in this
+  repository** — `boot::iso::build` writes images in memory, behind the `test-support`
+  feature so it never reaches a release binary.
 
 - **A behaviour belongs in `tests/stores.rs`**, which runs it against both stores and requires
   the identical outcome. One that covers a single backend proves half of what it claims, and
