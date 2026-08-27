@@ -74,7 +74,9 @@ services:
         ipv4_address: 10.99.0.2
 
   dhcp:
-    image: debian:bookworm-slim
+    build:
+      context: ../..
+      dockerfile: packaging/boot-rig/Dockerfile.dhcp
     depends_on:
       server:
         condition: service_started
@@ -85,14 +87,6 @@ services:
     networks:
       rig:
         ipv4_address: 10.99.0.3
-    command:
-      - sh
-      - -c
-      - |
-        apt-get update >/dev/null && apt-get install -y --no-install-recommends dnsmasq >/dev/null
-        echo "--- the configuration under test ---"
-        cat /etc/rig/dnsmasq.conf
-        exec dnsmasq --keep-in-foreground --log-dhcp --conf-file=/etc/rig/dnsmasq.conf
 
   client:
     build:

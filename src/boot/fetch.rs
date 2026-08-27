@@ -50,6 +50,16 @@ pub fn fetch(
         Some(name) => name.to_string(),
         None => name_from(url)?,
     };
+    // Said here rather than left to curl, whose "Failed to open the file" names the
+    // partial path and not the setting that produced it.
+    if !dir.is_dir() {
+        return Err(format!(
+            "{} is not a directory. RESCRIPTUM_MEDIA_DIR names where images live, and \
+             nothing creates it for you — a directory conjured by a download is one \
+             nobody chose.",
+            dir.display()
+        ));
+    }
     let target = dir.join(&name);
     if target.exists() {
         return Err(format!(

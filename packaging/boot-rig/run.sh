@@ -81,6 +81,18 @@ for _ in $(seq 1 60); do
   sleep 2
 done
 
+# **Every service has to still be running.** A container that died looks exactly like
+# one still starting, and the first run of this rig spent four minutes booting a client
+# at a DHCP server that had exited 127 a minute earlier.
+for service in server dhcp; do
+  state=$("${COMPOSE[@]}" ps --format '{{.State}}' "$service" 2>/dev/null | head -1)
+  if [ "$state" != "running" ]; then
+    echo "the $service container is '$state', not running. Its log:" >&2
+    "${COMPOSE[@]}" logs "$service" 2>&1 | tail -20 >&2
+    exit 1
+  fi
+done
+
 echo "==> what the server thinks of its own boot assets"
 "${COMPOSE[@]}" exec -T server /usr/local/bin/rescriptum boot check
 

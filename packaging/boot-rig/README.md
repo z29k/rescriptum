@@ -66,6 +66,26 @@ internet, which is why the loaders are built into their image rather than at run
 **No `/dev/kvm` anywhere.** KVM would make this fast; the rig has to pass without it,
 because the development machine is a Mac. Ten times slower is a long run, not a wall.
 
+## What running it for the first time cost
+
+Four attempts, and every failure was invisible until the thing actually ran. They are
+listed because each one is a shape that will recur, not because the fixes are
+interesting:
+
+| What failed | Why it was invisible |
+|---|---|
+| `iproute2` missing from the client image | every `ip` call tolerated its own failure, and the guard below them never fired. Five `command not found` lines scrolled past and QEMU booted with no network |
+| The client image was never rebuilt | `docker compose run` reuses whatever image exists, so a Dockerfile fix silently did not apply |
+| dnsmasq installed at *run* time | the network is `internal: true`, so apt could not reach anything. The install failed into `/dev/null` and the container exited 127 a minute before a client was booted at it |
+| A 6 GB build context | no `.dockerignore`, so every run spent two minutes transferring `target/` |
+
+The pattern in three of the four: **a service that died looks exactly like one still
+starting.** `run.sh` now checks every container is still running before it boots a
+client, and prints the log of any that is not.
+
+The rule the third one broke is the rig's own, stated two paragraphs above it: if
+something on this network needs the internet, it gets it before the network exists.
+
 ## Two host facts worth knowing before the first run
 
 - **The loader image is pinned to `linux/amd64`.** iPXE's BIOS targets are 32-bit x86 and
