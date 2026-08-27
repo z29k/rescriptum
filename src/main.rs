@@ -84,6 +84,7 @@ fn main() -> ExitCode {
         Some((cmd, _)) if cmd == "check" => return cli::check(&cfg),
         Some((cmd, rest)) if cmd == "import" => return cli::import(&cfg, rest),
         Some((cmd, rest)) if cmd == "export" => return cli::export(&cfg, rest),
+        Some((cmd, rest)) if cmd == "media" => return cli::media(&cfg, rest),
         Some((cmd, _)) => {
             eprintln!("unknown argument {cmd:?}\n");
             eprint!("{}", cli::USAGE);
@@ -153,6 +154,53 @@ async fn serve(cfg: Arc<Config>) -> ExitCode {
             guard: Default::default(),
         });
         tokio::spawn(rescriptum::admin::serve(admin_listener, admin));
+    }
+
+    // The media listener, if a media directory was named. Its own socket, its own
+    // timeout and its own connection budget — see `boot::media` for why all three are
+    // forced rather than preferred.
+    if let Some(dir) = cfg.media_dir.clone() {
+        let addr = cfg.media_addr();
+        let media_listener = match TcpListener::bind(&addr).await {
+            Ok(l) => l,
+            Err(e) => {
+                log::server(&format!("cannot bind the media listener on {addr}: {e}"));
+                return ExitCode::FAILURE;
+            }
+        };
+        let bound = media_listener
+            .local_addr()
+            .map(|a| a.to_string())
+            .unwrap_or(addr);
+
+        // Said out loud because it is the value every generated script is written
+        // against, and a wrong guess here produces a machine that boots, chains, and
+        // hangs on an address that does not exist. This log line is the only place the
+        // answer will ever appear.
+        let (host, derived) = cfg.public_host();
+        if derived {
+            log::server(&format!(
+                "warning: RESCRIPTUM_PUBLIC_HOST is not set — derived {host}, which is what \
+                 every generated URL will name. Multi-homed and NAT hosts get this wrong; \
+                 set it explicitly if that address is not reachable from the machines."
+            ));
+        }
+        log::server(&format!(
+            "media listening on {bound} — serving {} as http://{host}",
+            dir.display()
+        ));
+
+        let catalog = Arc::new(rescriptum::boot::catalog::Catalog::new(dir.clone()));
+        // Load it now rather than on the first request, so a broken catalogue is known
+        // before a machine asks rather than at 3am.
+        for problem in catalog.problems().unwrap_or_default() {
+            log::server(&format!("warning: media: {problem}"));
+        }
+        let media = Arc::new(rescriptum::boot::media::Media {
+            cfg: Arc::clone(&cfg),
+            catalog,
+        });
+        tokio::spawn(rescriptum::boot::media::serve(media_listener, media));
     }
 
     // Report the address actually bound, not the one requested: with `:0` (used by the

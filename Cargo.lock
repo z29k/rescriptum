@@ -316,6 +316,7 @@ dependencies = [
  "hyper",
  "hyper-util",
  "quick-xml",
+ "rescriptum",
  "rusqlite",
  "serde_json",
  "serde_yaml_ng",

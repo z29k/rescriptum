@@ -471,7 +471,7 @@ fn strip(bytes: &[u8]) -> String {
 /// review, that nobody can vary, and that grows a repository by megabytes. This builds
 /// exactly the image a test needs, in memory, and doubles as the case generator for the
 /// Rock Ridge, Joliet and refusal paths Phase 4 will need.
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub mod build {
     use super::*;
     use std::collections::BTreeMap;

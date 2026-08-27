@@ -13,6 +13,7 @@
 pub mod catalog;
 pub mod cpio;
 pub mod iso;
+pub mod media;
 pub mod probe;
 pub mod sha256;
 pub mod stanza;

@@ -28,6 +28,10 @@ USAGE:
     rescriptum config --value K   one value, for a script (never a credential)
     rescriptum config set K=V     edit the file RESCRIPTUM_ENV_FILE names
     rescriptum config unset K     comment a setting back out of it
+    rescriptum media list         the installer images this server holds
+    rescriptum media add FILE     register one: verify, probe, record its digest
+    rescriptum media check        re-verify every recorded digest, report what drifted
+    rescriptum media ipxe ID      print the .ipxe answer that boots one image
     rescriptum --help
 
 ENVIRONMENT:
@@ -43,8 +47,16 @@ ENVIRONMENT:
     RESCRIPTUM_LOG_FILE           a path, stdout or stderr    (default stderr)
 
 ADMIN API (requires RESCRIPTUM_STORE=sqlite; off unless RESCRIPTUM_ADMIN_ADDR is set):
-    RESCRIPTUM_ADMIN_ADDR         admin listener, e.g. 127.0.0.1:8001
+    RESCRIPTUM_ADMIN_ADDR         admin listener, e.g. 127.0.0.1:9000
     RESCRIPTUM_ADMIN_TOKEN        bearer token, 16 characters or more (required)
+
+BOOT MEDIA (off unless RESCRIPTUM_MEDIA_DIR is set):
+    RESCRIPTUM_MEDIA_DIR          directory of installer images
+    RESCRIPTUM_MEDIA_ADDR         media listener             (default 0.0.0.0:8001)
+    RESCRIPTUM_MEDIA_TIMEOUT_SECS whole-transfer deadline    (default 600)
+    RESCRIPTUM_MEDIA_MAX_CONNECTIONS  concurrent transfers   (default 16)
+    RESCRIPTUM_PUBLIC_HOST        the host generated URLs name  (a host, not a URL)
+    RESCRIPTUM_BOOT_ALLOW         CIDRs allowed to fetch media  (default: anyone)
 
 VALIDATING A MERGED ANSWER:
     rescriptum render 98:fa:9b:50:d8:10 > /tmp/answer.toml
@@ -409,6 +421,372 @@ fn copy(
         println!("  {failures} failure(s)");
         ExitCode::FAILURE
     }
+}
+
+// ---- media ----------------------------------------------------------------
+
+/// `media list|add|check|ipxe` — the boot-media half of the CLI.
+///
+/// **Preparation and asset management are commands, never requests.** The rule that
+/// keeps the server honest is that no request ever triggers work proportional to the
+/// size of an image; hashing 1.5 GB happens here, once, and the result is recorded
+/// beside the image so nothing ever recomputes it.
+pub fn media(cfg: &Config, args: &[String]) -> ExitCode {
+    let Some(dir) = &cfg.media_dir else {
+        eprintln!("there is no media directory: RESCRIPTUM_MEDIA_DIR names one, and nothing does");
+        return ExitCode::FAILURE;
+    };
+    let catalog = crate::boot::catalog::Catalog::new(dir);
+
+    match args.split_first() {
+        Some((cmd, rest)) if cmd == "list" && rest.is_empty() => media_list(&catalog),
+        Some((cmd, rest)) if cmd == "add" && !rest.is_empty() => media_add(&catalog, rest),
+        Some((cmd, rest)) if cmd == "check" && rest.is_empty() => media_check(&catalog),
+        Some((cmd, rest)) if cmd == "ipxe" && rest.len() == 1 => {
+            media_ipxe(cfg, &catalog, &rest[0])
+        }
+        _ => {
+            eprintln!(
+                "usage: rescriptum media list\n\
+                 \x20      rescriptum media add FILE [--sha256 DIGEST]\n\
+                 \x20      rescriptum media check\n\
+                 \x20      rescriptum media ipxe ID"
+            );
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn media_list(catalog: &crate::boot::catalog::Catalog) -> ExitCode {
+    let listing = match catalog.listing() {
+        Ok(listing) => listing,
+        Err(e) => {
+            eprintln!("cannot read {}: {e}", catalog.dir().display());
+            return ExitCode::FAILURE;
+        }
+    };
+
+    println!(
+        "{:<20} {:<8} {:<10} {:<28} {:>8}  PINNED",
+        "ID", "FAMILY", "ARCH", "VERSION", "SIZE"
+    );
+    for entry in &listing.entries {
+        println!(
+            "{:<20} {:<8} {:<10} {:<28} {:>8}  {}",
+            entry.id,
+            entry.family().label(),
+            entry.arch().map(|a| a.label()).unwrap_or("—"),
+            truncate(&entry.describe(), 28),
+            human(entry.size),
+            match &entry.digest {
+                Some(digest) => digest[..12.min(digest.len())].to_string(),
+                None => "—".to_string(),
+            },
+        );
+    }
+    if listing.entries.is_empty() {
+        println!("(nothing in {})", catalog.dir().display());
+    }
+    for problem in &listing.problems {
+        eprintln!("warning: {problem}");
+    }
+    ExitCode::SUCCESS
+}
+
+fn media_add(catalog: &crate::boot::catalog::Catalog, args: &[String]) -> ExitCode {
+    let mut path: Option<&String> = None;
+    let mut expected: Option<&String> = None;
+    let mut rest = args.iter();
+    while let Some(arg) = rest.next() {
+        if arg == "--sha256" {
+            match rest.next() {
+                Some(digest) => expected = Some(digest),
+                None => {
+                    eprintln!("--sha256 wants a digest");
+                    return ExitCode::FAILURE;
+                }
+            }
+        } else if path.is_none() {
+            path = Some(arg);
+        } else {
+            eprintln!("unexpected argument {arg:?}");
+            return ExitCode::FAILURE;
+        }
+    }
+    let Some(path) = path.map(std::path::PathBuf::from) else {
+        eprintln!("usage: rescriptum media add FILE [--sha256 DIGEST]");
+        return ExitCode::FAILURE;
+    };
+
+    if let Some(digest) = expected
+        && !crate::boot::sha256::is_digest(digest)
+    {
+        eprintln!("{digest:?} is not a SHA-256 — it is 64 hexadecimal characters");
+        return ExitCode::FAILURE;
+    }
+    if !path.is_file() {
+        eprintln!("{} is not a file", path.display());
+        return ExitCode::FAILURE;
+    }
+
+    // **The server never downloads images; it receives them.** Dropping the file into
+    // the directory is the native act — over SMB, over scp, from wherever the ISO
+    // already is — and this only registers what is already there. Registering something
+    // outside the directory would record a digest for a file the listener cannot serve.
+    let inside = path
+        .parent()
+        .map(|p| same_directory(p, catalog.dir()))
+        .unwrap_or(false);
+    if !inside {
+        eprintln!(
+            "{} is not in {} — put the image there first, then register it.\n\
+             Nothing is copied: the catalogue serves the file where it lies.",
+            path.display(),
+            catalog.dir().display()
+        );
+        return ExitCode::FAILURE;
+    }
+
+    let id = path
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    if !crate::store::valid_id(&id) {
+        eprintln!("{id:?} is not a usable identifier — it becomes part of a URL");
+        return ExitCode::FAILURE;
+    }
+    if crate::boot::catalog::RESERVED_IDS.contains(&id.as_str()) {
+        eprintln!(
+            "{id:?} is a reserved name — the media listener answers /{id} itself, so an \
+             entry called that could never be reached. Rename the file."
+        );
+        return ExitCode::FAILURE;
+    }
+
+    // Progress, because a minute of silence reads as a hang.
+    eprintln!("hashing {} …", path.display());
+    let mut last = 0u64;
+    let digest = match crate::boot::sha256::file(&path, |done, total| {
+        let percent = if total == 0 { 100 } else { done * 100 / total };
+        if percent >= last + 10 {
+            last = percent - percent % 10;
+            eprintln!("  {last}% ({} of {})", human(done), human(total));
+        }
+    }) {
+        Ok(digest) => digest,
+        Err(e) => {
+            eprintln!("cannot read {}: {e}", path.display());
+            return ExitCode::FAILURE;
+        }
+    };
+
+    if let Some(expected) = expected
+        && !expected.eq_ignore_ascii_case(&digest)
+    {
+        // Loud and fatal. A mismatch here is either a truncated download or the wrong
+        // file, and both install the wrong thing on every machine that asks.
+        eprintln!("digest mismatch — nothing was recorded");
+        eprintln!("  expected {expected}");
+        eprintln!("  found    {digest}");
+        return ExitCode::FAILURE;
+    }
+
+    let probed = match crate::boot::probe::probe(&path) {
+        Ok(probed) => probed,
+        Err(e) => {
+            // Still registrable: an image nothing places can be served whole, and that
+            // is a normal thing to want.
+            eprintln!("note: cannot read {} as an image ({e})", path.display());
+            Default::default()
+        }
+    };
+
+    let sidecar = crate::boot::catalog::Sidecar::path_for(&path);
+    if let Err(e) = std::fs::write(
+        &sidecar,
+        crate::boot::catalog::Sidecar::render(&digest, &probed),
+    ) {
+        eprintln!("cannot write {}: {e}", sidecar.display());
+        return ExitCode::FAILURE;
+    }
+
+    println!("{id}  {digest}");
+    println!(
+        "  {} {}",
+        probed
+            .family
+            .map(|f| f.label().to_string())
+            .unwrap_or_else(|| "unknown".to_string()),
+        probed.version.clone().unwrap_or_default()
+    );
+    match (&probed.kernel, &probed.initrd) {
+        (Some(kernel), Some(initrd)) => {
+            println!("  kernel {kernel}");
+            println!("  initrd {initrd}");
+            if probed.external {
+                println!("  (both beside the image — this looks like `prepare-iso --pxe` output)");
+            }
+            if probed.zstd_initrd {
+                // The assistant's own source says "iPXE does not support a
+                // zstd-compressed initrd" when it recompresses to gzip. Whether that
+                // binds through our chain is a bench question; saying so is not.
+                println!(
+                    "  note: the initrd is zstd-compressed. The Proxmox assistant recompresses\n\
+                     \x20       it to gzip when it splits an image, on the grounds that iPXE does\n\
+                     \x20       not support zstd. If a loader refuses it, run:\n\
+                     \x20       proxmox-auto-install-assistant prepare-iso {} --pxe --output DIR",
+                    path.display()
+                );
+            }
+        }
+        _ => println!("  no kernel or initrd found — servable whole, but not as a boot stanza"),
+    }
+    println!("  wrote {}", sidecar.display());
+    ExitCode::SUCCESS
+}
+
+/// `media check` — re-verify what was recorded. Its exit code is a contract, like
+/// `check`'s: `deploy.sh` keys on it.
+fn media_check(catalog: &crate::boot::catalog::Catalog) -> ExitCode {
+    let listing = match catalog.listing() {
+        Ok(listing) => listing,
+        Err(e) => {
+            println!("cannot read {}: {e}", catalog.dir().display());
+            return ExitCode::FAILURE;
+        }
+    };
+    println!("checking {}", catalog.describe());
+
+    let mut failures = listing.problems.len();
+    for problem in &listing.problems {
+        println!("  problem: {problem}");
+    }
+
+    let mut pinned = 0usize;
+    let mut unpinned: Vec<&str> = Vec::new();
+    for entry in &listing.entries {
+        let Some(recorded) = &entry.digest else {
+            unpinned.push(&entry.id);
+            continue;
+        };
+        match crate::boot::sha256::file(&entry.path, |_, _| {}) {
+            Ok(digest) if digest.eq_ignore_ascii_case(recorded) => pinned += 1,
+            Ok(digest) => {
+                // An image that changed under a recorded digest is the one failure that
+                // silently installs something nobody reviewed.
+                println!(
+                    "  FAIL {}: the image no longer matches what was recorded",
+                    entry.id
+                );
+                println!("       recorded {recorded}");
+                println!("       found    {digest}");
+                failures += 1;
+            }
+            Err(e) => {
+                println!("  FAIL {}: {e}", entry.id);
+                failures += 1;
+            }
+        }
+        if entry.probed.zstd_initrd {
+            println!(
+                "  note: {}'s initrd is zstd — `prepare-iso --pxe` recompresses to gzip",
+                entry.id
+            );
+        }
+    }
+
+    println!(
+        "  {} image(s), {pinned} verified against a recorded digest",
+        listing.entries.len()
+    );
+    for id in &unpinned {
+        println!("  note: {id} has no recorded digest — `media add` records one");
+    }
+
+    if failures == 0 {
+        println!("  ok — everything recorded still matches");
+        ExitCode::SUCCESS
+    } else {
+        println!("  {failures} problem(s)");
+        ExitCode::FAILURE
+    }
+}
+
+/// `media ipxe ID` — **print a script; do not install one.**
+///
+/// The output is an ordinary `.ipxe` answer document. Saved into the answers directory
+/// it goes through the existing selection, layering and templating unchanged, which is
+/// the altitude that keeps the model intact: the server does not become clever about
+/// booting, it gains a generator.
+///
+/// stdout is the script and stderr is everything else, so `media ipxe … > file` works.
+fn media_ipxe(cfg: &Config, catalog: &crate::boot::catalog::Catalog, id: &str) -> ExitCode {
+    let entry = match catalog.get(id) {
+        Ok(Some(entry)) => entry,
+        Ok(None) => {
+            eprintln!("no image called {id:?} — `rescriptum media list` shows what there is");
+            return ExitCode::FAILURE;
+        }
+        Err(e) => {
+            eprintln!("cannot read {}: {e}", catalog.dir().display());
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let (host, derived) = cfg.public_host();
+    if derived {
+        eprintln!(
+            "# warning: RESCRIPTUM_PUBLIC_HOST is not set, so this script names {host}, \
+             derived by asking the routing table. Set it if that is not the address the \
+             machines can reach."
+        );
+    }
+    match crate::boot::stanza::ipxe(&entry, &cfg.endpoints()) {
+        Ok(script) => {
+            eprintln!(
+                "# {}",
+                crate::boot::stanza::where_the_answer_goes(entry.family())
+            );
+            print!("{script}");
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("{e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// Whether two paths name the same directory, resolving symlinks where it can. A media
+/// directory reached as `/srv/media` and as `./media` is the same directory.
+fn same_directory(a: &std::path::Path, b: &std::path::Path) -> bool {
+    match (a.canonicalize(), b.canonicalize()) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => a == b,
+    }
+}
+
+fn human(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "K", "M", "G", "T"];
+    let mut size = bytes as f64;
+    let mut unit = 0;
+    while size >= 1024.0 && unit + 1 < UNITS.len() {
+        size /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{bytes}{}", UNITS[0])
+    } else {
+        format!("{size:.1}{}", UNITS[unit])
+    }
+}
+
+fn truncate(text: &str, width: usize) -> String {
+    if text.chars().count() <= width {
+        return text.to_string();
+    }
+    let kept: String = text.chars().take(width.saturating_sub(1)).collect();
+    format!("{kept}…")
 }
 
 // ---- config ---------------------------------------------------------------

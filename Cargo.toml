@@ -31,6 +31,12 @@ default = ["sqlite"]
 # SQLite backs the admin API. Turn it off for the smallest possible binary when the
 # answers directory is all you need: `cargo build --no-default-features`.
 sqlite = ["dep:rusqlite"]
+# Compiles `boot::iso::build`, which writes ISO9660 images in memory for tests. There is
+# deliberately **no binary ISO fixture in this repository**: a checked-in image is a blob
+# nobody can review and nobody can vary. The builder is the alternative, and it has no
+# business in a release binary — the resolver keeps it out of one, because nothing but
+# the dev-dependency below asks for it.
+test-support = []
 
 [profile.release]
 opt-level = "z"
@@ -40,6 +46,9 @@ strip = true
 
 [dev-dependencies]
 rusqlite = { version = "0.40.2", features = ["bundled"] }
+# The crate itself, so an integration test can build an ISO to serve. This is what turns
+# `test-support` on for a test build and leaves it off for every other one.
+rescriptum = { path = ".", features = ["test-support"] }
 
 # `panic = "abort"` is deliberately ABSENT. With one thread per connection, unwinding
 # means a panic kills only the connection that caused it; aborting would take down the

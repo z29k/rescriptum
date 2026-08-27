@@ -175,6 +175,35 @@ pub fn is_digest(value: &str) -> bool {
     value.len() == 64 && value.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
+/// Hash a whole file, reporting progress as it goes.
+///
+/// **This is an ingest-time cost and never a request-time one.** At about 30 MB/s on the
+/// small end of the range this has to work on, a 1.5 GB image is three quarters of a
+/// minute — and a minute of silence reads as a hang, so `progress` is a callback rather
+/// than an option nobody turns on.
+pub fn file(path: &std::path::Path, mut progress: impl FnMut(u64, u64)) -> std::io::Result<String> {
+    use std::io::Read;
+
+    let total = std::fs::metadata(path)?.len();
+    let mut file = std::fs::File::open(path)?;
+    let mut hasher = Sha256::new();
+    let mut buffer = vec![0u8; 1024 * 1024];
+    let mut done = 0u64;
+
+    loop {
+        let n = match file.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e),
+        };
+        hasher.update(&buffer[..n]);
+        done += n as u64;
+        progress(done, total);
+    }
+    Ok(to_hex(&hasher.finish()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
