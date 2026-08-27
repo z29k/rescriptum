@@ -107,10 +107,12 @@ mode=$(file_mode "$ENV_FILE")
 [ "$(value_of RESCRIPTUM_LISTEN_ADDR)" = "0.0.0.0:$PORT" ] && ok "the wizard's port reached the env file" || bad "listen addr is $(value_of RESCRIPTUM_LISTEN_ADDR)"
 [ "$(value_of RESCRIPTUM_ANSWERS_DIR)" = "$SHARE/answers" ] && ok "the answers default to the share" || bad "answers dir is $(value_of RESCRIPTUM_ANSWERS_DIR)"
 grep -q "^RESCRIPTUM_DB_PATH=$SHARE/answers.db\$" "$ENV_FILE" && ok "the database path is pre-set in the share" || bad "RESCRIPTUM_DB_PATH is not pre-set — switching stores would be a fatal start"
-# Both listeners, and the media one even while boot media is commented out of the env
-# file: registering a port does not open it, and the alternative is an operator who
-# enables media and then cannot find rescriptum in the firewall list.
-grep -q "dst.ports=\"$PORT/tcp 8001/tcp\"" "$ROOT/target/port_conf/rescriptum.sc" && ok "the .sc file carries the answer port and the media one" || bad ".sc file: $(tail -1 "$ROOT/target/port_conf/rescriptum.sc")"
+# All three listeners, registered whether or not each is currently enabled: registering
+# a port does not open it, and the alternative is an operator who turns media or TFTP on
+# and then cannot find rescriptum in the firewall list. **69/udp is the one that matters
+# most** — a PXE ROM asks over UDP, and a firewall that drops it produces a client which
+# retries and times out with nothing in any log on this side.
+grep -q "dst.ports=\"$PORT/tcp 8001/tcp 69/udp\"" "$ROOT/target/port_conf/rescriptum.sc" && ok "the .sc file carries the answer port, the media one and TFTP" || bad ".sc file: $(tail -1 "$ROOT/target/port_conf/rescriptum.sc")"
 
 # **The package must not ship a configuration that refuses to start.** Naming a media
 # address with no media directory is a startup error, and the first version of this
@@ -120,11 +122,14 @@ grep -q "dst.ports=\"$PORT/tcp 8001/tcp\"" "$ROOT/target/port_conf/rescriptum.sc
 grep -q "^RESCRIPTUM_MEDIA_DIR=$SHARE/media\$" "$ENV_FILE" && ok "the media folder is named, not left to be guessed" || bad "RESCRIPTUM_MEDIA_DIR is not set to $SHARE/media"
 grep -q "^RESCRIPTUM_BOOT_DIR=$SHARE/boot\$" "$ENV_FILE" && ok "and the boot folder too" || bad "RESCRIPTUM_BOOT_DIR is not set to $SHARE/boot"
 
-# **The trap this removes.** Naming a boot folder otherwise starts a TFTP server on port
-# 69, which this package cannot bind — and a failed bind is a server that does not start
-# at all, so the folder setting would be a trap rather than a constraint.
-grep -q "^RESCRIPTUM_TFTP_ADDR=off\$" "$ENV_FILE" && ok "and TFTP is off, which is what makes naming the boot folder safe here" || bad "RESCRIPTUM_TFTP_ADDR is not off — naming a boot folder would stop the package starting"
-grep -q "TFTP" "$ENV_FILE" && ok "the file says why TFTP is not available here" || bad "nothing in the file explains the missing TFTP"
+# **rescriptum is the TFTP server, and the package must not ship a file that says
+# otherwise.** A previous version wrote `RESCRIPTUM_TFTP_ADDR=off` here, trading the
+# product's first principle for a packaging constraint; port 69 is reachable on DSM with
+# one `setcap`, measured on a 7.2.2 machine. Left unset, the default is 0.0.0.0:69 —
+# which is what the generated DHCP snippet and every loader we ship expect.
+grep -q "^RESCRIPTUM_TFTP_ADDR=" "$ENV_FILE" && bad "RESCRIPTUM_TFTP_ADDR is live in the file — the default 0.0.0.0:69 is what the snippet and the loaders expect" || ok "TFTP is left at its default, so the package is the TFTP server"
+grep -q "setcap cap_net_bind_service" "$ENV_FILE" && ok "and the file says what one root command makes it bind" || bad "nothing in the file explains how port 69 gets bound"
+grep -q "Task Scheduler" "$ENV_FILE" && ok "and how to survive an upgrade, which drops the capability" || bad "nothing says the capability does not survive an upgrade"
 
 section "install without a wizard (silent_install, or a reinstall that shows none)"
 saved=$(cat "$ENV_FILE")
@@ -163,10 +168,9 @@ rc=$?
 [ $rc -eq 0 ] && ok "start returns 0" || bad "start returned $rc: $out"
 [ -d "$SHARE/answers" ] && ok "start created the answers directory inside the share" || bad "no answers directory — DSM creates the share, not this"
 # Made whether or not the env file names them yet: a folder that only appears once a
-# setting is enabled is one nobody discovers, and the boot one is what DSM's own TFTP
-# server is pointed at.
+# setting is enabled is one nobody discovers.
 [ -d "$SHARE/media" ] && ok "and the media folder, ready for an ISO" || bad "no $SHARE/media"
-[ -d "$SHARE/boot" ] && ok "and the boot folder, for DSM's own TFTP server" || bad "no $SHARE/boot"
+[ -d "$SHARE/boot" ] && ok "and the boot folder, which is what TFTP hands loaders out of" || bad "no $SHARE/boot"
 
 answered=no
 for _ in 1 2 3 4 5 6 7 8 9 10; do
@@ -340,6 +344,12 @@ grep -q '^version: rescriptum' <<<"$out" && ok "status reports the version" || b
 # service's user, which read the CGI's stdin and waited on it forever. The CGI already
 # *is* that user, so a plain test is both possible and correct.
 grep -q '^answers_readable: yes' <<<"$out" && ok "and can tell that the answers folder is readable" || bad "status says the answers folder is unreadable: $out"
+# **A TFTP port that cannot be bound does not stop the server**, so this line is the only
+# place an operator sees it after the startup warning has scrolled away. In this harness
+# nothing has bound port 69 and nothing could, so the honest answer is one of the two
+# not-working states — what must never happen is silence or a claim that it is fine.
+grep -qE '^tftp: (serving|broken|silent|off)$' <<<"$out" && ok "and says whether a loader can actually be handed over" || bad "status has no usable tftp line: $out"
+grep -q '^tftp: serving' <<<"$out" && bad "status claims TFTP is serving, with nothing bound to port 69" || ok "and does not claim to be serving when nothing is bound"
 
 # ── 5. uninstall ───────────────────────────────────────────────────────────────
 section "uninstall must leave the answers alone"

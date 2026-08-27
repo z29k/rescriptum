@@ -44,6 +44,9 @@ DEFAULT_PORT=8000
 # that chains to `${next-server}:8001` before any deployment exists, so a media listener
 # anywhere else is one every already-shipped loader cannot reach.
 MEDIA_PORT=8001
+# TFTP's, and not a preference either: a PXE ROM has 69 burned into it, so this is the
+# one port in the design that cannot move without changing the client.
+TFTP_PORT=69
 
 say() { echo "$PKG: $*"; }
 
@@ -143,37 +146,45 @@ RESCRIPTUM_MEDIA_DIR=$SHARE_MEDIA
 # RESCRIPTUM_MEDIA_ADDR=0.0.0.0:$MEDIA_PORT
 
 # ---------------------------------------------------------------------------
-# TFTP: **not available in this package, and it is not an oversight.**
+# TFTP — and it is this package's, not somebody else's.
 #
-# DSM 7 does not let an unsigned package run as root, and port 69 is privileged, so
-# nothing here can bind it. Setting RESCRIPTUM_TFTP_ADDR would produce a package that
-# refuses to start, which is why it is not offered.
+# rescriptum *is* the TFTP server. Port 69 is privileged and DSM 7 refuses to let an
+# unsigned package run as root, so it takes one root command, once, from you:
 #
-# DSM has its own TFTP server, and it is the right one to use:
+#     sudo setcap cap_net_bind_service=+ep /volume1/@appstore/$PKG/bin/$PKG
+#     sudo synopkg restart $PKG
 #
-#   1. Control Panel > File Services > Advanced > TFTP: enable it, and set the root to
-#      the '$PKG' shared folder's boot folder.
-#   2. Put the loaders there. On any Linux box with a C toolchain:
-#        packaging/ipxe/build.sh --out /path/to/$PKG/boot
-#      They are not in this package either: they are GPLv2 and belong beside it, not
-#      welded into it.
-#   3. Point DHCP at this NAS — Control Panel > DHCP Server > PXE if this NAS serves
-#      DHCP, or your own server with what
-#        rescriptum-cli boot dhcp-snippet --format dnsmasq
-#      prints.
+# Measured on a DSM 7.2.2 machine, all four routes: `run-as: root` in conf/privilege is
+# refused with synopkg error 319 (invalid package privilege content), both in `defaults`
+# and as a per-action ctrl-script, even though Synology's own packages use exactly that
+# shape; a security.capability xattr baked into package.tgz installs but Package Center
+# strips it during extraction; setcap after install works, and the package then binds
+# udp/69 as the unprivileged '$PKG' user alongside $port and $MEDIA_PORT.
 #
-# The rest of the chain is this package's: the loader chains to port 8001 above, and
-# everything after that is HTTP. The folder is named here so `rescriptum-cli boot check`
-# works and so the loaders are reachable over HTTP at /boot/ — which is what UEFI HTTP
-# Boot fetches, and where the boot menu looks for its logo.
-RESCRIPTUM_BOOT_DIR=$SHARE_BOOT
+# **An upgrade replaces the binary and the capability goes with it.** Re-run the two
+# commands above, or make it durable with a boot-up task: Control Panel > Task Scheduler
+# > Create > Triggered Task > User-defined script, user root, event Boot-up, with the
+# setcap line as the script. Then run it once by hand from that page.
+#
+# Without the capability nothing breaks except TFTP itself: the server warns at startup,
+# keeps answering, keeps serving media, and 'rescriptum-cli boot check' exits non-zero
+# and says so. That is deliberate — an upgrade must not take a fleet's answers down to
+# report that a second port could not be opened.
+#
+# RESCRIPTUM_TFTP_ADDR is left unset on purpose: the default is 0.0.0.0:69, which is
+# what the generated DHCP snippet and every loader we ship expect. Set it to another
+# port to avoid the capability entirely (your DHCP server must then be told), or to
+# 'off' if some other daemon on this NAS is already handing out loaders — DSM has its
+# own TFTP server under Control Panel > File Services > Advanced, and pointing it at the
+# boot folder below is a working alternative rather than the intended one.
+# RESCRIPTUM_TFTP_ADDR=0.0.0.0:69
 
-# **This is what makes the line above safe here.** Naming a boot folder otherwise starts
-# a TFTP server on port 69, which this package cannot bind — and a failed bind is a
-# server that does not start at all, so the folder setting would be a trap rather than a
-# constraint. Off means no listener; the loaders are still served over HTTP and still
-# checked, and DSM's own TFTP server hands the file over.
-RESCRIPTUM_TFTP_ADDR=off
+# Where the loaders live. They are not in this package: they are iPXE, GPLv2, and belong
+# beside it rather than welded into it. Put them here over File Station or SMB, then
+# check with 'rescriptum-cli boot check'. They are served over TFTP from the address
+# above *and* over HTTP at /boot/ on port $MEDIA_PORT, which is what UEFI HTTP Boot
+# fetches and where the boot menu looks for its logo.
+RESCRIPTUM_BOOT_DIR=$SHARE_BOOT
 BODY
 }
 
@@ -219,10 +230,15 @@ fi
 #   sudo /usr/syno/sbin/synopkghelper update rescriptum port-config
 # because Acquire skips a file that already exists in /usr/local/etc/service.d/.
 if [ -f "$SC_FILE" ]; then
-    # Both listeners. The media one is registered even while it is commented out of the
-    # env file: registering a port does not open it, and the alternative is an operator
-    # who enables boot media and then cannot find rescriptum in the firewall list.
-    sed "s|^dst.ports=.*|dst.ports=\"$port/tcp $MEDIA_PORT/tcp\"|" "$SC_FILE" >"$SC_FILE.new" &&
+    # All three listeners, and every one of them is registered whether or not it is
+    # currently enabled: registering a port does not open it, and the alternative is an
+    # operator who turns boot media on and then cannot find rescriptum in the firewall
+    # list. **69/udp is the one worth naming here** — a machine PXE-booting asks over
+    # UDP broadcast, and a firewall that drops it produces a client that retries and
+    # times out with nothing in any log on this side.
+    # The protocol rides on the port, which is the shape the tcp entries already use —
+    # not a second dst.udp.ports key, which would be a guess.
+    sed "s|^dst.ports=.*|dst.ports=\"$port/tcp $MEDIA_PORT/tcp $TFTP_PORT/udp\"|" "$SC_FILE" >"$SC_FILE.new" &&
         mv "$SC_FILE.new" "$SC_FILE"
 fi
 

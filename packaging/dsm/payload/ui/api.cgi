@@ -194,6 +194,21 @@ status)
     else
         echo "answers_readable: no"
     fi
+
+    # **The one state this panel has to surface that nothing else does.** A TFTP port
+    # that cannot be bound deliberately does not stop the server — port 69 needs a
+    # `setcap` that an upgrade silently drops, and answers must not go down to report
+    # that — so the only trace an operator would otherwise have is a startup warning that
+    # scrolled past hours ago. `boot check` asks the port for a real loader rather than
+    # trying to bind it, because binding proves the opposite of what it looks like: a
+    # bind that succeeds means nothing is listening.
+    case "$("$CLI" boot check 2>/dev/null)" in
+    *"handed over"*) echo "tftp: serving" ;;
+    *"BROKEN"*) echo "tftp: broken" ;;
+    *"TFTP is off"*) echo "tftp: off" ;;
+    *"nothing is listening"*) echo "tftp: silent" ;;
+    *) echo "tftp: unknown" ;;
+    esac
     ;;
 
 check)
