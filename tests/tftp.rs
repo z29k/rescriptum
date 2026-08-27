@@ -761,3 +761,39 @@ fn a_tftp_port_that_cannot_be_bound_does_not_take_the_answers_down() {
     let _ = fs::remove_dir_all(&base);
     drop(squatter);
 }
+
+/// The other half of the same decision: **when TFTP is healthy, `boot check` has to say
+/// so.** Without this the command could report every port as a problem and still look
+/// correct, because the failing case above is the only one anybody would notice.
+///
+/// It also pins the probe's happy path, which nothing else reaches: `Served` means a real
+/// read request came back with data.
+#[test]
+fn boot_check_says_so_when_a_loader_really_is_handed_over() {
+    let files: Vec<(&str, Vec<u8>)> = rescriptum::boot::loaders::loaders()
+        .iter()
+        .map(|name| (*name, loader(2048)))
+        .collect();
+    let s = Server::start(&files);
+
+    let out = Command::new(env!("CARGO_BIN_EXE_rescriptum"))
+        .arg("boot")
+        .arg("check")
+        .env("RESCRIPTUM_BOOT_DIR", &s.boot_dir)
+        .env("RESCRIPTUM_TFTP_ADDR", &s.tftp_addr)
+        .output()
+        .expect("run boot check");
+    let said = String::from_utf8_lossy(&out.stdout).to_string();
+    assert!(out.status.success(), "{said}");
+    assert!(said.contains("handed over"), "{said}");
+
+    // And the third outcome, which `boot check` itself never produces because it only
+    // ever asks for a loader that is on disk: a server is there and the file is not.
+    // Worth telling apart from silence — one is a misconfigured root, the other is
+    // nothing running at all.
+    use rescriptum::boot::tftp::{ProbeResult, probe};
+    assert_eq!(
+        probe(&s.tftp_addr, "nothing-of-the-sort", Duration::from_secs(2)),
+        ProbeResult::Refused
+    );
+}
