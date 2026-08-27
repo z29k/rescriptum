@@ -919,7 +919,7 @@ the image and not derived from `DISK_SIZE`. `run-vm.sh` is the loader-image fall
 
 ## Testing expectations
 
-524 tests, plus the package's own harnesses (see *The DSM package*, and note that
+545 tests, plus the package's own harnesses (see *The DSM package*, and note that
 `cargo test` does not run those). `docs/development/testing.md` has the per-suite table;
 the rules that decide where a test goes:
 

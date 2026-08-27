@@ -8,7 +8,12 @@ sidebar:
 
 # Testing
 
-333 tests. `cargo test` runs all of them in a couple of seconds.
+545 tests. `cargo test` runs all of them in about twenty seconds — most of that is
+`tests/tftp.rs`, which waits on real UDP timeouts because that is what it is testing.
+
+**`cargo test` does not run the harnesses that matter most**: the boot rig, the DSM
+package's three, and the loader build. See [The package is tested too](#the-package-is-tested-too-in-three-places)
+and [the boot rig](#the-boot-chain-belongs-in-the-rig).
 
 ```bash
 cargo test                                # everything
@@ -21,19 +26,22 @@ cargo test --all-features                 # what CI runs
 
 | Suite | Cases | For |
 |---|---|---|
-| `tests/stores.rs` | 39 | **every behaviour, against both stores** |
+| `tests/cli.rs` | 47 | `render`, `check`, `import`, `export`, `config`, and the env file — against the real binary |
 | `tests/integration.rs` | 45 | the real binary over a real socket |
+| `tests/media.rs` | 45 | boot media against the real binary, with both listeners up |
+| `src/config.rs` | 42 | the environment, what refuses to start, and which of the file and the environment wins |
+| `tests/stores.rs` | 39 | **every behaviour, against both stores** |
 | `src/select.rs` | 27 | normalization, scoring, layering, template filling |
 | `src/format/mod.rs` | 27 | parsing, merging, control keys, endpoint aliases |
-| `src/facts.rs` | 22 | query parsing, JSON flattening, globbing |
 | `tests/admin.rs` | 26 | the admin API end to end, formats included |
-| `tests/cli.rs` | 39 | `render`, `check`, `import`, `export`, `config`, and the env file — against the real binary |
-| `src/log.rs` | 4 | level parsing, and the timestamp arithmetic |
+| `src/envfile.rs` | 23 | the env-file parser and writer, and what each refuses |
+| `src/facts.rs` | 22 | query parsing, JSON flattening, globbing |
+| `tests/tftp.rs` | 21 | TFTP over real UDP, and what a failed bind must not cost |
 | `src/format/xml.rs` | 18 | the XML tree — pairing, entities, fidelity |
-| `src/config.rs` | 24 | the environment, what refuses to start, and which of the file and the environment wins |
 | `src/merge.rs` | 11 | the TOML deep merge |
 | `tests/guards.rs` | 7 | the answer token, and the lockout that deliberately is not there |
-| `src/envfile.rs` | 23 | the env-file parser and writer, and what each refuses |
+| `src/log.rs` | 4 | level parsing, and the timestamp arithmetic |
+| `src/boot/*.rs` | 120 | the ISO reader, probing, the catalogue, patch plans, the menu, the loader table, DHCP snippets, cpio and SHA-256 |
 | `src/admin.rs`, `src/capture.rs`, `src/store/mod.rs` | 21 | unit-level behaviour |
 
 ## `tests/stores.rs` — the conformance suite
@@ -81,6 +89,47 @@ Explicitly covered:
 > stale binary once "reproduced" a bug that had already been fixed. Rebuild before poking
 > at the binary by hand.
 
+## `tests/tftp.rs` — a transfer is a conversation
+
+Nothing here can be proved from inside a function. Blocks, acknowledgements,
+retransmission, the empty packet that ends a transfer — every bug worth catching lives in
+the turn-taking, and the first run found two of the "works by hand, never after a reboot"
+kind. **A file whose length is an exact multiple of the block size must end with an empty
+data packet**; leave it out and the client waits forever for a final block that never
+comes.
+
+It also owns the one listener failure in this server that is *not* fatal. A TFTP port that
+cannot be bound must not take answers and media down with it — measured on DSM, where the
+capability is granted outside the package and an upgrade drops it — so the test holds the
+port with a squatter, then asserts three things at once: the server came up, it warned and
+said what still works, and `boot check` still exits non-zero.
+
+That last one first passed for the wrong reason: three missing loaders were already
+failing the command. The fixture now writes every loader the table names, and a control
+run with TFTP off proves the directory is otherwise clean.
+
+## `tests/media.rs` — boot media against the real binary
+
+Both listeners up, and every abuse case ends by proving the server still answers. One case
+proves the property the separate socket exists for: **answers keep succeeding while four
+image transfers are in flight.**
+
+There is deliberately **no binary ISO fixture in this repository**. `boot::iso::build`
+writes images in memory, behind the `test-support` feature so it never reaches a release
+binary.
+
+## The boot chain belongs in the rig
+
+`packaging/boot-rig/run.sh` is not Rust and `cargo test` does not run it. It boots a
+claimed and an unclaimed machine in QEMU under TCG, on a private bridge with no uplink,
+and asserts four markers: the DHCP handoff answered from our own generated snippet, a
+loader fetched over TFTP, the unclaimed machine fell through to its local disk, and the
+claimed machine reached its own answer. CI runs the same thing plus a deliberate break.
+
+**A QEMU guest bridged into a container has a MAC of its own, and Docker Desktop's virtual
+switch does not forward frames from a MAC it did not assign** — measured, which is why the
+primary rig is one container rather than four on a Docker network.
+
 ## Check that a test can fail
 
 A test that passes for the wrong reason is worse than no test: it reports coverage that
@@ -124,7 +173,7 @@ do, and each proves something the others cannot.
 |---|---|---|
 | [`packaging/dsm/check-spk.sh`](https://github.com/z29k/rescriptum/blob/main/packaging/dsm/check-spk.sh) | the archive is structurally what DSM expects — uncompressed outer tar, six `INFO` fields, an all-numeric version, `os_min_ver` at least 7.1, 64×64 and 256×256 icons, executable scripts with no CRLF, **the packaged binary's own `--version`**, and the desktop application: `dsmappname` naming a class its `ui/config` actually declares, a JavaScript filename that carries the version, and a backend that still checks the DSM session and `administrators` | seconds, **on every push** |
 | [`packaging/dsm/lifecycle-test.sh`](https://github.com/z29k/rescriptum/blob/main/packaging/dsm/lifecycle-test.sh) | everything the package's *scripts* decide, against a fake `/var/packages` tree: the env file written once and only once, the wizard's values **and their absence**, the service surviving its own start script and answering `/health`, the exit codes Package Center reads, an upgrade that must not touch a hand-edited configuration, an uninstall that must not touch the answers — **and the desktop application's backend**, driven with a stubbed authenticator: refusing no session, refusing a non-administrator, refusing a write with no intent header, refusing one that would stop the server starting, and never handing a token to the browser | seconds, **on every push** |
-| [`packaging/dsm/vm/on-dsm.sh`](https://github.com/z29k/rescriptum/blob/main/packaging/dsm/vm/on-dsm.sh) | DSM's own machinery — the `data-share` worker and its ACL, the `port-config` worker, the generated systemd unit, logrotate against a live descriptor, whether Package Center accepts the archive — **and that a machine asking for its configuration gets one**: a POST with hardware in the body, answered by that machine's file merged over the group claiming it | minutes, on a DSM 7 VM — and then on the DS416j |
+| [`packaging/dsm/vm/on-dsm.sh`](https://github.com/z29k/rescriptum/blob/main/packaging/dsm/vm/on-dsm.sh) | DSM's own machinery — the `data-share` worker and its ACL, the `port-config` worker, the generated systemd unit, logrotate against a live descriptor, whether Package Center accepts the archive — **and that a machine asking for its configuration gets one**: a POST with hardware in the body, answered by that machine's file merged over the group claiming it. It also owns **the only route to port 69**: that `69/udp` survives into the acquired firewall entry, that the package still answers without the capability, and that `setcap cap_net_bind_service=+ep` plus a restart binds `udp/69` as the unprivileged package process | minutes, on a DSM 7 VM — and then on the DS416j |
 
 ```bash
 packaging/dsm/lifecycle-test.sh                     # the first .spk in dist/ that runs here
@@ -149,6 +198,10 @@ The same rule as everywhere else applies to these: **break the thing they guard 
 them go red.** Reverting the `postinst` upgrade guard, making `postuninst` delete the
 share, returning `1` for a stopped package and refusing `prestart` turns 33 green checks
 into 25 green and 8 red — which is how we know the harness is testing anything at all.
+Today it is **58** checks in `lifecycle-test.sh`, 26 in `check-spk.sh` and **47** on the
+machine; the three most recently added were each watched red the same way — by putting
+`RESCRIPTUM_TFTP_ADDR=off` back, by deleting the panel's report of the TFTP state, and by
+making it claim to be serving with nothing bound.
 
 ## CI
 
