@@ -41,7 +41,7 @@ $ export RESCRIPTUM_PUBLIC_HOST=192.0.2.10   # what generated scripts will name
 ```
 
 `RESCRIPTUM_BOOT_DIR` says where the loaders are: unset, there is no TFTP listener and
-nothing at `/boot/…`. Naming it starts TFTP unless you say otherwise — see `off` below.
+nothing at `/boot/…`. Naming it starts TFTP on `0.0.0.0:69` unless you say otherwise.
 
 Port 69 is privileged, and it is the *only* privileged port this server ever wants —
 with no DHCP responder there is nothing after 67 or 4011. Four ways to deal with it, all
@@ -54,13 +54,32 @@ $ export RESCRIPTUM_TFTP_ADDR=0.0.0.0:6969   # or move it, if their DHCP can say
 $ export RESCRIPTUM_TFTP_ADDR=off            # or have no listener at all
 ```
 
-**`off` is a value, not an absence**, and it is what makes naming a boot directory safe
-on a platform that cannot bind a privileged port. Without it, telling the server where
-the loaders are implies a TFTP server on port 69 — and a failed bind is a server that
-does not start, which turns a setting into a trap. With it, the loaders are still served
-over HTTP at `/boot/…` and still checked by `boot check`; only the listener is gone, and
-something else hands the file over. That is exactly how the [Synology
-package](./synology.md) ships.
+**`off` is a value, not an absence** — it is how you say another daemon on this host
+hands the loader over while rescriptum serves the rest of the chain. The loaders stay
+served over HTTP at `/boot/…` and stay checked by `boot check`; only the listener is gone.
+It is a deployment workaround for somebody who wants it, **never how anything here
+ships**: rescriptum *is* the TFTP server, and a build that turned it off by default would
+have traded away the thing it is for. The [Synology package](./synology.md) binds port 69
+with a `setcap`.
+
+**A TFTP port that cannot be bound does not stop the server**, and that is the one place
+this project's "a listener that cannot bind is fatal" rule inverts. Port 69 is the only
+privileged port in the design, so it is the only bind that can fail for something nobody
+configured — a capability an upgrade quietly dropped, most often. Answers are the product;
+dying here would fail every install in flight to report that a second port could not be
+opened. So it warns, keeps serving, and `boot check` exits non-zero:
+
+```console
+$ rescriptum boot check
+  BROKEN nothing answers on 0.0.0.0:69 and it cannot be bound either: Permission denied.
+  Port 69 is privileged: run as root and set RESCRIPTUM_USER to drop afterwards, or grant
+  the binary cap_net_bind_service with setcap — the server still answers and still serves
+  media, but a machine sent here by DHCP asks for a loader and gets nothing
+```
+
+It asks the port for a real loader rather than trying to bind it, because binding proves
+the opposite of what it looks like: a bind that *succeeds* means nothing is listening, and
+a bind that fails cannot tell this server apart from another daemon squatting the port.
 
 **Binding happens first and dropping second**, always. The other order works in testing
 as root and fails on deployment, at a reboot, which is the one moment nobody is watching.

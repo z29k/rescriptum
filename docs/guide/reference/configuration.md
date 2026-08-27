@@ -170,7 +170,6 @@ These stop the server rather than warning, because starting anyway would be wors
 | `RESCRIPTUM_PUBLIC_HOST` carrying a scheme, a port or a path | it is written into URLs for two listeners; one port in the value pins every generated script to one of them |
 | `RESCRIPTUM_TFTP_ADDR` set with no `RESCRIPTUM_BOOT_DIR` | a listener with no loaders to hand out |
 | The boot directory cannot be resolved | every path check compares against it |
-| TFTP cannot bind | port 69 is privileged; the message says so and names the three ways to have it |
 | `RESCRIPTUM_USER` names an account that does not exist | nothing to become |
 
 ## Startup warnings
@@ -186,6 +185,7 @@ These are printed and the server carries on:
 | `RESCRIPTUM_ANSWER_TOKEN` under 16 characters | a warning, **not** an error — refusing to start would leave a fleet unable to install |
 | Any problem in the answer set | one `warning:` line each, the same set `check` reports |
 | `RESCRIPTUM_PUBLIC_HOST` unset | The routing table's answer, or the sole interface address when there is no default route. Logged either way, as a warning **naming the other addresses** when there are any. A NAT host still gets it wrong silently |
+| TFTP cannot bind | `warning: cannot bind TFTP on … ` — **the one listener whose failed bind is not fatal.** Port 69 is the only privileged port in the design, so it is the only bind that can fail for something nobody configured; answers are the product, and dying would fail every install in flight to report that a second port could not be opened. `boot check` exits non-zero and the message names the ways to have the port |
 | Media directory missing or unlistable | one `warning: media: …` line — a fleet must never be unable to install because one image is odd |
 
 ## Compile-time options

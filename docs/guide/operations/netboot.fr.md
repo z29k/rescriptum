@@ -43,8 +43,8 @@ $ export RESCRIPTUM_PUBLIC_HOST=192.0.2.10   # ce que nommeront les scripts gén
 ```
 
 `RESCRIPTUM_BOOT_DIR` dit où sont les chargeurs : non définie, il n'y a aucun listener
-TFTP et rien sur `/boot/…`. La nommer démarre TFTP sauf si vous dites le contraire — voir
-`off` plus bas.
+TFTP et rien sur `/boot/…`. La nommer démarre TFTP sur `0.0.0.0:69` sauf si vous dites le
+contraire.
 
 Le port 69 est privilégié, et c'est le *seul* port privilégié que ce serveur demandera
 jamais — sans répondeur DHCP, il n'y a rien après 67 ni 4011. Quatre façons de traiter la
@@ -57,13 +57,33 @@ $ export RESCRIPTUM_TFTP_ADDR=0.0.0.0:6969   # ou le déplacer, si leur DHCP sai
 $ export RESCRIPTUM_TFTP_ADDR=off            # ou n'avoir aucun listener du tout
 ```
 
-**`off` est une valeur, pas une absence**, et c'est ce qui rend sûr de nommer un dossier
-de chargeurs sur une plateforme incapable de lier un port privilégié. Sans elle, dire au
-serveur où sont les chargeurs implique un serveur TFTP sur le port 69 — et un bind qui
-échoue est un serveur qui ne démarre pas, ce qui transforme un réglage en piège. Avec
-elle, les chargeurs restent servis en HTTP sur `/boot/…` et restent vérifiés par
-`boot check` ; seul le listener disparaît, et autre chose livre le fichier. C'est
-exactement ainsi que le [paquet Synology](./synology.md) est livré.
+**`off` est une valeur, pas une absence** — c'est ainsi qu'on dit qu'un autre service de
+cette machine livre le chargeur pendant que rescriptum sert le reste de la chaîne. Les
+chargeurs restent servis en HTTP sur `/boot/…` et restent vérifiés par `boot check` ; seul
+le listener disparaît. C'est un contournement de déploiement pour qui le veut, **jamais la
+façon dont quoi que ce soit est livré ici** : c'est rescriptum le serveur TFTP, et une
+version qui le couperait par défaut aurait cédé la chose même qu'elle est. Le [paquet
+Synology](./synology.md) ouvre le port 69 avec un `setcap`.
+
+**Un port TFTP qu'on ne peut pas lier n'arrête pas le serveur**, et c'est le seul endroit
+où la règle « un listener qui ne peut pas se lier est fatal » s'inverse dans ce projet. Le
+port 69 est le seul port privilégié de la conception, donc le seul bind qui puisse échouer
+pour quelque chose que personne n'a configuré — une capacité qu'une mise à jour a
+discrètement perdue, le plus souvent. Les réponses sont le produit ; mourir ici ferait
+échouer toutes les installations en cours pour signaler qu'un second port n'a pas pu être
+ouvert. Donc il avertit, continue de servir, et `boot check` sort en non-zéro :
+
+```console
+$ rescriptum boot check
+  BROKEN nothing answers on 0.0.0.0:69 and it cannot be bound either: Permission denied.
+  Port 69 is privileged: run as root and set RESCRIPTUM_USER to drop afterwards, or grant
+  the binary cap_net_bind_service with setcap — the server still answers and still serves
+  media, but a machine sent here by DHCP asks for a loader and gets nothing
+```
+
+Il demande un vrai chargeur au port plutôt que d'essayer de le lier, car lier prouve le
+contraire de ce qu'on croit : un bind qui *réussit* signifie que personne n'écoute, et un
+bind qui échoue ne distingue pas ce serveur d'un autre service qui squatterait le port.
 
 **On lie d'abord, on abandonne ensuite**, toujours. L'ordre inverse fonctionne en test
 sous root et échoue au déploiement, à un redémarrage — le seul moment où personne ne

@@ -59,10 +59,11 @@ and then the package:
 
 Five things worth knowing before they surprise you.
 
-- **It cannot serve TFTP.** Port 69 is privileged and DSM 7 does not let an unsigned
-  package run as root, so the loader handoff is DSM's own TFTP server's job — see
-  [Serving installer media, and PXE](#serving-installer-media-and-pxe). Everything after
-  the loader is this package's.
+- **It cannot bind port 69 on its own.** DSM 7 does not let an unsigned package run as
+  root, so TFTP takes one root command from you, once — see
+  [TFTP needs one root command](#tftp-needs-one-root-command). Until it is given, the
+  server warns, keeps answering and keeps serving media, and only the loader handoff is
+  down.
 - **It does not open the firewall.** Registering the port makes *rescriptum* appear by name
   in the rule editor instead of you typing a number. If your firewall is on with a
   default-deny rule, you still have to create the rule.
@@ -239,33 +240,65 @@ image produces a two-hundred-byte sidecar and an injection applied on the wire, 
 bytes on disk stay exactly what Proxmox published and their checksum stays verifiable
 against Proxmox's own. See [Serving boot media](./media.md).
 
-### TFTP: use DSM's, not ours
+### TFTP needs one root command
 
-**The package cannot run a TFTP server, and that is not an oversight.** Port 69 is
-privileged, and DSM 7 does not let an unsigned package run as root — so setting
-`RESCRIPTUM_TFTP_ADDR` would produce a package that refuses to start. It is documented in
-the env file as unavailable rather than offered and broken.
+**rescriptum is the TFTP server here, not DSM.** Port 69 is privileged and DSM 7 refuses
+to let an unsigned package run as root, so the package cannot grant itself the port — but
+it does not need root to *use* it, only to be given permission once:
 
-DSM has its own TFTP server, and it is the right one here:
+```console
+$ sudo setcap cap_net_bind_service=+ep /volume1/@appstore/rescriptum/bin/rescriptum
+$ sudo synopkg restart rescriptum
+```
 
-1. **Control Panel → File Services → Advanced → TFTP** — enable it, and set the root to
-   the `rescriptum` share's `boot` folder.
-2. Put the loaders there. They are not in the package either — they are iPXE, GPLv2, and
-   belong beside it rather than welded into it. On any Linux box with a C toolchain:
+After that the package binds `udp/69` as its own unprivileged `rescriptum` user, alongside
+8000 and 8001. All three are registered with the firewall.
 
-   ```console
-   $ packaging/ipxe/build.sh --out /path/to/rescriptum/boot
-   ```
-3. Point DHCP at this NAS — **Control Panel → DHCP Server → PXE** if the NAS serves DHCP,
-   or your own server with what this prints:
+**Make it durable, because an upgrade drops it.** Installing a new version replaces the
+binary, and file capabilities belong to the file — so the capability goes with the old one.
+Control Panel → **Task Scheduler** → Create → Triggered Task → User-defined script, user
+`root`, event **Boot-up**, with the `setcap` line as the script. Run it once from that page
+after every upgrade, or reboot.
 
-   ```console
-   $ rescriptum-cli boot dhcp-snippet --format dnsmasq
-   ```
+**Nothing else breaks while it is missing.** A TFTP port that cannot be bound is the one
+listener in this server whose failure is not fatal, deliberately: answers are the product,
+and an upgrade must not take a fleet's installs down to report that a second port could not
+be opened. What you get instead is a warning in the log, a `tftp:` line in the settings
+panel's **Status** tab, and:
 
-**Everything after the loader is this package's.** The loader chains to port 8001, and
-from there the menu, the answers and the images are all served by rescriptum. DSM hands
-over one file; that is the whole of its part.
+```console
+$ rescriptum-cli boot check
+  BROKEN nothing answers on 0.0.0.0:69 and it cannot be bound either: Permission denied.
+  Port 69 is privileged: run as root and set RESCRIPTUM_USER to drop afterwards, or grant
+  the binary cap_net_bind_service with setcap — the server still answers and still serves
+  media, but a machine sent here by DHCP asks for a loader and gets nothing
+```
+
+Note it asks the port for a loader rather than trying to bind it. Binding proves the
+opposite of what it looks like: a bind that *succeeds* means nothing is listening.
+
+**Put the loaders in the share's `boot` folder.** They are not in the package — they are
+iPXE, GPLv2, and belong beside it rather than welded into it:
+
+```console
+$ packaging/ipxe/build.sh --out /path/to/rescriptum/boot
+```
+
+Then point DHCP at this NAS — **Control Panel → DHCP Server → PXE** if the NAS serves DHCP,
+or your own server with what this prints:
+
+```console
+$ rescriptum-cli boot dhcp-snippet --format dnsmasq
+```
+
+#### If you would rather not use setcap
+
+`RESCRIPTUM_TFTP_ADDR` takes an unprivileged port, which needs no capability at all — your
+DHCP server has to be told, since a PXE ROM has 69 burned into it and only a chainloading
+first stage can be redirected. Or set it to `off` and let another daemon on this NAS hand
+the loader over; DSM has its own TFTP server under Control Panel → File Services →
+Advanced, pointed at the share's `boot` folder. Both are workarounds for a deployment that
+wants them, not what the package expects.
 
 ### One setting worth filling in
 

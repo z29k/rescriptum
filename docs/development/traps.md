@@ -197,6 +197,35 @@ carries on writing to a file with no name.
 **A `.spk` whose outer tar is gzipped is rejected** with "invalid file format" and no
 further detail. So is one carrying macOS `._` members. `check-spk.sh` asserts both.
 
+**There is exactly one route to port 69 on DSM 7, and it is `setcap`.** All four were
+tried on a 7.2.2 machine on 2026-08-27, because the claim "DSM 7 does not let an unsigned
+package run as root" had sat in `CLAUDE.md` for a while with no measurement behind it —
+true, but by luck.
+
+| Route | Result |
+|---|---|
+| `"defaults": {"run-as": "root"}` in `conf/privilege` | **refused** — `synopkg` error **319**, `invalid package privilege content`, `stage: install_failed` |
+| `"ctrl-script": [{"action":"start","run-as":"root"}]` — the shape Synology's *own* packages use (FileStation, QuickConnect and StorageManager all do) | **refused**, same error 319 |
+| `cap_net_bind_service` embedded as a `security.capability` xattr in `package.tgz` | installs fine — the pax inner format is accepted — but **Package Center strips the xattr**, and `getcap` comes back empty |
+| `setcap cap_net_bind_service=+ep` on the installed binary, as root, after install | **works**; the package then binds `udp/69` as its own unprivileged user alongside 8000 and 8001 |
+
+`net.ipv4.ip_unprivileged_port_start` does not exist on that kernel, so that route is
+closed too. `/volume1` is btrfs with `nodev` but **not** `nosuid`, so file capabilities do
+work there, and `/usr/bin/setcap` exists at mode `0700`.
+
+**The capability belongs to the file, so an upgrade drops it.** A new version replaces the
+binary and the capability goes with the old one — which is why the package documents a
+Task Scheduler boot-up task rather than a one-off command, and why a failed TFTP bind is
+not fatal: when it was, that upgrade took the answer endpoint down too.
+
+**Binding is not a health check, and it proves the opposite of what it looks like.** A
+bind that *succeeds* on the TFTP port means nothing is listening — the degraded state, not
+the healthy one — and a bind that fails cannot tell this server apart from another daemon
+squatting the port, because both are `AddrInUse`. `boot check` therefore sends a real read
+request and reports what a machine would get. The first version of it reported "already in
+use — that is this server, if it is running" and a test with a squatter on the port
+immediately showed that to be a guess.
+
 ## The DSM desktop application
 
 Eight things, measured on a DSM 7.2.2 virtual machine and on a DS416j running 7.1.1, and

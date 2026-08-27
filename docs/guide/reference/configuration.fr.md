@@ -175,7 +175,6 @@ Celles-ci arrêtent le serveur au lieu d'avertir, parce que démarrer quand mêm
 | `RESCRIPTUM_PUBLIC_HOST` portant un schéma, un port ou un chemin | il est écrit dans les URL de deux listeners ; un port dans la valeur épingle chaque script généré sur l'un d'eux |
 | `RESCRIPTUM_TFTP_ADDR` défini sans `RESCRIPTUM_BOOT_DIR` | un listener sans chargeur à distribuer |
 | Le répertoire de démarrage ne peut pas être résolu | chaque contrôle de chemin s'y compare |
-| TFTP ne peut pas se lier | le port 69 est privilégié ; le message le dit et nomme les trois façons de l'obtenir |
 | `RESCRIPTUM_USER` nomme un compte inexistant | rien à devenir |
 
 ## Avertissements de démarrage
@@ -191,6 +190,7 @@ Ceux-ci sont affichés et le serveur continue :
 | `RESCRIPTUM_ANSWER_TOKEN` de moins de 16 caractères | un avertissement, **pas** une erreur — refuser de démarrer laisserait un parc incapable de s'installer |
 | Tout problème dans le jeu de réponses | une ligne `warning:` chacun, le même jeu que signale `check` |
 | `RESCRIPTUM_PUBLIC_HOST` non défini | La réponse de la table de routage, ou l'unique adresse d'interface s'il n'y a pas de route par défaut. Journalisé dans les deux cas, en avertissement **nommant les autres adresses** s'il y en a. Un hôte derrière du NAT se trompe toujours en silence |
+| TFTP ne peut pas se lier | `warning: cannot bind TFTP on … ` — **le seul listener dont l'échec de liaison n'est pas fatal.** Le port 69 est le seul port privilégié de la conception, donc le seul bind qui puisse échouer pour quelque chose que personne n'a configuré ; les réponses sont le produit, et mourir ferait échouer toutes les installations en cours pour signaler qu'un second port n'a pas pu être ouvert. `boot check` sort en non-zéro et le message nomme les façons d'obtenir le port |
 | Répertoire de médias absent ou illisible | une ligne `warning: media: …` — un parc ne doit jamais être incapable de s'installer parce qu'une image est bizarre |
 
 ## Options de compilation

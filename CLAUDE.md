@@ -543,6 +543,23 @@ could not check. Note it needs `Resolution::format_name` (the extension), not
   and SeaBIOS says "could not read the boot disk". Use `pc` for a BIOS guest.
 - **`sed -n … "$0"` cannot find a relatively-invoked script after a `cd`.** Resolve the
   path first, or `--help` breaks for everyone who does not type an absolute path.
+- **There is exactly one route to port 69 on DSM 7, and it is `setcap`.** `run-as: root`
+  in `conf/privilege` is refused with `synopkg` error **319**, `invalid package privilege
+  content` — in `defaults` *and* as a per-action `ctrl-script`, the shape Synology's own
+  packages use. A `security.capability` xattr in `package.tgz` installs and **Package
+  Center strips it**. `setcap cap_net_bind_service=+ep` after install works;
+  `net.ipv4.ip_unprivileged_port_start` does not exist on that kernel. Measured on a 7.2.2
+  machine, all four.
+- **A file capability does not survive an upgrade** — the new binary is a different file.
+  That is why a failed TFTP bind is the **one** listener failure here that is not fatal:
+  when it was, an upgrade took the answer endpoint down with it, failing every install in
+  flight to report that a second port could not be opened. It warns, `boot check` exits
+  non-zero, and the DSM panel shows a `tftp:` line.
+- **Binding is not a health check.** A bind that *succeeds* on the TFTP port means nothing
+  is listening — the degraded state, not the healthy one — and one that fails cannot tell
+  this server from another daemon squatting the port, since both are `AddrInUse`. So
+  `boot check` sends a real read request (`boot::tftp::probe`) and reports what a machine
+  would get. The first version guessed, and a test with a squatter said so at once.
 - **A default computed at runtime must be computed in `settings()` too.** The DSM panel
   renders a variable's default as the field's value, so a default living only where the
   server consumes it shows as an empty box while the server runs on a value it derived.
@@ -628,6 +645,8 @@ Environment variables only — plus an optional file to read some of them from:
 | `RESCRIPTUM_MEDIA_MAX_CONNECTIONS` | `16` | Concurrent transfers; low on purpose |
 | `RESCRIPTUM_PUBLIC_HOST` | the routing table's answer, else a sole interface | The host generated URLs name. **A host, never a URL**. Warns and names the alternatives when the host has several |
 | `RESCRIPTUM_BOOT_ALLOW` | unset | Client CIDRs allowed to fetch boot media |
+| `RESCRIPTUM_BOOT_DIR` | unset | Loaders and menus. **Unset means no TFTP at all** |
+| `RESCRIPTUM_TFTP_ADDR` | `0.0.0.0:69` when `RESCRIPTUM_BOOT_DIR` is set | Or `off`, a deployment workaround, never a packaged default. A failed bind here warns rather than killing the server |
 
 A zero or unparseable numeric value falls back to the default rather than starting a server
 that accepts and never answers.
@@ -635,8 +654,11 @@ that accepts and never answers.
 **What is fatal and what is a warning is deliberate.** Fatal: the listener cannot bind, the
 store cannot be opened (SQLite catches an unwritable directory, a corrupt file and a
 too-new schema at open, not at the first request), a named env or log file cannot be read,
-and any unsafe admin combination. A warning: the answers directory is absent, is not a
-directory, or cannot be listed, and any problem in the answer set — all three can be fixed
+and any unsafe admin combination — **except the TFTP one**, which is the single exception
+and is measured rather than argued: port 69 is the only privileged port in the design, so
+it is the only bind that can fail for something nobody configured, and dying there takes
+answers and media with it. A warning: a failed TFTP bind, the answers directory being
+absent, not a directory, or unlistable, and any problem in the answer set — all fixable
 while the server runs, and it re-reads as they change. The directory check asks the
 filesystem whether it can list rather than reading permission bits, so it accounts for
 owner, group, ACLs and the mount; that is the failure a packaged, non-root run meets first.
@@ -741,12 +763,18 @@ format**, exactly like the `.tar.gz` archives — no DSM-specific build, no feat
 nothing in `src/`. The **four** places DSM pressed back are answered in packaging: log
 rotation by a `copytruncate` stanza, a CLI that cannot find its configuration by a
 three-line wrapper (`rescriptum-cli`, which names `RESCRIPTUM_ENV_FILE`), no settings panel
-by the desktop application below, and **a privileged port by not having one**. DSM 7 does
-not let an unsigned package run as root, so TFTP's port 69 is unreachable: the env file
-says so and points at DSM's own TFTP server (`/usr/bin/opentftp`, verified on a 7.2.2
-machine) pointed at the share's `boot` folder. Media over HTTP on 8001 works normally, and
-both ports are registered with the firewall. `RESCRIPTUM_USER`/`_GROUP` are documented the
-same way — the package already is its own unprivileged user. If this ever seems to need a `#[cfg]`, the design has gone wrong.
+by the desktop application below, and **a privileged port by one root command**. DSM 7
+does not let an unsigned package run as root — measured, four routes, in
+`docs/development/traps.md` with the error codes — but `setcap cap_net_bind_service=+ep`
+on the installed binary works, after which the package binds `udp/69` as its own
+unprivileged user alongside 8000 and 8001. All three are registered with the firewall.
+**The capability belongs to the file, so an upgrade drops it**; the env file says so and
+points at a Task Scheduler boot-up task. `RESCRIPTUM_TFTP_ADDR` is therefore left unset —
+its default *is* port 69, which is what every loader and every generated snippet expects.
+An earlier version shipped `off` and sent operators to DSM's own TFTP server: that traded
+the product's first principle for a packaging constraint that turned out not to exist, and
+it is not a precedent. `RESCRIPTUM_USER`/`_GROUP` stay documented as unusable — the package
+already is its own unprivileged user. If this ever seems to need a `#[cfg]`, the design has gone wrong.
 
 ```bash
 ./build.sh --spk x86_64-unknown-linux-musl   # build, then wrap

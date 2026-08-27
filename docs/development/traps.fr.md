@@ -213,6 +213,37 @@ l'inode sous un serveur qui continue d'écrire dans un fichier sans nom.
 
 **Un `.spk` dont le tar externe est gzippé est rejeté** avec « invalid file format » et rien
 de plus. Idem pour un qui embarque des membres `._` de macOS. `check-spk.sh` vérifie les
+deux.
+
+**Il existe exactement une route vers le port 69 sur DSM 7, et c'est `setcap`.** Les quatre
+ont été essayées sur une machine 7.2.2 le 2026-08-27, parce que l'affirmation « DSM 7
+n'autorise pas un paquet non signé à tourner en root » traînait dans `CLAUDE.md` depuis un
+moment **sans mesure derrière** — vraie, mais par chance.
+
+| Route | Résultat |
+|---|---|
+| `"defaults": {"run-as": "root"}` dans `conf/privilege` | **refusée** — erreur `synopkg` **319**, `invalid package privilege content`, `stage: install_failed` |
+| `"ctrl-script": [{"action":"start","run-as":"root"}]` — la forme qu'utilisent les paquets *de Synology* (FileStation, QuickConnect et StorageManager tous les trois) | **refusée**, même erreur 319 |
+| `cap_net_bind_service` embarquée en attribut étendu `security.capability` dans `package.tgz` | s'installe très bien — le format pax interne est accepté — mais **Package Center supprime l'attribut**, et `getcap` revient vide |
+| `setcap cap_net_bind_service=+ep` sur le binaire installé, en root, après l'installation | **fonctionne** ; le paquet ouvre alors `udp/69` sous son propre utilisateur non privilégié, à côté de 8000 et 8001 |
+
+`net.ipv4.ip_unprivileged_port_start` n'existe pas sur ce noyau, donc cette route est
+fermée aussi. `/volume1` est en btrfs avec `nodev` mais **pas** `nosuid`, donc les capacités
+de fichier y fonctionnent bien, et `/usr/bin/setcap` existe en mode `0700`.
+
+**La capacité appartient au fichier, donc une mise à jour la perd.** Une nouvelle version
+remplace le binaire et la capacité part avec l'ancien — d'où la tâche au démarrage du
+Planificateur de tâches documentée par le paquet plutôt qu'une commande unique, et d'où le
+fait qu'un bind TFTP raté ne soit pas fatal : quand il l'était, cette mise à jour coupait
+aussi le point d'entrée des réponses.
+
+**Lier n'est pas un contrôle de santé, et cela prouve le contraire de ce qu'on croit.** Un
+bind qui *réussit* sur le port TFTP signifie que personne n'écoute — l'état dégradé, pas
+l'état sain — et un bind qui échoue ne distingue pas ce serveur d'un autre service qui
+squatterait le port, puisque les deux donnent `AddrInUse`. `boot check` envoie donc une
+vraie requête de lecture et rapporte ce qu'obtiendrait une machine. Sa première version
+annonçait « already in use — that is this server, if it is running » et un test avec un
+squatteur sur le port a montré tout de suite que c'était une supposition.
 
 ## L'application de bureau DSM
 

@@ -62,11 +62,11 @@ puis le paquet :
 
 Cinq choses à savoir avant qu'elles ne vous surprennent.
 
-- **Il ne peut pas servir de TFTP.** Le port 69 est privilégié et DSM 7 n'autorise pas un
-  paquet non signé à tourner en root : la livraison du chargeur revient donc au serveur
-  TFTP de DSM — voir [Servir les médias d'installation, et le
-  PXE](#servir-les-médias-dinstallation-et-le-pxe). Tout ce qui suit le chargeur
-  appartient à ce paquet.
+- **Il ne peut pas ouvrir le port 69 tout seul.** DSM 7 n'autorise pas un paquet non signé
+  à tourner en root, donc le TFTP vous demande une commande root, une seule fois — voir
+  [Le TFTP demande une commande root](#le-tftp-demande-une-commande-root). Tant qu'elle
+  n'est pas donnée, le serveur avertit, continue de répondre et de servir les images, et
+  seule la livraison du chargeur est coupée.
 - **Il n'ouvre pas le pare-feu.** Enregistrer le port fait apparaître *rescriptum* par son
   nom dans l'éditeur de règles au lieu d'un numéro à taper. Si votre pare-feu est actif avec
   une règle par défaut qui refuse, il faut toujours créer la règle.
@@ -259,34 +259,69 @@ octets et une injection appliquée au fil de l'eau, donc les octets sur disque r
 exactement ce que Proxmox a publié et leur somme reste vérifiable contre celle de Proxmox.
 Voir [Servir les médias de démarrage](./media.md).
 
-### TFTP : celui de DSM, pas le nôtre
+### Le TFTP demande une commande root
 
-**Le paquet ne peut pas faire tourner de serveur TFTP, et ce n'est pas un oubli.** Le port
-69 est privilégié, et DSM 7 n'autorise pas un paquet non signé à tourner en root — définir
-`RESCRIPTUM_TFTP_ADDR` produirait donc un paquet qui refuse de démarrer. C'est documenté
-comme indisponible dans le fichier d'environnement plutôt que proposé et cassé.
+**C'est rescriptum le serveur TFTP ici, pas DSM.** Le port 69 est privilégié et DSM 7
+refuse qu'un paquet non signé tourne en root : le paquet ne peut donc pas s'accorder le
+port lui-même — mais il n'a pas besoin de root pour s'en *servir*, seulement qu'on l'y
+autorise une fois :
 
-DSM a son propre serveur TFTP, et c'est le bon ici :
+```console
+$ sudo setcap cap_net_bind_service=+ep /volume1/@appstore/rescriptum/bin/rescriptum
+$ sudo synopkg restart rescriptum
+```
 
-1. **Panneau de configuration → Services de fichiers → Avancé → TFTP** — activez-le, et
-   définissez la racine sur le dossier `boot` du partage `rescriptum`.
-2. Posez-y les chargeurs. Ils ne sont pas non plus dans le paquet — c'est iPXE, en GPLv2,
-   et ils ont leur place à côté plutôt que soudés dedans. Depuis n'importe quelle machine
-   Linux avec une chaîne de compilation C :
+Après quoi le paquet ouvre `udp/69` sous son propre utilisateur non privilégié
+`rescriptum`, à côté de 8000 et 8001. Les trois sont enregistrés auprès du pare-feu.
 
-   ```console
-   $ packaging/ipxe/build.sh --out /chemin/vers/rescriptum/boot
-   ```
-3. Faites pointer le DHCP vers ce NAS — **Panneau de configuration → Serveur DHCP → PXE**
-   si le NAS sert le DHCP, ou votre propre serveur avec ce qu'imprime :
+**Rendez-la durable, car une mise à jour la perd.** Installer une nouvelle version remplace
+le binaire, et les capacités de fichier appartiennent au fichier — elles partent donc avec
+l'ancien. Panneau de configuration → **Planificateur de tâches** → Créer → Tâche déclenchée
+→ Script défini par l'utilisateur, utilisateur `root`, événement **Démarrage**, avec la
+ligne `setcap` comme script. Relancez-la depuis cette page après chaque mise à jour, ou
+redémarrez.
 
-   ```console
-   $ rescriptum-cli boot dhcp-snippet --format dnsmasq
-   ```
+**Rien d'autre ne casse pendant ce temps.** Un port TFTP qu'on ne peut pas ouvrir est le
+seul écouteur de ce serveur dont l'échec n'est pas fatal, et c'est délibéré : les réponses
+sont le produit, et une mise à jour ne doit pas couper les installations d'une flotte pour
+signaler qu'un second port n'a pas pu être ouvert. Ce que vous obtenez à la place, c'est un
+avertissement dans le journal, une ligne `tftp:` dans l'onglet **État** du panneau de
+réglages, et :
 
-**Tout ce qui suit le chargeur appartient à ce paquet.** Le chargeur enchaîne vers le port
-8001, et à partir de là le menu, les réponses et les images sont tous servis par
-rescriptum. DSM livre un fichier ; c'est toute sa part.
+```console
+$ rescriptum-cli boot check
+  BROKEN nothing answers on 0.0.0.0:69 and it cannot be bound either: Permission denied.
+  Port 69 is privileged: run as root and set RESCRIPTUM_USER to drop afterwards, or grant
+  the binary cap_net_bind_service with setcap — the server still answers and still serves
+  media, but a machine sent here by DHCP asks for a loader and gets nothing
+```
+
+Notez qu'il demande un chargeur au port plutôt que d'essayer de l'ouvrir. Ouvrir le port
+prouve le contraire de ce qu'on croit : une ouverture qui *réussit* signifie que personne
+n'écoute.
+
+**Posez les chargeurs dans le dossier `boot` du partage.** Ils ne sont pas dans le paquet —
+c'est iPXE, en GPLv2, et ils ont leur place à côté plutôt que soudés dedans :
+
+```console
+$ packaging/ipxe/build.sh --out /chemin/vers/rescriptum/boot
+```
+
+Puis faites pointer le DHCP vers ce NAS — **Panneau de configuration → Serveur DHCP → PXE**
+si le NAS sert le DHCP, ou votre propre serveur avec ce qu'imprime :
+
+```console
+$ rescriptum-cli boot dhcp-snippet --format dnsmasq
+```
+
+#### Si vous préférez éviter setcap
+
+`RESCRIPTUM_TFTP_ADDR` accepte un port non privilégié, qui ne demande aucune capacité — il
+faut alors le dire à votre serveur DHCP, puisqu'une ROM PXE a 69 gravé dedans et que seul
+un premier étage de chaînage peut être redirigé. Ou mettez-le à `off` et laissez un autre
+service de ce NAS livrer le chargeur ; DSM a son propre serveur TFTP sous Panneau de
+configuration → Services de fichiers → Avancé, pointé sur le dossier `boot` du partage. Ce
+sont deux contournements pour un déploiement qui les veut, pas ce que le paquet attend.
 
 ### Un réglage qui mérite d'être rempli
 
