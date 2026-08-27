@@ -216,8 +216,17 @@ de plus. Idem pour un qui embarque des membres `._` de macOS. `check-spk.sh` vé
 
 ## L'application de bureau DSM
 
-Sept choses, mesurées sur une machine virtuelle DSM 7.2.2 et sur un DS416j en 7.1.1, et
+Huit choses, mesurées sur une machine virtuelle DSM 7.2.2 et sur un DS416j en 7.1.1, et
 aucune dans le guide du développeur.
+
+**Un défaut calculé à l'exécution doit l'être aussi dans `settings()`.** Le panneau rend le
+défaut d'une variable comme valeur du champ ; un défaut qui n'existe que là où le serveur
+le consomme s'affiche donc en case vide — pendant que le serveur, lui, tourne sur une
+adresse qu'il a déduite et jamais montrée. `RESCRIPTUM_PUBLIC_HOST` est parti comme ça :
+l'exploitant n'avait aucun moyen de voir vers quelle adresse ses machines seraient
+envoyées, sinon en lisant le journal de démarrage. Deux entrées de `KNOWN` sont dans ce
+cas, et toutes deux ont leur branche dans `settings()` : le nombre de threads et l'hôte
+public. Une troisième demanderait le même traitement, et rien dans le typage ne le dit.
 
 **Un CGI sous `/webman/3rdparty/<pkg>/` tourne sous le propriétaire du script.** Pas en
 `http`, et pas en root — sous celui qui possède le fichier. DSM attribue l'arborescence d'un

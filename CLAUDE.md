@@ -543,6 +543,12 @@ could not check. Note it needs `Resolution::format_name` (the extension), not
   and SeaBIOS says "could not read the boot disk". Use `pc` for a BIOS guest.
 - **`sed -n … "$0"` cannot find a relatively-invoked script after a `cd`.** Resolve the
   path first, or `--help` breaks for everyone who does not type an absolute path.
+- **A default computed at runtime must be computed in `settings()` too.** The DSM panel
+  renders a variable's default as the field's value, so a default living only where the
+  server consumes it shows as an empty box while the server runs on a value it derived.
+  `RESCRIPTUM_PUBLIC_HOST` shipped that way. Two `KNOWN` entries are special-cased there
+  — the worker count and the public host — and nothing in the type system says a third
+  would need it.
 - **The size figures in this file go stale.** They moved ~375 KB when armv7 changed from
   musl to glibc. Re-measure before concluding anything from them; a stale baseline once
   turned a 71% budget spend into an apparent 293% overrun.

@@ -199,8 +199,17 @@ further detail. So is one carrying macOS `._` members. `check-spk.sh` asserts bo
 
 ## The DSM desktop application
 
-Seven things, measured on a DSM 7.2.2 virtual machine and on a DS416j running 7.1.1, and
+Eight things, measured on a DSM 7.2.2 virtual machine and on a DS416j running 7.1.1, and
 none of them in the developer guide.
+
+**A default computed at runtime has to be computed in `settings()` too.** The panel renders
+a variable's default as the field's value, so a default that exists only where the server
+consumes it shows as an empty box — while the server runs on an address it derived and
+never displayed. `RESCRIPTUM_PUBLIC_HOST` shipped that way; the operator had no way to see
+which address their machines would be sent to short of reading the startup log. Two entries
+in `KNOWN` are like this, and both are special-cased in `settings()`: the worker count and
+the public host. A third would need the same treatment, and nothing in the type system says
+so.
 
 **A CGI under `/webman/3rdparty/<pkg>/` runs as the owner of the script.** Not as `http`,
 and not as root — as whoever owns the file. DSM chowns a package's tree to the package
