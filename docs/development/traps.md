@@ -213,6 +213,34 @@ true, but by luck.
 closed too. `/volume1` is btrfs with `nodev` but **not** `nosuid`, so file capabilities do
 work there, and `/usr/bin/setcap` exists at mode `0700`.
 
+**Root on DSM 7 is gated on being a *Synology* package, and `libsynopkg.so.1` says so in
+so many words.** Reading its strings on a 7.2.2 machine turns the measurement above into
+an explanation. A package that does not pass the signature check (`verifyPackageSignature`
+lives in the same library) is refused all of this:
+
+```
+Failed to pass privilege check, ctrl-script and executable section should not exist
+Failed to pass privilege check, defaults should be provided and defaults.run-as should be package
+Failed to pass privilege check, join-groupname should not contains admin group
+Failed to pass privilege check, tool capabilities should not exist
+Failed to pass privilege check, tool user should be package
+Failed to pass privilege check, non-synology package should not use privilege migration
+```
+
+Which is why FileStation, StorageManager, QuickConnect and SecureSignIn all carry
+`"ctrl-script": [{"action": "start", "run-as": "root"}]` in their own `conf/privilege` and
+we cannot: the shape is legal, the signature is what makes it legal *for them*.
+
+**The line that matters most is `tool capabilities should not exist`.** DSM's privilege
+format has a native `capabilities` field — `SYNOPackageTool::Privilege::ChangeCapabilities`
+is right there — so a signed package declares `cap_net_bind_service` in `conf/privilege`
+and never needs `setcap` at all. The mechanism we want exists and is closed to us. If this
+package is ever signed by Synology, the manual step and the boot-up task both disappear;
+until then they are the price of not being signed, and no amount of packaging cleverness
+changes it. A third-party publisher's signature is a different thing from Synology's, and
+whether one would pass this check is **not measured** — the string says *non-synology*, not
+*untrusted*.
+
 **The capability belongs to the file, so an upgrade drops it.** A new version replaces the
 binary and the capability goes with the old one — which is why the package documents a
 Task Scheduler boot-up task rather than a one-off command, and why a failed TFTP bind is

@@ -231,6 +231,35 @@ moment **sans mesure derrière** — vraie, mais par chance.
 fermée aussi. `/volume1` est en btrfs avec `nodev` mais **pas** `nosuid`, donc les capacités
 de fichier y fonctionnent bien, et `/usr/bin/setcap` existe en mode `0700`.
 
+**Le root sur DSM 7 est conditionné au fait d'être un paquet *Synology*, et
+`libsynopkg.so.1` le dit noir sur blanc.** Lire ses chaînes sur une machine 7.2.2 transforme
+la mesure ci-dessus en explication. Un paquet qui ne passe pas le contrôle de signature
+(`verifyPackageSignature` vit dans la même bibliothèque) se voit refuser tout ceci :
+
+```
+Failed to pass privilege check, ctrl-script and executable section should not exist
+Failed to pass privilege check, defaults should be provided and defaults.run-as should be package
+Failed to pass privilege check, join-groupname should not contains admin group
+Failed to pass privilege check, tool capabilities should not exist
+Failed to pass privilege check, tool user should be package
+Failed to pass privilege check, non-synology package should not use privilege migration
+```
+
+D'où le fait que FileStation, StorageManager, QuickConnect et SecureSignIn portent tous
+`"ctrl-script": [{"action": "start", "run-as": "root"}]` dans leur propre `conf/privilege`
+et que nous ne le pouvons pas : la forme est légale, c'est la signature qui la rend légale
+*pour eux*.
+
+**La ligne la plus importante est `tool capabilities should not exist`.** Le format de
+privilège de DSM a un champ `capabilities` natif — `SYNOPackageTool::Privilege::ChangeCapabilities`
+est là — donc un paquet signé déclare `cap_net_bind_service` dans `conf/privilege` et n'a
+jamais besoin de `setcap`. Le mécanisme que nous voulons existe et nous est fermé. Si ce
+paquet est un jour signé par Synology, l'étape manuelle et la tâche au démarrage
+disparaissent toutes les deux ; d'ici là elles sont le prix de ne pas être signé, et aucune
+astuce d'empaquetage n'y changera rien. La signature d'un éditeur tiers est autre chose que
+celle de Synology, et savoir si elle passerait ce contrôle n'est **pas mesuré** — la chaîne
+dit *non-synology*, pas *non fiable*.
+
 **La capacité appartient au fichier, donc une mise à jour la perd.** Une nouvelle version
 remplace le binaire et la capacité part avec l'ancien — d'où la tâche au démarrage du
 Planificateur de tâches documentée par le paquet plutôt qu'une commande unique, et d'où le

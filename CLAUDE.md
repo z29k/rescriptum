@@ -553,6 +553,13 @@ could not check. Note it needs `Resolution::format_name` (the extension), not
   Center strips it**. `setcap cap_net_bind_service=+ep` after install works;
   `net.ipv4.ip_unprivileged_port_start` does not exist on that kernel. Measured on a 7.2.2
   machine, all four.
+- **Root on DSM 7 is gated on the *signature*, and `libsynopkg.so.1` says so.** Its
+  strings carry the whole rule: a package failing `verifyPackageSignature` may not have a
+  `ctrl-script` or `executable` section, must have `defaults.run-as` = `package`, and
+  — the line that matters — `tool capabilities should not exist`. DSM's privilege format
+  has a native `capabilities` field, so a **signed** package declares
+  `cap_net_bind_service` and never needs `setcap`. The mechanism we want exists and is
+  closed to us; no packaging cleverness opens it.
 - **A file capability does not survive an upgrade** — the new binary is a different file.
   That is why a failed TFTP bind is the **one** listener failure here that is not fatal:
   when it was, an upgrade took the answer endpoint down with it, failing every install in
