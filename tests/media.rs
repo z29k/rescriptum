@@ -947,3 +947,172 @@ fn a_boot_asset_route_with_no_boot_directory_says_which_setting_is_missing() {
         String::from_utf8_lossy(body_of(&r))
     );
 }
+
+// ---- preparing an image ----------------------------------------------------
+
+#[test]
+fn a_prepared_entry_is_a_sidecar_rather_than_a_second_image() {
+    // **The whole point of Phase 4.** Two hundred bytes stand in for 1.5 GB: nothing is
+    // copied, the source is never modified, and its published digest stays verifiable.
+    let s = Server::start(&[("pve-8.4.iso", pve_image())]);
+    let before = fs::read(s.media_dir().join("pve-8.4.iso")).expect("read");
+
+    let out = s.run(&["media", "prepare", "pve-8.4"]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let printed = String::from_utf8_lossy(&out.stdout).to_string();
+    assert!(printed.contains("pve-8.4-http"), "{printed}");
+    assert!(printed.contains("Nothing was copied"), "{printed}");
+
+    // A sidecar, and no second image.
+    assert!(s.media_dir().join("pve-8.4-http.media").is_file());
+    assert!(!s.media_dir().join("pve-8.4-http.iso").exists());
+    assert_eq!(
+        fs::read(s.media_dir().join("pve-8.4.iso")).expect("read"),
+        before,
+        "the source must never be modified"
+    );
+    assert!(
+        fs::metadata(s.media_dir().join("pve-8.4-http.media"))
+            .expect("stat")
+            .len()
+            < 1024,
+        "a sidecar is a note, not an image"
+    );
+}
+
+#[test]
+fn a_prepared_image_is_served_with_the_mode_file_in_it() {
+    // The injection happens on the wire. What a machine downloads must be a readable
+    // ISO9660 filesystem exposing one more file — under the name the installer looks
+    // for, which is not a legal ISO9660 identifier at all.
+    let s = Server::start(&[("pve-8.4.iso", pve_image())]);
+    assert!(
+        s.run(&[
+            "media",
+            "prepare",
+            "pve-8.4",
+            "--url",
+            "http://192.0.2.10:8000/proxmox"
+        ])
+        .status
+        .success()
+    );
+    std::thread::sleep(Duration::from_millis(1200));
+
+    let r = s.get("/pve-8.4-http/iso");
+    assert!(status(&r).starts_with("HTTP/1.1 200"), "{}", head_of(&r));
+    let served = body_of(&r).to_vec();
+
+    // Longer than the source by exactly what was appended, and still an image.
+    let source = fs::read(s.media_dir().join("pve-8.4.iso")).expect("read");
+    assert!(
+        served.len() > source.len(),
+        "the mode file has to be in there"
+    );
+    assert_eq!(&served[..32768], &source[..32768], "the system area moved");
+
+    // Written out and re-read as an image, which is the only assertion that matters.
+    let path = s.media_dir().join("served.iso");
+    fs::write(&path, &served).expect("write");
+    let mut iso = rescriptum::boot::iso::Iso::open(&path).expect("still an image");
+    let mode = iso
+        .read("/auto-installer-mode.toml", 4096)
+        .expect("readable")
+        .expect("the installer must find it");
+    let mode = String::from_utf8_lossy(&mode).to_string();
+    assert!(mode.contains("mode = \"http\""), "{mode}");
+    assert!(mode.contains("http://192.0.2.10:8000/proxmox"), "{mode}");
+}
+
+#[test]
+fn a_range_over_a_prepared_image_lands_where_it_should() {
+    // Ranges have to work over a virtual file, because five of the seven installers
+    // range-fetch and casper does it over the image itself.
+    let s = Server::start(&[("pve-8.4.iso", pve_image())]);
+    assert!(s.run(&["media", "prepare", "pve-8.4"]).status.success());
+    std::thread::sleep(Duration::from_millis(1200));
+
+    let whole = body_of(&s.get("/pve-8.4-http/iso")).to_vec();
+    // A window that straddles the join between the source and the appended tail is the
+    // one that would break if the arithmetic were off by a sector.
+    let source_len = fs::metadata(s.media_dir().join("pve-8.4.iso"))
+        .expect("stat")
+        .len();
+    let from = source_len - 100;
+    let to = source_len + 99;
+    let r = s.get_with(
+        "/pve-8.4-http/iso",
+        &[("Range", &format!("bytes={from}-{to}"))],
+    );
+    assert!(status(&r).starts_with("HTTP/1.1 206"), "{}", head_of(&r));
+    assert_eq!(
+        body_of(&r),
+        &whole[from as usize..=to as usize],
+        "a window across the join disagreed with the whole"
+    );
+}
+
+#[test]
+fn exporting_a_prepared_entry_writes_what_the_listener_would_have_served() {
+    // One code path, deliberately: a stick written differently from what a machine
+    // downloads is a second implementation to keep honest, and the difference would only
+    // show on somebody's desk.
+    let s = Server::start(&[("pve-8.4.iso", pve_image())]);
+    assert!(s.run(&["media", "prepare", "pve-8.4"]).status.success());
+    std::thread::sleep(Duration::from_millis(1200));
+
+    let served = body_of(&s.get("/pve-8.4-http/iso")).to_vec();
+    let to = s.media_dir().parent().expect("base").join("exported.iso");
+    let out = s.run(&["media", "export", "pve-8.4-http", to.to_str().unwrap()]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    assert_eq!(
+        fs::read(&to).expect("read"),
+        served,
+        "the exported file and the served bytes must be identical"
+    );
+}
+
+#[test]
+fn a_prepared_entry_whose_source_changed_is_refused_rather_than_served_wrong() {
+    // **A stale prepared entry is invisible otherwise.** The injection offsets are
+    // computed against one image; a source that changed underneath would be patched in
+    // the wrong place, producing something that mounts and is wrong.
+    let s = Server::start(&[("pve-8.4.iso", pve_image())]);
+    assert!(s.run(&["media", "prepare", "pve-8.4"]).status.success());
+
+    let mut longer = pve_image();
+    longer.extend_from_slice(&vec![0u8; 2048]);
+    fs::write(s.media_dir().join("pve-8.4.iso"), longer).expect("replace");
+    std::thread::sleep(Duration::from_millis(1200));
+
+    let out = s.run(&["media", "check"]);
+    let printed = String::from_utf8_lossy(&out.stdout).to_string();
+    assert!(!out.status.success(), "{printed}");
+    assert!(printed.contains("no longer apply"), "{printed}");
+    assert!(
+        printed.contains("media prepare"),
+        "the way out has to be named: {printed}"
+    );
+}
+
+#[test]
+fn preparing_a_family_that_reads_no_mode_file_is_refused_with_the_alternative() {
+    // Every other family takes the URL on the kernel command line, where `media ipxe`
+    // already puts it. Injecting a file they never read would be a no-op that looks
+    // like a step.
+    let s = Server::start(&[("ubuntu.iso", image_for("ubuntu"))]);
+    let out = s.run(&["media", "prepare", "ubuntu"]);
+    assert!(!out.status.success());
+    let printed = String::from_utf8_lossy(&out.stderr).to_string();
+    assert!(printed.contains("only Proxmox"), "{printed}");
+    assert!(printed.contains("media ipxe ubuntu"), "{printed}");
+}

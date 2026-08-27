@@ -42,7 +42,7 @@ trap cleanup EXIT
 echo "==> generating the DHCP configuration from the server's own snippet"
 mkdir -p generated
 cargo run --quiet --manifest-path ../../Cargo.toml -- boot dhcp-snippet --format dnsmasq \
-  > generated/dnsmasq.conf.snippet 2>/dev/null <<<"" || {
+  > generated/dnsmasq.conf.snippet 2>/dev/null || {
     echo "could not generate the snippet" >&2; exit 1; }
 
 # Everything above the snippet is the rig's own scaffolding: a range to hand out, an
@@ -56,7 +56,7 @@ cargo run --quiet --manifest-path ../../Cargo.toml -- boot dhcp-snippet --format
   echo "dhcp-range=10.99.0.100,10.99.0.200,1h"
   echo "enable-tftp=no"
   echo
-  echo "# --- everything below is `rescriptum boot dhcp-snippet --format dnsmasq` ---"
+  echo '# --- everything below is: rescriptum boot dhcp-snippet --format dnsmasq ---'
   # The generated snippet names RESCRIPTUM_PUBLIC_HOST, which outside a container is
   # this machine. Inside the rig the server is 10.99.0.2, and that substitution is the
   # only edit the rig makes.

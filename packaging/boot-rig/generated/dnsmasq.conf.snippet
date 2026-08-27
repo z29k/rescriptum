@@ -1,0 +1,23 @@
+# rescriptum 0.2.0 - boot handoff for 192.168.128.247
+# Architecture values are IANA option 93 codes; see docs/guide/boot/dhcp.
+# Generated from the same table the TFTP server serves from.
+dhcp-match=set:bios,option:client-arch,0
+dhcp-match=set:efi64,option:client-arch,7
+dhcp-match=set:efi64,option:client-arch,9
+dhcp-match=set:efiarm64,option:client-arch,11
+dhcp-vendorclass=set:httpefi64,HTTPClient:Arch:00016
+dhcp-vendorclass=set:httpefiarm64,HTTPClient:Arch:00019
+
+dhcp-boot=tag:bios,ipxe-undionly.kpxe,,192.168.128.247
+dhcp-boot=tag:efi64,ipxe-x86_64.efi,,192.168.128.247
+dhcp-boot=tag:efi64,ipxe-x86_64.efi,,192.168.128.247
+dhcp-boot=tag:efiarm64,ipxe-arm64.efi,,192.168.128.247
+dhcp-option-force=tag:httpefi64,60,HTTPClient
+dhcp-boot=tag:httpefi64,http://192.168.128.247:8001/boot/ipxe-x86_64.efi,,192.168.128.247
+dhcp-option-force=tag:httpefiarm64,60,HTTPClient
+dhcp-boot=tag:httpefiarm64,http://192.168.128.247:8001/boot/ipxe-arm64.efi,,192.168.128.247
+
+# A ROM that sends no option 93 matches no tag above and would get nothing.
+# The only clients that old are BIOS, and a DHCP client that is not netbooting
+# ignores boot options entirely.
+dhcp-boot=ipxe-undionly.kpxe,,192.168.128.247

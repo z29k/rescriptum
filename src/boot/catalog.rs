@@ -48,6 +48,27 @@ pub struct Entry {
     /// Where the kernel and initrd are, when they sit beside the image rather than
     /// inside it — `prepare-iso --pxe` output, which is a directory of three files.
     pub beside: Option<PathBuf>,
+    /// What to inject, when this entry is a **prepared** one: a sidecar naming another
+    /// entry's image plus an answer URL. About two hundred bytes standing in for 1.5 GB
+    /// — nothing is copied, and the same image backs every entry derived from it.
+    pub prepared: Option<Prepared>,
+}
+
+/// A prepared entry's instructions. The image itself is the source entry's.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Prepared {
+    pub source_id: String,
+    pub url: String,
+    pub fingerprint: Option<String>,
+    pub token: Option<String>,
+    /// The source's length when the entry was written. **A stale prepared entry is
+    /// invisible otherwise**: the plan's offsets are computed against one image, and an
+    /// image that changed underneath would be patched in the wrong place.
+    pub source_len: u64,
+    /// The source's digest at the same moment, for `media check` to re-verify. The
+    /// catalogue compares only the length, because hashing 1.5 GB per directory read is
+    /// exactly the work no request may ever do.
+    pub source_digest: Option<String>,
 }
 
 impl Entry {
@@ -225,14 +246,31 @@ impl Catalog {
             }
         }
 
-        // A sidecar whose image is gone is a leftover, and a silent one: the entry
-        // simply stops existing and the menu shrinks with no explanation.
+        // Then the prepared entries, which need every source to exist first. A sidecar
+        // with no image of its own and no `source` is a leftover, and a silent one: the
+        // entry simply stops existing and the menu shrinks with no explanation.
+        let sources = listing.entries.clone();
         for (id, path) in &sidecars {
-            if !listing.entries.iter().any(|e| &e.id == id) {
+            if listing.entries.iter().any(|e| &e.id == id) {
+                continue;
+            }
+            let recorded = match Sidecar::load(path) {
+                Ok(recorded) => recorded,
+                Err(problem) => {
+                    listing.problems.push(problem);
+                    continue;
+                }
+            };
+            if recorded.source.is_none() {
                 listing.problems.push(format!(
                     "{}: no image named {id} — the sidecar describes something that is not here",
                     path.display()
                 ));
+                continue;
+            }
+            match self.prepared(id, path, &recorded, &sources) {
+                Ok(entry) => listing.entries.push(entry),
+                Err(problem) => listing.problems.push(problem),
             }
         }
 
@@ -281,7 +319,70 @@ impl Catalog {
             digest: recorded.digest,
             probed,
             beside,
+            prepared: None,
         })
+    }
+
+    /// A **prepared** entry: a sidecar naming another entry's image plus what to inject.
+    ///
+    /// The image is never copied — this entry serves the source's bytes with a few
+    /// hundred substituted on the way out. Two hundred bytes of sidecar stand in for
+    /// 1.5 GB, and changing the answer URL is a matter of rewriting them.
+    fn prepared(
+        &self,
+        id: &str,
+        sidecar: &Path,
+        recorded: &Sidecar,
+        sources: &[Entry],
+    ) -> Result<Entry, String> {
+        if !crate::store::valid_id(id) || RESERVED_IDS.contains(&id) {
+            return Err(format!(
+                "{}: {id:?} is not a usable identifier for a prepared entry",
+                sidecar.display()
+            ));
+        }
+        let source_id = recorded.source.clone().unwrap_or_default();
+        let Some(source) = sources.iter().find(|e| e.id == source_id) else {
+            return Err(format!(
+                "{}: names source {source_id:?}, which is not in this directory",
+                sidecar.display()
+            ));
+        };
+        let Some(url) = recorded.prepare_url.clone() else {
+            return Err(format!(
+                "{}: names a source but no `prepare-url`, so there is nothing to inject",
+                sidecar.display()
+            ));
+        };
+
+        // **A stale prepared entry is invisible**, so this is loud: the plan's offsets
+        // are computed against one image, and a source that changed underneath would be
+        // patched in the wrong place — producing an image that mounts and is wrong.
+        if let Some(was) = recorded.source_len
+            && was != source.size
+        {
+            return Err(format!(
+                "{}: {source_id} was {was} bytes when this was prepared and is {} now.                  The injection offsets no longer apply — re-run `media prepare`.",
+                sidecar.display(),
+                source.size
+            ));
+        }
+
+        let mut entry = source.clone();
+        entry.id = id.to_string();
+        // A prepared image is longer than its source by whatever was injected, and the
+        // exact figure comes from the plan rather than from an estimate.
+        entry.prepared = Some(Prepared {
+            source_id,
+            url,
+            fingerprint: recorded.prepare_fingerprint.clone(),
+            token: recorded.prepare_token.clone(),
+            source_len: source.size,
+            source_digest: source.digest.clone(),
+        });
+        // Its own digest is the source's no longer: nobody has pinned the derived image.
+        entry.digest = None;
+        Ok(entry)
     }
 }
 
@@ -301,6 +402,13 @@ pub struct Sidecar {
     pub initrd: Option<String>,
     pub external: bool,
     pub zstd_initrd: bool,
+    /// Set on a **prepared** entry: the id of the image this derives from, and what to
+    /// inject into it.
+    pub source: Option<String>,
+    pub prepare_url: Option<String>,
+    pub prepare_fingerprint: Option<String>,
+    pub prepare_token: Option<String>,
+    pub source_len: Option<u64>,
 }
 
 impl Sidecar {
@@ -333,6 +441,11 @@ impl Sidecar {
                 "initrd" => out.initrd = Some(value),
                 "external" => out.external = value == "true",
                 "zstd-initrd" => out.zstd_initrd = value == "true",
+                "source" => out.source = Some(value),
+                "prepare-url" => out.prepare_url = Some(value),
+                "prepare-cert-fingerprint" => out.prepare_fingerprint = Some(value),
+                "prepare-token" => out.prepare_token = Some(value),
+                "source-bytes" => out.source_len = value.parse().ok(),
                 _ => {}
             }
         }

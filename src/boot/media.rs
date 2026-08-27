@@ -269,13 +269,24 @@ enum What {
     Inside(String),
 }
 
-/// One run of bytes to send: a file, or a generated header.
+/// One run of bytes to send: a file, a generated header, or a file with substitutions.
 #[derive(Debug, Clone)]
 enum Segment {
     Bytes(Vec<u8>),
     File {
         path: PathBuf,
         offset: u64,
+        length: u64,
+    },
+    /// An image with a few hundred bytes substituted and a few hundred appended. The
+    /// plan owns the arithmetic; this only streams what it says.
+    Patched {
+        plan: Arc<super::patch::Plan>,
+    },
+    /// Part of one, for a range request.
+    Window {
+        plan: Arc<super::patch::Plan>,
+        start: u64,
         length: u64,
     },
 }
@@ -285,8 +296,24 @@ impl Segment {
         match self {
             Segment::Bytes(b) => b.len() as u64,
             Segment::File { length, .. } => *length,
+            Segment::Patched { plan } => plan.len(),
+            Segment::Window { length, .. } => *length,
         }
     }
+}
+
+/// Compute the injection for a prepared entry. A few kilobytes of reads over the
+/// source's directory records — never a pass over the image.
+fn plan_for(
+    entry: &Entry,
+    prepared: &super::catalog::Prepared,
+) -> Result<super::patch::Plan, String> {
+    let mode = super::patch::mode_file(
+        &prepared.url,
+        prepared.fingerprint.as_deref(),
+        prepared.token.as_deref(),
+    );
+    super::patch::add_file(&entry.path, "auto-installer-mode.toml", mode.as_bytes())
 }
 
 /// What to send, and whether a range may be applied to it.
@@ -316,7 +343,24 @@ fn resolve(entry: &Entry, what: &What) -> Result<Source, String> {
     };
 
     match what {
-        What::Image => Ok(one(entry.path.clone(), 0, entry.size, true)),
+        What::Image => match &entry.prepared {
+            None => Ok(one(entry.path.clone(), 0, entry.size, true)),
+            // **Synthesised on the wire, never stored.** The source is untouched, so
+            // its published digest stays verifiable; a second 1.5 GB copy on disk buys
+            // nothing; and changing the answer URL is a matter of 300 bytes.
+            Some(prepared) => {
+                let plan = plan_for(entry, prepared)?;
+                let total = plan.len();
+                Ok(Source {
+                    segments: vec![Segment::Patched {
+                        plan: Arc::new(plan),
+                    }],
+                    total,
+                    resumable: true,
+                    content_type: "application/octet-stream",
+                })
+            }
+        },
 
         What::Kernel | What::Initrd => {
             let inside = match what {
@@ -498,6 +542,14 @@ fn slice(segments: Vec<Segment>, start: u64, end: u64) -> Vec<Segment> {
             Segment::File { path, offset, .. } => Segment::File {
                 path,
                 offset: offset + start,
+                length: end - start + 1,
+            },
+            // A patched segment keeps its whole plan and is windowed at read time: the
+            // offsets are the *patched* image's, and narrowing them here would move a
+            // substitution relative to the bytes it belongs to.
+            Segment::Patched { plan } => Segment::Window {
+                plan,
+                start,
                 length: end - start + 1,
             },
             other => other,
@@ -823,6 +875,46 @@ impl Body {
     }
 }
 
+/// Stream a window of a patched image. The plan resolves every offset — through the
+/// source, a substitution, or the appended tail — so this only moves bytes.
+fn stream_patched(
+    plan: &super::patch::Plan,
+    start: u64,
+    length: u64,
+    tx: &mpsc::Sender<Result<Bytes, io::Error>>,
+) -> bool {
+    let mut file = match std::fs::File::open(&plan.source) {
+        Ok(file) => file,
+        Err(e) => {
+            let _ = tx.blocking_send(Err(e));
+            return false;
+        }
+    };
+    let mut buffer = vec![0u8; CHUNK];
+    let mut at = start;
+    let end = start + length;
+    while at < end {
+        let want = ((end - at) as usize).min(CHUNK);
+        match plan.read_at(&mut file, at, &mut buffer[..want]) {
+            Ok(0) => return true,
+            Ok(n) => {
+                if tx
+                    .blocking_send(Ok(Bytes::copy_from_slice(&buffer[..n])))
+                    .is_err()
+                {
+                    return false;
+                }
+                at += n as u64;
+            }
+            Err(e) => {
+                let _ = tx.blocking_send(Err(e));
+                return false;
+            }
+        }
+    }
+    true
+}
+
 /// The blocking half: open, seek, read, send. A closed channel means the client hung up
 /// — stop reading rather than finishing an image nobody is receiving.
 fn produce(segments: Vec<Segment>, tx: &mpsc::Sender<Result<Bytes, io::Error>>) {
@@ -830,6 +922,20 @@ fn produce(segments: Vec<Segment>, tx: &mpsc::Sender<Result<Bytes, io::Error>>) 
         match segment {
             Segment::Bytes(bytes) => {
                 if tx.blocking_send(Ok(Bytes::from(bytes))).is_err() {
+                    return;
+                }
+            }
+            Segment::Patched { plan } => {
+                if !stream_patched(&plan, 0, plan.len(), tx) {
+                    return;
+                }
+            }
+            Segment::Window {
+                plan,
+                start,
+                length,
+            } => {
+                if !stream_patched(&plan, start, length, tx) {
                     return;
                 }
             }

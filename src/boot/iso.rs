@@ -54,6 +54,10 @@ pub struct Trees {
     pub rock_ridge: bool,
     /// A supplementary descriptor with a Joliet escape sequence.
     pub joliet: bool,
+    /// A UDF filesystem alongside the ISO9660 one. **A Windows ISO is UDF+ISO9660 and
+    /// its large files exist only in the UDF tree**, so patching the ISO9660 tree of
+    /// such an image produces something that looks right and is not.
+    pub udf: bool,
 }
 
 /// An opened image: the descriptor facts, and a handle to read extents from.
@@ -73,6 +77,48 @@ pub struct Iso {
     /// root's `SP` entry declares. Read once at open: recomputing it per record would
     /// re-parse the root directory for every entry in the image.
     susp_skip: usize,
+    /// Where the descriptors are, in bytes. The patcher rewrites the volume space size
+    /// in both, and one that had to re-scan for them could disagree with the reader
+    /// about which descriptor it had found.
+    pvd_at: u64,
+    svd_at: Option<u64>,
+}
+
+impl Iso {
+    /// Where the primary volume descriptor starts.
+    pub fn pvd_at(&self) -> u64 {
+        self.pvd_at
+    }
+
+    /// Where the supplementary (Joliet) descriptor starts, if there is one.
+    pub fn svd_at(&self) -> Option<u64> {
+        self.svd_at
+    }
+
+    /// The root directory extent, for a caller that walks records itself.
+    pub fn root_extent(&self) -> Extent {
+        self.root
+    }
+
+    /// The Joliet tree's root, when the image has a second tree.
+    pub fn joliet_root_extent(&self) -> Option<Extent> {
+        self.joliet_root
+    }
+
+    /// Raw bytes out of the image, for a caller that works in offsets rather than in
+    /// records.
+    pub fn read_raw(&mut self, offset: u64, len: usize) -> io::Result<Vec<u8>> {
+        let mut buffer = vec![0u8; len];
+        self.file.seek(SeekFrom::Start(offset))?;
+        self.file.read_exact(&mut buffer)?;
+        Ok(buffer)
+    }
+
+    /// The system use area's skip length, which a patcher needs in order to write an
+    /// `NM` entry the same reader will find.
+    pub fn susp_skip(&self) -> usize {
+        self.susp_skip
+    }
 }
 
 impl Iso {
@@ -82,6 +128,12 @@ impl Iso {
 
         let mut primary: Option<[u8; SECTOR as usize]> = None;
         let mut supplementary: Option<[u8; SECTOR as usize]> = None;
+        // Remembered rather than recomputed: the patcher rewrites the volume space size
+        // in both descriptors, and one that re-scanned for them could disagree with this
+        // reader about which it had found.
+        let mut pvd_at = FIRST_DESCRIPTOR;
+        let mut svd_at = None;
+        let mut udf = false;
 
         // Volume descriptors run from sector 16 until a terminator. A handful of images
         // carry a dozen; none carries hundreds, so the cap is a guard, not a policy.
@@ -91,14 +143,30 @@ impl Iso {
             if file.read_exact(&mut sector).is_err() {
                 break;
             }
+            // The volume recognition sequence shares this field: an image carrying UDF
+            // announces it here, in the same place and the same run of sectors.
+            if matches!(&sector[1..6], b"NSR02" | b"NSR03") {
+                udf = true;
+                continue;
+            }
+            if matches!(&sector[1..6], b"BEA01" | b"TEA01") {
+                continue;
+            }
             if &sector[1..6] != b"CD001" {
                 // Not a descriptor at all. If we have not even found the primary yet,
                 // this is not an ISO9660 image and saying so is the whole answer.
                 break;
             }
+            let at = FIRST_DESCRIPTOR + index * SECTOR;
             match sector[0] {
-                1 => primary = Some(sector),
-                2 if supplementary.is_none() && is_joliet(&sector) => supplementary = Some(sector),
+                1 => {
+                    primary = Some(sector);
+                    pvd_at = at;
+                }
+                2 if supplementary.is_none() && is_joliet(&sector) => {
+                    supplementary = Some(sector);
+                    svd_at = Some(at);
+                }
                 255 => break,
                 _ => {}
             }
@@ -138,10 +206,13 @@ impl Iso {
             trees: Trees {
                 rock_ridge: false,
                 joliet: supplementary.is_some(),
+                udf,
             },
             volume_id,
             declared_size,
             susp_skip: 0,
+            pvd_at,
+            svd_at,
         };
         iso.trees.rock_ridge = iso.detect_rock_ridge();
         Ok(iso)

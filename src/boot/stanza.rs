@@ -185,6 +185,7 @@ mod tests {
                 zstd_initrd: false,
             },
             beside: None,
+            prepared: None,
         }
     }
 

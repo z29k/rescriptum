@@ -460,12 +460,20 @@ pub fn media(cfg: &Config, args: &[String]) -> ExitCode {
         Some((cmd, rest)) if cmd == "ipxe" && rest.len() == 1 => {
             media_ipxe(cfg, &catalog, &rest[0])
         }
+        Some((cmd, rest)) if cmd == "prepare" && !rest.is_empty() => {
+            media_prepare(cfg, &catalog, rest)
+        }
+        Some((cmd, rest)) if cmd == "export" && rest.len() == 2 => {
+            media_export(&catalog, &rest[0], &rest[1])
+        }
         _ => {
             eprintln!(
                 "usage: rescriptum media list\n\
                  \x20      rescriptum media add FILE [--sha256 DIGEST]\n\
                  \x20      rescriptum media check\n\
-                 \x20      rescriptum media ipxe ID"
+                 \x20      rescriptum media ipxe ID\n\
+                 \x20      rescriptum media prepare ID [--as NAME] [--url URL]\n\
+                 \x20      rescriptum media export ID FILE"
             );
             ExitCode::FAILURE
         }
@@ -774,6 +782,207 @@ fn media_ipxe(cfg: &Config, catalog: &crate::boot::catalog::Catalog, id: &str) -
             ExitCode::FAILURE
         }
     }
+}
+
+/// `media prepare ID` — the one command that removes the last external tool.
+///
+/// It writes a **sidecar**, not an image: two hundred bytes standing in for 1.5 GB. The
+/// source is never modified, never copied, and its published digest stays verifiable;
+/// the injection happens on the wire, and changing the answer URL later rewrites those
+/// two hundred bytes rather than a gigabyte.
+#[cfg(feature = "boot")]
+fn media_prepare(
+    cfg: &Config,
+    catalog: &crate::boot::catalog::Catalog,
+    args: &[String],
+) -> ExitCode {
+    let mut id: Option<&String> = None;
+    let mut name: Option<String> = None;
+    let mut url: Option<String> = None;
+    let mut fingerprint: Option<String> = None;
+    let mut token: Option<String> = None;
+    let mut rest = args.iter();
+    while let Some(arg) = rest.next() {
+        let mut take = |what: &str| -> Option<String> {
+            match rest.next() {
+                Some(value) => Some(value.clone()),
+                None => {
+                    eprintln!("{what} wants a value");
+                    None
+                }
+            }
+        };
+        match arg.as_str() {
+            "--as" => match take("--as") {
+                Some(v) => name = Some(v),
+                None => return ExitCode::FAILURE,
+            },
+            "--url" => match take("--url") {
+                Some(v) => url = Some(v),
+                None => return ExitCode::FAILURE,
+            },
+            "--cert-fingerprint" => match take("--cert-fingerprint") {
+                Some(v) => fingerprint = Some(v),
+                None => return ExitCode::FAILURE,
+            },
+            "--token" => match take("--token") {
+                Some(v) => token = Some(v),
+                None => return ExitCode::FAILURE,
+            },
+            other if id.is_none() && !other.starts_with('-') => id = Some(arg),
+            other => {
+                eprintln!("unexpected argument {other:?}");
+                return ExitCode::FAILURE;
+            }
+        }
+    }
+
+    let Some(id) = id else {
+        eprintln!("usage: rescriptum media prepare ID [--as NAME] [--url URL]");
+        return ExitCode::FAILURE;
+    };
+    let entry = match catalog.get(id) {
+        Ok(Some(entry)) => entry,
+        Ok(None) => {
+            eprintln!("no image called {id:?} — `rescriptum media list` shows what there is");
+            return ExitCode::FAILURE;
+        }
+        Err(e) => {
+            eprintln!("cannot read {}: {e}", catalog.dir().display());
+            return ExitCode::FAILURE;
+        }
+    };
+    if entry.family() != crate::boot::probe::Family::Proxmox {
+        // Every other family takes the answer's URL on the kernel command line, where
+        // `media ipxe` already puts it. Injecting a file they never read would be a
+        // no-op that looks like a step.
+        eprintln!(
+            "{id} is {}, and only Proxmox reads its answer's location from inside the image.              For every other family the URL goes on the kernel command line, which              `rescriptum media ipxe {id}` already writes.",
+            entry.family().label()
+        );
+        return ExitCode::FAILURE;
+    }
+
+    let url = url.unwrap_or_else(|| format!("{}/proxmox", cfg.endpoints().answer));
+    let derived = name.unwrap_or_else(|| format!("{id}-http"));
+    if !crate::store::valid_id(&derived)
+        || crate::boot::catalog::RESERVED_IDS.contains(&derived.as_str())
+    {
+        eprintln!("{derived:?} is not a usable identifier — it becomes part of a URL");
+        return ExitCode::FAILURE;
+    }
+
+    // Plan it now rather than at request time, so a refusal is reported to the person
+    // who can act on it instead of to a machine at 3am.
+    let mode = crate::boot::patch::mode_file(&url, fingerprint.as_deref(), token.as_deref());
+    let plan = match crate::boot::patch::add_file(
+        &entry.path,
+        "auto-installer-mode.toml",
+        mode.as_bytes(),
+    ) {
+        Ok(plan) => plan,
+        Err(e) => {
+            eprintln!("{e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let mut sidecar = String::from(
+        "# rescriptum prepared entry — written by `media prepare`.\n         # Two hundred bytes standing in for an image: nothing was copied, and the\n         # source is untouched. The file is injected on the wire, so changing the URL\n         # below is all it takes to point this at a different answer endpoint.\n",
+    );
+    sidecar.push_str(&format!("source = {id}\n"));
+    sidecar.push_str(&format!("prepare-url = {url}\n"));
+    if let Some(fingerprint) = &fingerprint {
+        sidecar.push_str(&format!("prepare-cert-fingerprint = {fingerprint}\n"));
+    }
+    if let Some(token) = &token {
+        sidecar.push_str(&format!("prepare-token = {token}\n"));
+    }
+    // The length the offsets were computed against. A source that changed underneath
+    // would be patched in the wrong place, and the catalogue refuses rather than
+    // serving an image that mounts and is wrong.
+    sidecar.push_str(&format!("source-bytes = {}\n", entry.size));
+    if let Some(digest) = &entry.digest {
+        sidecar.push_str(&format!("sha256 = {digest}\n"));
+    }
+
+    let path = catalog.dir().join(format!(
+        "{derived}.{}",
+        crate::boot::catalog::SIDECAR_EXTENSION
+    ));
+    if let Err(e) = std::fs::write(&path, sidecar) {
+        eprintln!("cannot write {}: {e}", path.display());
+        return ExitCode::FAILURE;
+    }
+
+    println!("{derived}  prepared from {id}");
+    println!("  answer   {url}");
+    println!(
+        "  injects  /auto-installer-mode.toml ({} bytes)",
+        mode.len()
+    );
+    println!(
+        "  image    {} bytes (source {} + {} appended)",
+        plan.len(),
+        entry.size,
+        plan.len() - entry.size
+    );
+    println!("  wrote    {}", path.display());
+    println!();
+    println!("Nothing was copied. Serve it as /{derived}/iso, or write it to a stick with");
+    println!("  rescriptum media export {derived} /tmp/{derived}.iso");
+    ExitCode::SUCCESS
+}
+
+/// `media export ID FILE` — materialise what the listener would have served.
+///
+/// **One code path with the streaming one.** A stick written from a different code path
+/// than the one a machine downloads is a second implementation to keep honest, and the
+/// difference would only show on somebody's desk.
+#[cfg(feature = "boot")]
+fn media_export(catalog: &crate::boot::catalog::Catalog, id: &str, to: &str) -> ExitCode {
+    let entry = match catalog.get(id) {
+        Ok(Some(entry)) => entry,
+        Ok(None) => {
+            eprintln!("no image called {id:?}");
+            return ExitCode::FAILURE;
+        }
+        Err(e) => {
+            eprintln!("cannot read {}: {e}", catalog.dir().display());
+            return ExitCode::FAILURE;
+        }
+    };
+    let Some(prepared) = &entry.prepared else {
+        eprintln!(
+            "{id} is not a prepared entry — it is the image itself, so copy it.              `rescriptum media prepare {id}` makes one that needs exporting."
+        );
+        return ExitCode::FAILURE;
+    };
+
+    let mode = crate::boot::patch::mode_file(
+        &prepared.url,
+        prepared.fingerprint.as_deref(),
+        prepared.token.as_deref(),
+    );
+    let plan = match crate::boot::patch::add_file(
+        &entry.path,
+        "auto-installer-mode.toml",
+        mode.as_bytes(),
+    ) {
+        Ok(plan) => plan,
+        Err(e) => {
+            eprintln!("{e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    eprintln!("writing {} bytes to {to} …", plan.len());
+    if let Err(e) = plan.materialise(std::path::Path::new(to)) {
+        eprintln!("cannot write {to}: {e}");
+        return ExitCode::FAILURE;
+    }
+    println!("{to}");
+    ExitCode::SUCCESS
 }
 
 /// Whether two paths name the same directory, resolving symlinks where it can. A media

@@ -17,6 +17,7 @@ pub mod iso;
 pub mod loaders;
 pub mod media;
 pub mod menu;
+pub mod patch;
 pub mod privileges;
 pub mod probe;
 pub mod sha256;
