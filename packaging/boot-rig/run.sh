@@ -64,8 +64,14 @@ cargo run --quiet --manifest-path ../../Cargo.toml -- boot dhcp-snippet --format
     generated/dnsmasq.conf.snippet
 } > generated/dnsmasq.conf
 
-echo "==> bringing the stack up (no KVM: the rig must pass under TCG)"
-"${COMPOSE[@]}" up -d --build loaders server dhcp
+echo "==> building the images (no KVM anywhere: the rig must pass under TCG)"
+# **The client is built explicitly.** `docker compose run` reuses whatever image is
+# already there, so a client image that is never built is one that never changes — and
+# a fix made to its Dockerfile would silently not apply.
+"${COMPOSE[@]}" build loaders server dhcp client
+
+echo "==> bringing the stack up"
+"${COMPOSE[@]}" up -d loaders server dhcp
 
 # The loaders service exits when it has copied; the others have to be listening.
 for _ in $(seq 1 60); do

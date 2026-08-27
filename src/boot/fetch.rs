@@ -76,11 +76,24 @@ pub fn fetch(
         .status()
         .map_err(|e| format!("cannot run {program}: {e}"))?;
     if !status.success() {
-        // Leave the partial file: a 1.5 GB download that failed at 90% is worth
-        // resuming, and both tools resume onto it.
+        let code = status.code().unwrap_or(-1);
+        // **curl exits 33 when the server ignored the Range header**, which is what a
+        // mirror without byte-range support does. Retrying would fail identically
+        // forever, so the answer is to say the one thing that fixes it rather than
+        // repeating "run it again".
+        if code == 33 {
+            return Err(format!(
+                "{program} exited 33: this server does not support resuming, and {} is a \
+                 partial download from an earlier attempt. Delete it and run this again \
+                 to start from the beginning.",
+                partial.display()
+            ));
+        }
+        // Otherwise leave the partial file: a 1.5 GB download that failed at 90% is
+        // worth resuming, and both tools resume onto it.
         return Err(format!(
-            "{program} exited {}. {} is left in place, and running this again resumes it.",
-            status.code().unwrap_or(-1),
+            "{program} exited {code}. {} is left in place, and running this again resumes \
+             it — delete it to start over.",
             partial.display()
         ));
     }

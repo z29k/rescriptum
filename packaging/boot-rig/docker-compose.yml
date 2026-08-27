@@ -107,4 +107,8 @@ services:
     volumes:
       - results:/out
     networks: [rig]
-    profiles: [manual]
+    # No profile: `up` below names the three services it wants, so this one does not
+    # start on its own — and leaving it out of a profile is what lets `build` see it.
+    # A `docker compose run` reuses whatever image exists, so a client image that is
+    # never built is a client image that never changes; the first two runs of this rig
+    # died on a fix that had been made and not compiled.

@@ -29,6 +29,10 @@ mkdir -p /out
 # Put eth0 on a bridge and hang a tap off it, so the guest is a peer of the other
 # containers rather than a NAT client of this one.
 setup_bridge() {
+  # Checked first, because every `ip` below is tolerant of its own failure and the
+  # guard at the bottom of this function would not have noticed. The first run of this
+  # rig printed five `ip: command not found` lines and carried on into QEMU.
+  command -v ip >/dev/null 2>&1 || return 1
   ip link add br0 type bridge 2>/dev/null || true
   ip link set br0 up
   ip addr flush dev eth0 || true
@@ -41,7 +45,14 @@ setup_bridge() {
 }
 
 if ! setup_bridge; then
-  echo "cannot bridge eth0 — the client container needs cap_add: NET_ADMIN" | tee "${OUT}"
+  echo "cannot bridge eth0: either \`ip\` is missing from this image or the container \
+lacks cap_add: NET_ADMIN. Without a bridge the guest would see no DHCP server, which \
+looks like a broken boot chain rather than a broken rig." | tee "${OUT}"
+  exit 1
+fi
+# And prove it worked, rather than trusting that nothing printed an error.
+if ! ip link show tap0 >/dev/null 2>&1; then
+  echo "tap0 was not created — the guest would have no network" | tee "${OUT}"
   exit 1
 fi
 
