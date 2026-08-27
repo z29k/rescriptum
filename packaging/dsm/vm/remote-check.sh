@@ -116,9 +116,8 @@ PORT=$(sed -n 's/^RESCRIPTUM_LISTEN_ADDR=.*:\([0-9]*\)$/\1/p' "$ROOT/etc/$PKG.en
 
 [ -d "$SHARE/answers" ] && ok "start created the answers directory inside the share" || bad "no $SHARE/answers"
 # The media and boot folders, made whether or not the env file names them yet: a folder
-# that only appears once a setting is enabled is one nobody discovers, and the boot one
-# is what DSM's own TFTP server gets pointed at. The package cannot serve TFTP itself —
-# port 69 is privileged and DSM 7 does not let an unsigned package run as root.
+# that only appears once a setting is enabled is one nobody discovers. The boot one is
+# what this package's own TFTP server hands loaders out of — see the setcap section below.
 for extra in media boot; do
     [ -d "$SHARE/$extra" ] && ok "and the $extra folder, ready to be filled" || bad "no $SHARE/$extra"
     sudo -u "$PKG" test -w "$SHARE/$extra" 2>/dev/null &&
@@ -160,9 +159,61 @@ if [ -n "$SC" ]; then
         note "→ the worker acquired BEFORE postinst: the .sc ships 8000, and only"
         note "  'synopkghelper update $PKG port-config' moves it afterwards"
     fi
+    # **Did DSM keep 69/udp?** The protocol suffix on `dst.ports` is inferred from the
+    # form the tcp entries already use, not from documentation — so the question is
+    # whether the worker copies it through or quietly drops what it does not parse. A
+    # firewall entry missing the TFTP port produces a PXE client that retries and times
+    # out with nothing in any log on this side, which is the worst kind of failure here.
+    if grep -q '69/udp' "$SC"; then
+        ok "  and it kept 69/udp, so the TFTP port can be allowed by name"
+    else
+        bad "  but 69/udp did not survive into it — the suffix form is wrong for this DSM"
+    fi
 else
     bad "no $PKG.sc in /usr/local/etc/services.d or service.d — the firewall entry will never appear"
     note "what is there: $(ls /usr/local/etc/services.d 2>/dev/null | tr '\n' ' ')"
+fi
+
+# ── TFTP, and the one root command it takes ────────────────────────────────────
+section "TFTP: the port the package cannot grant itself"
+# **This is the section the whole `off` reversal rests on.** DSM 7 refuses `run-as: root`
+# (synopkg 319) and Package Center strips a security.capability xattr out of package.tgz,
+# so the only route to port 69 is a setcap applied after install — and the package cannot
+# apply it, because its lifecycle scripts are not root either. What is asserted here is
+# both halves: that the package is *useful* without it, and that it *works* with it.
+BIN="$ROOT/target/bin/$PKG"
+note "getcap before: $(getcap "$BIN" 2>/dev/null || echo '(none)')"
+
+# Half one. A fresh install has no capability, so the TFTP bind fails — and that must not
+# stop anything else. This is the measured reason a failed TFTP bind is a warning rather
+# than fatal: when it was fatal the whole package went to start_failed, taking answers and
+# media with it, and an upgrade drops the capability silently.
+[ "$(curl -fsS "http://127.0.0.1:$PORT/health" 2>/dev/null)" = OK ] &&
+    ok "without the capability the package still answers — a failed TFTP bind is not fatal" ||
+    bad "the package is down without the capability; a failed TFTP bind must never cost the answer endpoint"
+grep -qi "cannot bind TFTP" "$ROOT/var/$PKG.log" "$ROOT/var/startup.log" 2>/dev/null &&
+    ok "and said so in its log rather than failing silently" ||
+    note "no 'cannot bind TFTP' line — check whether something already holds 69 on this machine"
+
+# Half two. The one root command, and whether the port is really bound afterwards by the
+# unprivileged package user.
+if [ -x /usr/bin/setcap ]; then
+    run /usr/bin/setcap cap_net_bind_service=+ep "$BIN"
+    note "getcap after:  $(getcap "$BIN" 2>/dev/null || echo '(none)')"
+    run synopkg restart "$PKG"
+    sleep 4
+    if netstat -lnup 2>/dev/null | grep -q ':69 '; then
+        ok "with cap_net_bind_service the package binds udp/69"
+        note "$(netstat -lnup 2>/dev/null | grep ':69 ')"
+    else
+        bad "udp/69 is still not bound after setcap and a restart"
+        tail -n 5 "$ROOT/var/$PKG.log" 2>/dev/null | sed 's/^/    /'
+    fi
+    [ "$(curl -fsS "http://127.0.0.1:$PORT/health" 2>/dev/null)" = OK ] &&
+        ok "and answers are unaffected by gaining it" ||
+        bad "the package stopped answering after setcap"
+else
+    note "no /usr/bin/setcap on this machine — the only route to port 69 is closed here"
 fi
 
 if [ -e /usr/local/bin/$PKG-cli ]; then

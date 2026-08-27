@@ -859,7 +859,7 @@ an unresolved `section:key` renders as that literal text under the icon.
 which found two bugs no fake-tree harness could: `ROOT` derived from `SYNOPKG_PKGDEST` (a
 symlink target, so the env file landed where nothing reads it and the service never started),
 and a *fresh* install restoring a removed installation's configuration out of a stale
-`$SYNOPKG_TEMP_UPGRADE_FOLDER`. 24 checks green end to end. **The DS416j run has since happened too**, and found what the
+`$SYNOPKG_TEMP_UPGRADE_FOLDER`. 47 checks green end to end. **The DS416j run has since happened too**, and found what the
 VM could not: the ARMv7 musl build cannot run on Synology's 3.10 kernels (hence the glibc
 target), and a Mac editing the answers share over SMB drops AppleDouble files that hijack a
 machine's answer (hence hidden entries being skipped).
