@@ -70,10 +70,18 @@ git push origin main --follow-tags
 3. Packages each as `rescriptum-<version>-<target>.tar.gz`, with `README.md` and `LICENSE`
    alongside the binary, plus a **SHA-256 sum** — whoever runs this as root should be able
    to check what they downloaded.
-4. Wraps the Linux musl builds as [Synology packages](./building.md#the-synology-package),
+4. **Builds the branded iPXE loaders** from the pinned commit and attaches them as
+   `rescriptum-boot-assets-<version>.tar.gz`, after asking `boot check` whether the
+   directory satisfies the loader table the server hands out from. Without this the
+   release is incomplete and quietly so: a deployment gets a TFTP server with nothing to
+   hand out, and every machine the generated DHCP snippet sends there asks for a file,
+   gets nothing, and stops. **They are their own download, never part of a binary archive
+   or an `.spk`** — they are iPXE, GPLv2, and separate files served alongside is mere
+   aggregation, with `packaging/ipxe/` as the written offer.
+5. Wraps the Linux musl builds as [Synology packages](./building.md#the-synology-package),
    `rescriptum-<version>-<build>-<abi>.spk`, and checks each structurally before it can be
    published.
-5. Cuts the GitHub Release with `gh` and `--generate-notes`, or uploads into it if it
+6. Cuts the GitHub Release with `gh` and `--generate-notes`, or uploads into it if it
    already exists.
 
 It is re-runnable by hand through `workflow_dispatch` with a tag, for when a job fails

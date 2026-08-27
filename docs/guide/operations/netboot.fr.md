@@ -177,19 +177,33 @@ registre ne donnerait rien à la moitié d'un parc.
 réseau. Toutes les variantes sont servies et la table choisit ; c'est précisément le
 savoir qu'un exploitant ne devrait pas avoir à acquérir.
 
-::: warning Aucune version publiée ne distribue encore les chargeurs
-`packaging/ipxe/build.sh` construit les huit depuis un commit épinglé et a été exécuté,
-mais rien n'est publié comme artefact de release — pour l'instant, construisez-les
-vous-même :
+### Se les procurer
+
+Chaque version publiée attache `rescriptum-boot-assets-<version>.tar.gz`. Décompressez-le
+là où le serveur peut le lire, nommez le répertoire, et vérifiez-le :
+
+```console
+$ tar -xzf rescriptum-boot-assets-0.2.0.tar.gz -C /srv
+$ export RESCRIPTUM_BOOT_DIR=/srv/rescriptum-boot-assets-0.2.0
+$ rescriptum boot check
+```
+
+Il contient les huit chargeurs, un `SHA256SUMS`, un `ipxe.iso` et un `ipxe.usb`
+démarrables pour une machine sans ROM PXE utilisable, et un `NOTICE` — c'est iPXE, en
+GPLv2, construit depuis un commit amont épinglé. **C'est un téléchargement séparé, et il
+ne fait partie d'aucune archive binaire ni d'aucun `.spk`**, délibérément : des fichiers
+séparés servis à côté relèvent de la simple agrégation, et `packaging/ipxe/` est l'offre
+écrite qui les accompagne.
+
+Pour les construire vous-même à la place — le même script que la release exécute, depuis
+le même épinglage :
 
 ```console
 $ packaging/ipxe/build.sh --out /srv/boot
-$ rescriptum boot check
 ```
 
 Un chargeur venu d'ailleurs convient aussi, à condition qu'il enchaîne vers *ce* serveur
 plutôt que vers Internet — voir ci-dessous pourquoi un chargeur d'origine ne le fait pas.
-:::
 
 ## Comment iPXE finit par parler à *nous*
 

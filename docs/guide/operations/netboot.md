@@ -166,18 +166,31 @@ generated from the registry alone would hand half a fleet nothing.
 are served and the table picks; this is precisely the knowledge an operator should not
 have to acquire.
 
-::: warning No release publishes the loaders yet
-`packaging/ipxe/build.sh` builds all eight from a pinned upstream commit and has been run,
-but nothing is published as a release artifact — so for now you build them yourself:
+### Getting them
+
+Every release attaches `rescriptum-boot-assets-<version>.tar.gz`. Unpack it where the
+server can read it, name the directory, and check it:
+
+```console
+$ tar -xzf rescriptum-boot-assets-0.2.0.tar.gz -C /srv
+$ export RESCRIPTUM_BOOT_DIR=/srv/rescriptum-boot-assets-0.2.0
+$ rescriptum boot check
+```
+
+It carries the eight loaders, a `SHA256SUMS`, a bootable `ipxe.iso` and `ipxe.usb` for a
+machine with no usable PXE ROM, and a `NOTICE` — they are iPXE, GPLv2, built from a
+pinned upstream commit. **They are a separate download and not part of any binary archive
+or `.spk`**, deliberately: separate files served alongside is mere aggregation, and
+`packaging/ipxe/` is the written offer that goes with them.
+
+To build them yourself instead — the same script the release runs, from the same pin:
 
 ```console
 $ packaging/ipxe/build.sh --out /srv/boot
-$ rescriptum boot check
 ```
 
 A loader from elsewhere works too, provided it chains to *this* server rather than to the
 internet — see below for why a stock one does not.
-:::
 
 ## How iPXE ends up talking to *us*
 

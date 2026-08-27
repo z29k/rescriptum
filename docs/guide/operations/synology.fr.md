@@ -301,7 +301,16 @@ prouve le contraire de ce qu'on croit : une ouverture qui *réussit* signifie qu
 n'écoute.
 
 **Posez les chargeurs dans le dossier `boot` du partage.** Ils ne sont pas dans le paquet —
-c'est iPXE, en GPLv2, et ils ont leur place à côté plutôt que soudés dedans :
+c'est iPXE, en GPLv2, et ils ont leur place à côté plutôt que soudés dedans. Chaque version
+publiée attache `rescriptum-boot-assets-<version>.tar.gz` ; décompressez-le et copiez son
+contenu dans le dossier via File Station ou SMB, puis :
+
+```console
+$ rescriptum-cli boot check
+```
+
+Ou construisez-les vous-même sur n'importe quelle machine Linux avec une chaîne de
+compilation C, depuis le même commit épinglé que la release :
 
 ```console
 $ packaging/ipxe/build.sh --out /chemin/vers/rescriptum/boot

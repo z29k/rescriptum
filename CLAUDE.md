@@ -1031,7 +1031,10 @@ SemVer tags. Keep PRs focused.
 What does **not** carry over from notabene: it is an npm package and publishes prereleases to
 an `@dev` dist-tag. This project ships a **compiled binary**, so the release artifact is a
 GitHub Release with cross-compiled binaries attached, built by a CI matrix, plus a `.spk`
-per Linux ABI from the `package-dsm` job. A `spk_build` dispatch input ships a
+per Linux ABI from the `package-dsm` job and **`rescriptum-boot-assets-<version>.tar.gz`
+from the `loaders` job** — the branded iPXE loaders, their own download because they are
+GPLv2 and `packaging/ipxe/` is the written offer. Without it a release ships a TFTP server
+with nothing to hand out. A `spk_build` dispatch input ships a
 packaging-only fix as `0.1.0-2` without a new tag. Submission to SynoCommunity may follow
 later; a package source that Package Center could poll deliberately will not — there are no
 update notifications, and the documentation says so.

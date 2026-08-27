@@ -70,10 +70,19 @@ git push origin main --follow-tags
 3. Empaquette chacune en `rescriptum-<version>-<cible>.tar.gz`, avec `README.md` et `LICENSE` à
    côté du binaire, plus une **somme SHA-256** — qui fait tourner cela en root devrait pouvoir
    vérifier ce qu'il a téléchargé.
-4. Emballe les builds musl Linux en [paquets Synology](./building.md#le-paquet-synology),
+4. **Construit les chargeurs iPXE marqués** depuis le commit épinglé et les attache en
+   `rescriptum-boot-assets-<version>.tar.gz`, après avoir demandé à `boot check` si le
+   répertoire satisfait la table de chargeurs depuis laquelle le serveur distribue. Sans
+   cela la release est incomplète, et silencieusement : un déploiement obtient un serveur
+   TFTP sans rien à distribuer, et chaque machine que l'extrait DHCP généré envoie là
+   demande un fichier, n'obtient rien, et s'arrête. **C'est un téléchargement à part,
+   jamais dans une archive binaire ni dans un `.spk`** — c'est iPXE, en GPLv2, et des
+   fichiers séparés servis à côté relèvent de la simple agrégation, avec `packaging/ipxe/`
+   pour offre écrite.
+5. Emballe les builds musl Linux en [paquets Synology](./building.md#le-paquet-synology),
    `rescriptum-<version>-<build>-<abi>.spk`, et contrôle structurellement chacun avant qu'il
    puisse être publié.
-5. Crée la GitHub Release avec `gh` et `--generate-notes`, ou verse dedans si elle existe
+6. Crée la GitHub Release avec `gh` et `--generate-notes`, ou verse dedans si elle existe
    déjà.
 
 Il est relançable à la main via `workflow_dispatch` avec un tag, pour quand un job échoue après

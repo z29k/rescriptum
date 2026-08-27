@@ -7,7 +7,7 @@
 # Needs a C toolchain, GNU make, perl, and — for the EFI targets — the cross binutils
 # for that architecture. On Debian:
 #
-#   apt install build-essential liblzma-dev mtools gcc-aarch64-linux-gnu
+#   apt install build-essential liblzma-dev mtools xorriso isolinux gcc-aarch64-linux-gnu
 #
 # ## Why we build iPXE at all
 #
@@ -141,7 +141,11 @@ build_efi arm64 snponly.efi ipxe-arm64-snponly.efi
 # version of this script made, and it failed into the `||` below rather than saying so.
 # They are Phase 5 of the plan and nothing depends on them yet, so a failure here is a
 # note rather than an error.
-build ipxe.iso ipxe.iso || echo "note: the ISO target needs xorriso or mkisofs"
+# **The ISO needs `isolinux.bin`, not an ISO writer.** The first version of this note
+# said "xorriso or mkisofs", and with xorriso installed the target still failed with
+# `util/genfsimg: could not find isolinux.bin` — which sends you after the wrong package.
+# On Debian it is `isolinux`; the USB target is the one that wants mtools.
+build ipxe.iso ipxe.iso || echo "note: the ISO target needs isolinux (for isolinux.bin) and xorriso"
 build ipxe.usb ipxe.usb || echo "note: the USB target needs mtools"
 
 ( cd "$OUT" && sha256sum ./* > SHA256SUMS 2>/dev/null || shasum -a 256 ./* > SHA256SUMS )
@@ -157,6 +161,38 @@ files served alongside, which is mere aggregation.
 The complete corresponding source is the commit above plus packaging/ipxe/ in
 https://github.com/z29k/rescriptum — branding.h, embed.ipxe, PINNED and build.sh.
 NOTICE
+
+# **The bundle has to say where it goes.** A release attaches this directory as a
+# tarball, and somebody who downloads it has the loaders and no idea that they are useless
+# until `RESCRIPTUM_BOOT_DIR` names the directory they are in. One file closes that gap.
+cat > "$OUT/README" <<README
+rescriptum boot assets — the iPXE loaders this server hands out.
+
+Put this directory somewhere the server can read, and name it:
+
+    RESCRIPTUM_BOOT_DIR=/srv/boot
+
+Then check it, which asks the server whether the set satisfies the table it serves from
+and whether the loader can actually be handed over:
+
+    rescriptum boot check
+
+TFTP listens on 0.0.0.0:69 by default, which is what every generated DHCP snippet
+expects. Port 69 is privileged: start as root with RESCRIPTUM_USER set so the server
+drops afterwards, or grant the binary cap_net_bind_service with setcap. If it cannot be
+bound the server warns and carries on serving answers and media — only the loader
+handover is down, and \`boot check\` says so.
+
+Which file goes to which machine is decided by DHCP option 93, and
+
+    rescriptum boot dhcp-snippet --format dnsmasq
+
+writes that configuration from the same table the server serves from.
+
+SHA256SUMS covers the loaders. NOTICE is the licence: these are iPXE, GPLv2, built from
+the pinned commit named there — separate files served alongside rescriptum, never linked
+into it.
+README
 
 echo
 echo "loaders in $OUT:"

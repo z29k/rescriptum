@@ -278,7 +278,16 @@ Note it asks the port for a loader rather than trying to bind it. Binding proves
 opposite of what it looks like: a bind that *succeeds* means nothing is listening.
 
 **Put the loaders in the share's `boot` folder.** They are not in the package — they are
-iPXE, GPLv2, and belong beside it rather than welded into it:
+iPXE, GPLv2, and belong beside it rather than welded into it. Every release attaches
+`rescriptum-boot-assets-<version>.tar.gz`; unpack it and copy the contents into the folder
+over File Station or SMB, then:
+
+```console
+$ rescriptum-cli boot check
+```
+
+Or build them yourself on any Linux box with a C toolchain, from the same pinned commit
+the release uses:
 
 ```console
 $ packaging/ipxe/build.sh --out /path/to/rescriptum/boot

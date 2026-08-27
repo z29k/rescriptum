@@ -130,6 +130,72 @@ jobs:
           path: dist/*.tar.gz*
           retention-days: 7
 
+  loaders:
+    name: Branded iPXE loaders
+    needs: verify
+    runs-on: ubuntu-latest
+    # **Without this the release is incomplete, and quietly so.** A deployment that
+    # installs the package gets a TFTP server with nothing to hand out: `boot check`
+    # reports three MISSING loaders and every machine the generated DHCP snippet sends
+    # here asks for a file, gets nothing, and stops. Until this job existed, "one binary
+    # boots an arbitrary machine" was true only for whoever built iPXE themselves.
+    #
+    # They are a separate download rather than part of any binary archive or `.spk`
+    # because they are iPXE and iPXE is GPLv2: separate files served alongside is mere
+    # aggregation, and packaging/ipxe/ is the written offer that goes with them.
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      # iPXE's EFI targets need the architecture's own `ld` and `objcopy`; the BIOS ones
+      # build with the host's, and they are 32-bit x86 — which is why this job is amd64
+      # and not arm.
+      - name: Toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential liblzma-dev mtools xorriso isolinux gcc-aarch64-linux-gnu
+          aarch64-linux-gnu-ld --version | head -1
+
+      - name: Build them
+        run: |
+          set -euo pipefail
+          VERSION="${{ needs.verify.outputs.version }}"
+          NAME="rescriptum-boot-assets-$VERSION"
+          packaging/ipxe/build.sh --out "$GITHUB_WORKSPACE/dist/$NAME"
+          cat "$GITHUB_WORKSPACE/dist/$NAME/SHA256SUMS"
+
+      # The same question CI asks of the same script: does the server agree the directory
+      # satisfies the table it serves from. A snippet naming a loader that is not here
+      # fails silently at the ROM, and this is the only thing that catches it before a
+      # release goes out. TFTP off because the question is the file set, not a listener.
+      - name: Does the server agree the set is complete?
+        run: |
+          set -euo pipefail
+          VERSION="${{ needs.verify.outputs.version }}"
+          cargo build --release
+          RESCRIPTUM_BOOT_DIR="$GITHUB_WORKSPACE/dist/rescriptum-boot-assets-$VERSION" \
+          RESCRIPTUM_TFTP_ADDR=off \
+          RESCRIPTUM_PUBLIC_HOST=192.0.2.10 \
+            ./target/release/rescriptum boot check
+
+      - name: Pack
+        run: |
+          set -euo pipefail
+          VERSION="${{ needs.verify.outputs.version }}"
+          NAME="rescriptum-boot-assets-$VERSION"
+          tar -C dist -czf "dist/${NAME}.tar.gz" "$NAME"
+          ( cd dist && shasum -a 256 "${NAME}.tar.gz" > "${NAME}.tar.gz.sha256" )
+          ls -l dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: boot-assets
+          path: dist/*.tar.gz*
+          if-no-files-found: error
+          retention-days: 7
+
   package-dsm:
     name: Synology packages
     needs: [verify, build]
@@ -184,7 +250,7 @@ jobs:
 
   publish:
     name: Publish the release
-    needs: [verify, build, package-dsm]
+    needs: [verify, build, loaders, package-dsm]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

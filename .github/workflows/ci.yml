@@ -69,7 +69,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            build-essential liblzma-dev mtools xorriso gcc-aarch64-linux-gnu
+            build-essential liblzma-dev mtools xorriso isolinux gcc-aarch64-linux-gnu
           aarch64-linux-gnu-ld --version | head -1
 
       - name: Build the loaders
@@ -86,10 +86,16 @@ jobs:
       # Ask the server whether the directory satisfies the table it serves from. A
       # snippet naming a loader that is not here fails silently at the ROM, and this is
       # the only thing that catches it.
+      # `RESCRIPTUM_TFTP_ADDR=off` because the question here is whether the *directory*
+      # satisfies the table, not whether a listener is up: `boot check` also probes the
+      # TFTP port, and on a runner where port 69 is neither bound nor bindable that is a
+      # problem it would rightly report and wrongly fail this job over. The rig is what
+      # proves a loader actually gets handed over.
       - name: Does the server agree the set is complete?
         run: |
           cargo build --release
           RESCRIPTUM_BOOT_DIR="$GITHUB_WORKSPACE/loaders" \
+          RESCRIPTUM_TFTP_ADDR=off \
           RESCRIPTUM_PUBLIC_HOST=192.0.2.10 \
             ./target/release/rescriptum boot check
 
