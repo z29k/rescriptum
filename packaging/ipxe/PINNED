@@ -10,10 +10,17 @@
 # embedded script runs is upstream's code, and it is the half no test in this repository
 # covers.
 #
-# NOT YET BUILT. This pin was chosen from the tag list, not from a build — see the
-# "Status" section of README.md beside this file. The first CI run is what turns it from
-# a plausible version into a verified one, and if v2.0.0 does not build cleanly the
-# answer is v1.21.1 (988d2c13cdf0f0b4140685af35ced70ac5b3283c), the release before it.
+# BUILT AND VERIFIED (2026-08-27, Debian bookworm, amd64 under emulation): this commit
+# produces all eight loaders, ARM64 included. The binaries carry PRODUCT_NAME
+# "rescriptum boot", PRODUCT_URI, and `embed.ipxe` verbatim — checked with `strings` on
+# the EFI builds, which are uncompressed enough to read. The BIOS `.kpxe` shows nothing
+# to `strings` because it is a compressed image, which is expected rather than a failure.
+#
+# `rescriptum boot check` agrees the set satisfies the loader table. What remains
+# unproven is what firmware does with them: that is the rig and the bench, not a build.
+#
+# If a future bump does not build cleanly, the answer is v1.21.1
+# (988d2c13cdf0f0b4140685af35ced70ac5b3283c), the release before this one.
 IPXE_COMMIT=12798ec29aa8a64d8675c4378b99f5fe28447afb
 IPXE_TAG=v2.0.0
 IPXE_REPO=https://github.com/ipxe/ipxe.git

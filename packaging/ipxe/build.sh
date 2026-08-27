@@ -91,12 +91,30 @@ build() {
   cp "$WORK/ipxe/src/bin/$target" "$OUT/$output"
 }
 
+# ARM64 needs its own toolchain, and the failure without one is a wall of
+# `unrecognized command-line option '-mlittle-endian'` from the *host* gcc — which
+# reads like a broken Makefile rather than a missing cross-compiler. Naming it here is
+# what turns that into "install gcc-aarch64-linux-gnu".
+cross_for() {
+  case "$1" in
+    arm64) echo "aarch64-linux-gnu-" ;;
+    *)     echo "" ;;
+  esac
+}
+
 build_efi() {
   local arch="$1" target="$2" output="$3"
+  local cross; cross="$(cross_for "$arch")"
+  if [ -n "$cross" ] && ! command -v "${cross}gcc" >/dev/null 2>&1; then
+    echo "skipping $arch/$target: ${cross}gcc is not installed" >&2
+    return 0
+  fi
   echo "building $arch/$target"
   make -C "$WORK/ipxe/src" -j"$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2)" \
-    ARCH="$arch" "bin-$arch-efi/$target" EMBED="$PWD/embed.ipxe" >/dev/null 2>&1 ||
-    make -C "$WORK/ipxe/src" ARCH="$arch" "bin-$arch-efi/$target" EMBED="$PWD/embed.ipxe"
+    ARCH="$arch" CROSS_COMPILE="$cross" "bin-$arch-efi/$target" \
+    EMBED="$PWD/embed.ipxe" >/dev/null 2>&1 ||
+    make -C "$WORK/ipxe/src" ARCH="$arch" CROSS_COMPILE="$cross" \
+      "bin-$arch-efi/$target" EMBED="$PWD/embed.ipxe"
   cp "$WORK/ipxe/src/bin-$arch-efi/$target" "$OUT/$output"
 }
 
@@ -115,10 +133,14 @@ build_efi arm64 ipxe.efi ipxe-arm64.efi
 build_efi arm64 snp.efi ipxe-arm64-snp.efi
 build_efi arm64 snponly.efi ipxe-arm64-snponly.efi
 
-# The same build emits the media a machine with no PXE ROM can still use: an ISO for
-# IPMI virtual media, and a USB image for a stick. Free, since the objects already exist.
-build_efi x86_64 ipxe.iso ipxe-x86_64.iso || echo "note: the ISO target needs mtools/xorriso"
-build_efi x86_64 ipxe.usb ipxe-x86_64.usb || echo "note: the USB target needs mtools"
+# The media a machine with no usable PXE ROM can still boot from: an ISO for IPMI virtual
+# media, and a USB image for a stick. **These live in the BIOS build directory**, not the
+# EFI one — `bin/ipxe.iso`, not `bin-x86_64-efi/ipxe.iso` — which is the mistake the first
+# version of this script made, and it failed into the `||` below rather than saying so.
+# They are Phase 5 of the plan and nothing depends on them yet, so a failure here is a
+# note rather than an error.
+build ipxe.iso ipxe.iso || echo "note: the ISO target needs xorriso or mkisofs"
+build ipxe.usb ipxe.usb || echo "note: the USB target needs mtools"
 
 ( cd "$OUT" && sha256sum ./* > SHA256SUMS 2>/dev/null || shasum -a 256 ./* > SHA256SUMS )
 

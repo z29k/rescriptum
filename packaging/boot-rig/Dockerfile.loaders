@@ -1,0 +1,29 @@
+# Builds the branded iPXE loaders the rig boots.
+#
+# The rig cannot use a stock loader: a plain undionly.kpxe re-loads itself forever, and a
+# stock netboot.xyz binary chains to the public menu. **Testing the chain means testing
+# ours**, embedded script and all — which is why this shares packaging/ipxe/ with the
+# release rather than having a build of its own, and why the pin is the same one.
+#
+# The clone happens at image-build time on purpose: the rig's own network is `internal`,
+# so nothing on it can reach the internet. The fake DHCP server never touching the host's
+# LAN is the same hygiene the product itself lives by.
+# **Pinned to amd64, and not as a convenience.** iPXE's BIOS targets are 32-bit x86 and
+# its `ipxe.efi` here is x86-64; a compiler on an ARM64 host cannot produce either, and
+# the failure is a wall of `unrecognized command-line option '-m32'`. On an Apple Silicon
+# machine this runs under emulation — slower, which is the same trade the rest of the rig
+# already makes by refusing KVM.
+ARG LOADER_PLATFORM=linux/amd64
+FROM --platform=${LOADER_PLATFORM} debian:bookworm-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      build-essential liblzma-dev git perl mtools xorriso ca-certificates \
+      gcc-aarch64-linux-gnu \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /ipxe
+COPY packaging/ipxe/ /ipxe/
+RUN chmod +x build.sh && ./build.sh --out /loaders
+
+# At run time the network is gone; this only copies what the build already produced.
+CMD ["sh", "-c", "cp -a /loaders/. /out/ && ls -la /out"]

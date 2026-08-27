@@ -2,18 +2,32 @@
 
 What TFTP hands out, and the first thing a machine executes that we wrote.
 
-## Status: written, not yet built
+## Status: built and verified; not yet booted
 
-**Nothing here has been compiled.** The pin was chosen from upstream's tag list, the
-build options from upstream's documentation, and the file names from
-`src/boot/loaders.rs`. That is enough to be reviewable and not enough to be trusted:
-until CI has run `build.sh` once and the rig has booted what it produced, treat this
-directory as a proposal.
+`build.sh` has been run against the pinned commit on Debian bookworm and produces **all
+eight loaders**, ARM64 included. Three things were checked on the output rather than
+assumed:
 
-The two things most likely to be wrong are the pin (v2.0.0 is a major bump nobody here
-has built; v1.21.1 is the fallback, and `PINNED` records its SHA) and the exact make
-targets for the EFI variants. Both fail loudly at the first build, which is the point of
-having one.
+- the EFI binaries carry `PRODUCT_NAME "rescriptum boot"` and `PRODUCT_URI`;
+- they carry `embed.ipxe` **verbatim**, `chain http://${next-server}:8001/ipxe/bootstrap`
+  and all — which is the entry point of the whole chain;
+- `rescriptum boot check` agrees the set satisfies the loader table.
+
+The BIOS `.kpxe` shows none of that to `strings`, because it is a compressed image and
+what is visible is the decompressor stub. Expected, not a failure.
+
+**What remains unproven is what firmware does with them.** A build says the bytes exist;
+only a machine says they boot. That is the rig and then real hardware, and the project's
+standing rule applies — nothing ships on harness evidence alone.
+
+Two things the first build taught, both now handled:
+
+- **The build must be amd64.** iPXE's BIOS targets are 32-bit x86; an ARM64 host's gcc
+  produces a wall of `unrecognized command-line option '-m32'` that reads like a broken
+  Makefile.
+- **ARM64 needs `CROSS_COMPILE=aarch64-linux-gnu-`.** Without it the host compiler is
+  used and fails on `-mlittle-endian`. `build.sh` now names the missing package and
+  carries on with the x86 loaders rather than stopping.
 
 ## Why we build it at all
 

@@ -1,0 +1,110 @@
+# The boot rig: the whole chain, from a DHCP offer to a machine on its own disk, in one
+# command and on a network that is its whole world.
+#
+#   packaging/boot-rig/run.sh
+#
+# Three services, and the shape is the point:
+#
+#   * **dhcp** — dnsmasq, configured from the snippet `boot dhcp-snippet` generates. The
+#     rig is therefore a test of the snippet too: if what we tell operators to paste is
+#     wrong, no client here boots.
+#   * **server** — the real rescriptum binary, answers and media and TFTP.
+#   * **client** — QEMU, its NIC bridged onto this network, booting from it.
+#
+# `internal: true` on the network is not tidiness. A rig that runs a DHCP server has to
+# be unable to answer anything on the host's LAN, which is the same "did installing this
+# break the network" hygiene the product itself lives by. It also means nothing here can
+# reach the internet, which is why the loaders are built into their image.
+#
+# **No /dev/kvm anywhere.** KVM would make this fast; the rig has to pass without it,
+# because the development machine is a Mac.
+
+name: rescriptum-boot-rig
+
+networks:
+  rig:
+    internal: true
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 10.99.0.0/24
+
+volumes:
+  loaders:
+  results:
+
+services:
+  # Copies the loaders its image already built into the shared volume, then exits.
+  # Everything else waits for it: a rig that boots before the loaders are there fails
+  # as a mysterious TFTP timeout rather than as a missing file.
+  loaders:
+    build:
+      context: ../..
+      dockerfile: packaging/boot-rig/Dockerfile.loaders
+    volumes:
+      - loaders:/out
+    networks: [rig]
+
+  server:
+    build:
+      context: ../..
+      dockerfile: packaging/boot-rig/Dockerfile.server
+    depends_on:
+      loaders:
+        condition: service_completed_successfully
+    environment:
+      RESCRIPTUM_LISTEN_ADDR: 0.0.0.0:8000
+      RESCRIPTUM_ANSWERS_DIR: /srv/answers
+      RESCRIPTUM_MEDIA_DIR: /srv/media
+      RESCRIPTUM_MEDIA_ADDR: 0.0.0.0:8001
+      RESCRIPTUM_BOOT_DIR: /srv/boot
+      RESCRIPTUM_TFTP_ADDR: 0.0.0.0:69
+      # The address the generated scripts name. Fixed here, so what a client is told to
+      # fetch is exactly what this file says it should be.
+      RESCRIPTUM_PUBLIC_HOST: 10.99.0.2
+      # Every request, because the log *is* the claimed-machine assertion.
+      RESCRIPTUM_LOG: all
+      RESCRIPTUM_BOOT_TIMEOUT_SECS: "5"
+    volumes:
+      - loaders:/srv/boot
+      - ./answers:/srv/answers:ro
+      - ./media:/srv/media:ro
+    networks:
+      rig:
+        ipv4_address: 10.99.0.2
+
+  dhcp:
+    image: debian:bookworm-slim
+    depends_on:
+      server:
+        condition: service_started
+    # dnsmasq needs to bind 67 and to hear broadcasts on the segment.
+    cap_add: [NET_ADMIN, NET_RAW, NET_BIND_SERVICE]
+    volumes:
+      - ./generated:/etc/rig:ro
+    networks:
+      rig:
+        ipv4_address: 10.99.0.3
+    command:
+      - sh
+      - -c
+      - |
+        apt-get update >/dev/null && apt-get install -y --no-install-recommends dnsmasq >/dev/null
+        echo "--- the configuration under test ---"
+        cat /etc/rig/dnsmasq.conf
+        exec dnsmasq --keep-in-foreground --log-dhcp --conf-file=/etc/rig/dnsmasq.conf
+
+  client:
+    build:
+      context: ../..
+      dockerfile: packaging/boot-rig/Dockerfile.client
+    depends_on:
+      dhcp:
+        condition: service_started
+    cap_add: [NET_ADMIN]
+    devices:
+      - /dev/net/tun
+    volumes:
+      - results:/out
+    networks: [rig]
+    profiles: [manual]

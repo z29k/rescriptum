@@ -1,0 +1,119 @@
+# The boot rig
+
+Everything from a DHCP offer to a machine sitting on its own disk, in one command, on a
+network that is its whole world.
+
+```console
+$ packaging/boot-rig/run.sh
+```
+
+**It produces no features and it is not optional.** Everything built on top of the boot
+chain depends on knowing the chain works, and this is what keeps that known: from here
+on, every push can re-prove the BIOS path without a single real machine.
+
+## What it proves, and what it cannot
+
+| Where | What it proves |
+|---|---|
+| `cargo test` | protocol and logic: TFTP over real UDP, ranges over real sockets, the ISO reader against synthetic images, snippet ↔ loader-table coherence |
+| **This rig** | the chain end to end — a DHCP offer, a loader over TFTP, a script, a menu, and a machine that lands where it should |
+| A real machine | that firmware agrees. **Nothing ships on rig evidence alone** |
+
+The third row is not a formality. The rig runs one emulator with one NIC model; the
+failures it cannot see are exactly the ones firmware has — a ROM that reads only the
+BOOTP `file` field, a UEFI build that cannot see its own network card, an option 93 value
+nobody expected.
+
+## The two markers
+
+Both deterministic, neither a screenshot.
+
+**An unclaimed machine must reach its own disk.** It gets a disk whose only content is a
+512-byte boot sector that prints `RESCRIPTUM-RIG-LOCAL-DISK-REACHED` to the serial console
+and halts ([`local-disk.asm`](local-disk.asm)). Reaching it means the machine went through
+DHCP, the loader, the bootstrap and the menu, found nothing claiming it, waited out the
+timeout, and fell through — which is the safety behaviour the whole design rests on. A
+machine that PXE-boots by accident must never sit at a menu forever, and must never
+install anything.
+
+**A claimed machine must reach its own answer.** Its `.ipxe` answer ends by fetching a
+sentinel URL, so the assertion is a line in the **server's own log** rather than something
+the client printed. That is the stronger form: it proves the request arrived.
+
+And a third, which comes free: **dnsmasq answered from the snippet we generate.** The rig
+builds its DHCP configuration by running `rescriptum boot dhcp-snippet`, so if what we
+tell operators to paste is wrong, nothing here boots.
+
+## The shape, and why
+
+Three services on one network with `internal: true`:
+
+- **`loaders`** builds the branded iPXE from `packaging/ipxe/` — the same script and the
+  same pin a release uses. A stock loader would re-load itself forever or chain to the
+  public netboot.xyz; testing the chain means testing ours.
+- **`server`** is the real binary, built from the working tree rather than from whatever
+  is lying in `./target`.
+- **`dhcp`** is dnsmasq, configured from our own generated snippet.
+- **`client`** is QEMU with its NIC **bridged onto the network**, not behind QEMU's
+  user-mode stack — that stack carries its own DHCP server, and a rig built on it would
+  test everything except the handoff it exists to test.
+
+`internal: true` is not tidiness. **A rig that runs a DHCP server has to be unable to
+answer anything on the host's LAN**, which is the same "did installing this break the
+network" hygiene the product itself lives by. It also means nothing inside can reach the
+internet, which is why the loaders are built into their image rather than at run time.
+
+**No `/dev/kvm` anywhere.** KVM would make this fast; the rig has to pass without it,
+because the development machine is a Mac. Ten times slower is a long run, not a wall.
+
+## Two host facts worth knowing before the first run
+
+- **The loader image is pinned to `linux/amd64`.** iPXE's BIOS targets are 32-bit x86 and
+  its `ipxe.efi` here is x86-64; a compiler on an ARM64 host produces neither, and the
+  failure is a wall of `unrecognized command-line option '-m32'` that reads like a broken
+  Makefile. On Apple Silicon that image builds under emulation, which is slow and works.
+- **ARM64 loaders need `gcc-aarch64-linux-gnu`.** Without it `build.sh` says which package
+  is missing and carries on with the x86 loaders, rather than failing with
+  `unrecognized command-line option '-mlittle-endian'` from the host compiler.
+
+## Running it
+
+```console
+$ packaging/boot-rig/run.sh          # both clients, BIOS
+$ packaging/boot-rig/run.sh --uefi   # both clients, OVMF
+$ packaging/boot-rig/run.sh --keep   # leave the stack up to poke at
+```
+
+Results land in `results/`: `serial.log` from the clients, `server.log` and `dhcp.log`
+from the containers. When a marker is missing those three files are the whole
+investigation.
+
+## Watch it fail, link by link
+
+A green rig that has never been red proves nothing — the same reasoning as the
+listing-cache test that passed for the wrong reason. Break each link and watch the marker
+it guards disappear:
+
+| Break | What should go red |
+|---|---|
+| Delete a loader from the volume | the ROM gets nothing; `boot check` also goes red |
+| Point `RESCRIPTUM_MEDIA_ADDR` somewhere else without rebuilding the loaders | the embedded script chains into a refused connection, and the recovery paths must *engage* |
+| Remove the claimed machine's answer | it should land on its **disk**, not hang — the fallthrough covers a machine whose answer was deleted, too |
+| Drop a fact a template needs | the claimed machine must fail loudly rather than install with a broken hostname |
+| Stop the server, boot a client | it must fall through to its next boot device rather than wait |
+
+That last one turns the blast-radius table in the guide from a claim into a recorded run.
+
+## Status
+
+**The loader half is verified; the QEMU half has not been run here.**
+
+What is proven: `packaging/ipxe/build.sh` produces all eight loaders from the pinned
+commit, they carry our branding and `embed.ipxe` verbatim, and `rescriptum boot check`
+agrees the set satisfies the loader table.
+
+What is not: that a machine boots them. `run.sh` has not been driven end to end on this
+machine, so **treat a green run as unproven rather than as evidence** until somebody has
+watched each row of the table above go red first. That is the same discipline
+`lifecycle-test.sh` already lives under, and the reason is the same: a green harness that
+has never been red proves nothing.
