@@ -219,31 +219,47 @@ async fn serve(cfg: Arc<Config>) -> ExitCode {
                 return ExitCode::FAILURE;
             }
         };
-        let addr = cfg.tftp_addr();
-        let socket = match tokio::net::UdpSocket::bind(&addr).await {
-            Ok(socket) => socket,
-            Err(e) => {
-                log::server(&format!(
-                    "cannot bind TFTP on {addr}: {e}{}",
-                    if addr.ends_with(":69") {
-                        " — port 69 is privileged; run as root and set RESCRIPTUM_USER to \
-                         drop afterwards, use setcap, or choose another port"
-                    } else {
-                        ""
+        // **Off is a value, not an absence.** Naming a boot directory used to imply a
+        // TFTP server on port 69, so on a platform that cannot bind a privileged port —
+        // a DSM package, a container without the capability — telling the server where
+        // the loaders are turned into a server that refuses to start. That is a trap
+        // rather than a constraint. Said once at startup, because "where did my TFTP
+        // go" is otherwise a silent question.
+        match cfg.tftp_addr() {
+            None => log::server(&format!(
+                "tftp is off — {} is still served over HTTP at /boot/ and still checked \
+                 by `boot check`, but something else has to hand the loader over",
+                tftp.root().display()
+            )),
+            Some(addr) => {
+                let socket = match tokio::net::UdpSocket::bind(&addr).await {
+                    Ok(socket) => socket,
+                    Err(e) => {
+                        log::server(&format!(
+                            "cannot bind TFTP on {addr}: {e}{}",
+                            if addr.ends_with(":69") {
+                                " — port 69 is privileged. Run as root and set \
+                                 RESCRIPTUM_USER to drop afterwards, use setcap, choose \
+                                 another port, or set RESCRIPTUM_TFTP_ADDR=off and let \
+                                 something else hand the loader over"
+                            } else {
+                                ""
+                            }
+                        ));
+                        return ExitCode::FAILURE;
                     }
+                };
+                let bound = socket
+                    .local_addr()
+                    .map(|a| a.to_string())
+                    .unwrap_or_else(|_| addr.clone());
+                log::server(&format!(
+                    "tftp listening on {bound} — serving {}",
+                    tftp.root().display()
                 ));
-                return ExitCode::FAILURE;
+                tokio::spawn(rescriptum::boot::tftp::serve(socket, tftp));
             }
-        };
-        let bound = socket
-            .local_addr()
-            .map(|a| a.to_string())
-            .unwrap_or_else(|_| addr.clone());
-        log::server(&format!(
-            "tftp listening on {bound} — serving {}",
-            tftp.root().display()
-        ));
-        tokio::spawn(rescriptum::boot::tftp::serve(socket, tftp));
+        }
     }
 
     // **Bind everything first, then drop.** The other order works as root in testing

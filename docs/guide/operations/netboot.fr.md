@@ -42,18 +42,28 @@ $ export RESCRIPTUM_BOOT_DIR=/srv/boot       # les chargeurs
 $ export RESCRIPTUM_PUBLIC_HOST=192.0.2.10   # ce que nommeront les scripts générés
 ```
 
-`RESCRIPTUM_BOOT_DIR` est l'interrupteur de TFTP comme `RESCRIPTUM_MEDIA_DIR` l'est des
-médias : non définie, il n'y a aucun listener TFTP.
+`RESCRIPTUM_BOOT_DIR` dit où sont les chargeurs : non définie, il n'y a aucun listener
+TFTP et rien sur `/boot/…`. La nommer démarre TFTP sauf si vous dites le contraire — voir
+`off` plus bas.
 
 Le port 69 est privilégié, et c'est le *seul* port privilégié que ce serveur demandera
-jamais — sans répondeur DHCP, il n'y a rien après 67 ni 4011. Trois façons de l'obtenir,
-toutes portables :
+jamais — sans répondeur DHCP, il n'y a rien après 67 ni 4011. Quatre façons de traiter la
+question, toutes portables :
 
 ```console
 $ export RESCRIPTUM_USER=rescriptum          # démarrer en root, lier, puis abandonner
 $ setcap cap_net_bind_service=+ep rescriptum # ou n'accorder que cette capacité
 $ export RESCRIPTUM_TFTP_ADDR=0.0.0.0:6969   # ou le déplacer, si leur DHCP sait le dire
+$ export RESCRIPTUM_TFTP_ADDR=off            # ou n'avoir aucun listener du tout
 ```
+
+**`off` est une valeur, pas une absence**, et c'est ce qui rend sûr de nommer un dossier
+de chargeurs sur une plateforme incapable de lier un port privilégié. Sans elle, dire au
+serveur où sont les chargeurs implique un serveur TFTP sur le port 69 — et un bind qui
+échoue est un serveur qui ne démarre pas, ce qui transforme un réglage en piège. Avec
+elle, les chargeurs restent servis en HTTP sur `/boot/…` et restent vérifiés par
+`boot check` ; seul le listener disparaît, et autre chose livre le fichier. C'est
+exactement ainsi que le [paquet Synology](./synology.md) est livré.
 
 **On lie d'abord, on abandonne ensuite**, toujours. L'ordre inverse fonctionne en test
 sous root et échoue au déploiement, à un redémarrage — le seul moment où personne ne
@@ -147,12 +157,18 @@ registre ne donnerait rien à la moitié d'un parc.
 réseau. Toutes les variantes sont servies et la table choisit ; c'est précisément le
 savoir qu'un exploitant ne devrait pas avoir à acquérir.
 
-::: warning Les chargeurs ne sont pas encore construits
-`packaging/ipxe/` contient le branding, le script embarqué et la construction — mais rien
-dans ce dépôt ne les a compilés, et aucune version publiée ne les distribue. En
-attendant, construisez-les vous-même (`packaging/ipxe/build.sh`) ou pointez
-`RESCRIPTUM_BOOT_DIR` vers des chargeurs venus d'ailleurs, à condition qu'ils enchaînent
-vers ce serveur plutôt que vers Internet — voir ci-dessous.
+::: warning Aucune version publiée ne distribue encore les chargeurs
+`packaging/ipxe/build.sh` construit les huit depuis un commit épinglé et a été exécuté,
+mais rien n'est publié comme artefact de release — pour l'instant, construisez-les
+vous-même :
+
+```console
+$ packaging/ipxe/build.sh --out /srv/boot
+$ rescriptum boot check
+```
+
+Un chargeur venu d'ailleurs convient aussi, à condition qu'il enchaîne vers *ce* serveur
+plutôt que vers Internet — voir ci-dessous pourquoi un chargeur d'origine ne le fait pas.
 :::
 
 ## Comment iPXE finit par parler à *nous*

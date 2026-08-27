@@ -36,7 +36,7 @@ no configuration *format* to learn and no command line to get wrong.
 | `RESCRIPTUM_PUBLIC_HOST` | derived | The host generated URLs name. **A host, never a URL** |
 | `RESCRIPTUM_BOOT_ALLOW` | unset | Client CIDRs allowed to fetch boot media. Unset means anyone who can reach the port |
 | `RESCRIPTUM_BOOT_DIR` | unset | Loaders and menus, handed out over TFTP. **Unset means no TFTP at all** |
-| `RESCRIPTUM_TFTP_ADDR` | `0.0.0.0:69` | The TFTP listener. Port 69 is privileged; see `RESCRIPTUM_USER` |
+| `RESCRIPTUM_TFTP_ADDR` | `0.0.0.0:69` | The TFTP listener, or **`off`** for none. Port 69 is privileged; see `RESCRIPTUM_USER` |
 | `RESCRIPTUM_BOOT_TIMEOUT_SECS` | `15` | Seconds before the menu falls through to local boot |
 | `RESCRIPTUM_BOOT_LOGO` | built-in | A PNG to show behind the menu |
 | `RESCRIPTUM_BOOT_TITLE` | built-in | The menu's title bar |

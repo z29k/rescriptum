@@ -40,18 +40,27 @@ $ export RESCRIPTUM_BOOT_DIR=/srv/boot       # the loaders
 $ export RESCRIPTUM_PUBLIC_HOST=192.0.2.10   # what generated scripts will name
 ```
 
-`RESCRIPTUM_BOOT_DIR` is the off switch for TFTP the way `RESCRIPTUM_MEDIA_DIR` is for
-media: unset, there is no TFTP listener at all.
+`RESCRIPTUM_BOOT_DIR` says where the loaders are: unset, there is no TFTP listener and
+nothing at `/boot/…`. Naming it starts TFTP unless you say otherwise — see `off` below.
 
 Port 69 is privileged, and it is the *only* privileged port this server ever wants —
-with no DHCP responder there is nothing after 67 or 4011. Three ways to have it, all
+with no DHCP responder there is nothing after 67 or 4011. Four ways to deal with it, all
 portable:
 
 ```console
 $ export RESCRIPTUM_USER=rescriptum          # start as root, bind, then drop
 $ setcap cap_net_bind_service=+ep rescriptum # or grant just that one capability
 $ export RESCRIPTUM_TFTP_ADDR=0.0.0.0:6969   # or move it, if their DHCP can say so
+$ export RESCRIPTUM_TFTP_ADDR=off            # or have no listener at all
 ```
+
+**`off` is a value, not an absence**, and it is what makes naming a boot directory safe
+on a platform that cannot bind a privileged port. Without it, telling the server where
+the loaders are implies a TFTP server on port 69 — and a failed bind is a server that
+does not start, which turns a setting into a trap. With it, the loaders are still served
+over HTTP at `/boot/…` and still checked by `boot check`; only the listener is gone, and
+something else hands the file over. That is exactly how the [Synology
+package](./synology.md) ships.
 
 **Binding happens first and dropping second**, always. The other order works in testing
 as root and fails on deployment, at a reboot, which is the one moment nobody is watching.
@@ -138,11 +147,17 @@ generated from the registry alone would hand half a fleet nothing.
 are served and the table picks; this is precisely the knowledge an operator should not
 have to acquire.
 
-::: warning The loaders are not built yet
-`packaging/ipxe/` holds the branding, the embedded script and the build — but nothing in
-this repository has compiled them, and no release publishes them. Until that lands you can
-build them yourself (`packaging/ipxe/build.sh`) or point `RESCRIPTUM_BOOT_DIR` at loaders
-from elsewhere, provided they chain to this server rather than to the internet — see below.
+::: warning No release publishes the loaders yet
+`packaging/ipxe/build.sh` builds all eight from a pinned upstream commit and has been run,
+but nothing is published as a release artifact — so for now you build them yourself:
+
+```console
+$ packaging/ipxe/build.sh --out /srv/boot
+$ rescriptum boot check
+```
+
+A loader from elsewhere works too, provided it chains to *this* server rather than to the
+internet — see below for why a stock one does not.
 :::
 
 ## How iPXE ends up talking to *us*

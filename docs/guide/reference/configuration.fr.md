@@ -36,7 +36,7 @@ pas de *format* de configuration à apprendre ni de ligne de commande à se trom
 | `RESCRIPTUM_PUBLIC_HOST` | déduit | L'hôte que nomment les URL générées. **Un hôte, jamais une URL** |
 | `RESCRIPTUM_BOOT_ALLOW` | non défini | CIDR clients autorisés à récupérer les médias. Non défini = quiconque atteint le port |
 | `RESCRIPTUM_BOOT_DIR` | non défini | Chargeurs et menus, distribués en TFTP. **Non défini = pas de TFTP du tout** |
-| `RESCRIPTUM_TFTP_ADDR` | `0.0.0.0:69` | Le listener TFTP. Le port 69 est privilégié ; voir `RESCRIPTUM_USER` |
+| `RESCRIPTUM_TFTP_ADDR` | `0.0.0.0:69` | Le listener TFTP, ou **`off`** pour aucun. Le port 69 est privilégié ; voir `RESCRIPTUM_USER` |
 | `RESCRIPTUM_BOOT_TIMEOUT_SECS` | `15` | Secondes avant que le menu ne retombe sur le disque local |
 | `RESCRIPTUM_BOOT_LOGO` | intégré | Un PNG à afficher derrière le menu |
 | `RESCRIPTUM_BOOT_TITLE` | intégré | La barre de titre du menu |

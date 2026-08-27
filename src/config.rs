@@ -342,7 +342,7 @@ impl Config {
             }
         }
 
-        if self.tftp_addr.is_some() && self.boot_dir.is_none() {
+        if self.tftp_addr.is_some() && !self.tftp_is_off() && self.boot_dir.is_none() {
             return Err(format!(
                 "RESCRIPTUM_TFTP_ADDR is set ({}), but RESCRIPTUM_BOOT_DIR is not. There would \
                  be a listener with no loaders to hand out.",
@@ -382,11 +382,28 @@ impl Config {
         Ok(())
     }
 
-    /// The TFTP listener's effective address.
-    pub fn tftp_addr(&self) -> String {
-        self.tftp_addr
-            .clone()
-            .unwrap_or_else(|| DEFAULT_TFTP_ADDR.to_string())
+    /// The TFTP listener's effective address, or `None` when TFTP is off.
+    ///
+    /// **`off` is a value, not an absence**, and it exists because naming a boot
+    /// directory used to imply a TFTP server on port 69. On a platform that cannot bind
+    /// a privileged port — a DSM package, a container without the capability — that
+    /// turned "tell the server where the loaders are" into "the server refuses to
+    /// start", which is a trap rather than a constraint. The loaders are still served
+    /// over HTTP at `/boot/…` and still checked by `boot check`; only the listener is
+    /// gone, and something else hands the file over.
+    pub fn tftp_addr(&self) -> Option<String> {
+        match self.tftp_addr.as_deref() {
+            Some(value) if is_off(value) => None,
+            Some(value) => Some(value.to_string()),
+            None => Some(DEFAULT_TFTP_ADDR.to_string()),
+        }
+    }
+
+    /// Whether TFTP was turned off deliberately, as opposed to never asked for. Worth
+    /// telling apart: the first deserves a line at startup saying what will hand the
+    /// loader over instead.
+    pub fn tftp_is_off(&self) -> bool {
+        self.tftp_addr.as_deref().is_some_and(is_off)
     }
 
     /// The menu timeout **in milliseconds**, which is the unit `choose` counts. The
@@ -473,6 +490,14 @@ impl Config {
             )),
         }
     }
+}
+
+/// The spellings that mean "not at all", matching `RESCRIPTUM_LOG=off`.
+fn is_off(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "off" | "none" | "disabled"
+    )
 }
 
 /// Whether an address asks the kernel to choose the port. Two such listeners never
@@ -661,7 +686,7 @@ pub const KNOWN: [Known; 26] = [
         key: "RESCRIPTUM_TFTP_ADDR",
         default: Some(DEFAULT_TFTP_ADDR),
         secret: false,
-        help: "The TFTP listener. Port 69 is privileged; see RESCRIPTUM_USER.",
+        help: "The TFTP listener, or `off` for none. Port 69 is privileged; see RESCRIPTUM_USER.",
     },
     Known {
         key: "RESCRIPTUM_BOOT_TIMEOUT_SECS",
@@ -996,6 +1021,15 @@ mod tests {
     }
 
     #[test]
+    fn a_boot_directory_alone_still_starts_tftp() {
+        // The default has not moved: `off` is opt-in, and a plain Linux host that names
+        // a boot directory gets the TFTP server the plan calls core.
+        let c = Config::from_lookup(lookup(&[("RESCRIPTUM_BOOT_DIR", "/srv/boot")]));
+        assert_eq!(c.tftp_addr().as_deref(), Some("0.0.0.0:69"));
+        assert!(!c.tftp_is_off());
+    }
+
+    #[test]
     fn the_media_listener_defaults_to_the_port_the_loaders_assume() {
         let c = Config::from_lookup(lookup(&[("RESCRIPTUM_MEDIA_DIR", "/srv/media")]));
         assert_eq!(c.media_addr(), "0.0.0.0:8001");
@@ -1032,6 +1066,54 @@ mod tests {
         ]));
         let e = c.validate().expect_err("must refuse");
         assert!(e.contains("RESCRIPTUM_ADMIN_ADDR"), "{e}");
+    }
+
+    #[test]
+    fn tftp_can_be_turned_off_without_giving_up_the_boot_directory() {
+        // **The trap this exists to remove.** Naming a boot directory used to imply a
+        // TFTP server on port 69, so on a platform that cannot bind a privileged port —
+        // a DSM package, a container without the capability — telling the server where
+        // the loaders are turned into a server that refuses to start.
+        let c = Config::from_lookup(lookup(&[
+            ("RESCRIPTUM_BOOT_DIR", "/srv/boot"),
+            ("RESCRIPTUM_TFTP_ADDR", "off"),
+        ]));
+        assert!(c.validate().is_ok(), "{:?}", c.validate());
+        assert_eq!(c.tftp_addr(), None, "no listener");
+        assert!(
+            c.tftp_is_off(),
+            "and deliberately so, not merely unasked for"
+        );
+        // The directory is still configured, so /boot/ and `boot check` still work.
+        assert_eq!(c.boot_dir, Some(PathBuf::from("/srv/boot")));
+    }
+
+    #[test]
+    fn off_is_spelled_the_way_the_log_level_spells_it() {
+        for value in ["off", "OFF", "none", "disabled", " off "] {
+            let c = Config::from_lookup(|key| {
+                (key == "RESCRIPTUM_TFTP_ADDR").then(|| value.to_string())
+            });
+            assert_eq!(c.tftp_addr(), None, "{value:?}");
+        }
+        // And an address is still an address.
+        let c = Config::from_lookup(lookup(&[
+            ("RESCRIPTUM_BOOT_DIR", "/srv/boot"),
+            ("RESCRIPTUM_TFTP_ADDR", "0.0.0.0:6969"),
+        ]));
+        assert_eq!(c.tftp_addr().as_deref(), Some("0.0.0.0:6969"));
+        assert!(!c.tftp_is_off());
+    }
+
+    #[test]
+    fn turning_tftp_off_needs_no_boot_directory_to_justify_it() {
+        // Off is off: refusing this would be refusing somebody who said "definitely not"
+        // before they said where anything lives.
+        let c = Config::from_lookup(lookup(&[("RESCRIPTUM_TFTP_ADDR", "off")]));
+        assert!(c.validate().is_ok(), "{:?}", c.validate());
+        // But naming a real address with nowhere to serve from is still refused.
+        let c = Config::from_lookup(lookup(&[("RESCRIPTUM_TFTP_ADDR", "0.0.0.0:69")]));
+        assert!(c.validate().is_err());
     }
 
     #[test]

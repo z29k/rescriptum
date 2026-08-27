@@ -115,8 +115,15 @@ grep -q "dst.ports=\"$PORT/tcp 8001/tcp\"" "$ROOT/target/port_conf/rescriptum.sc
 # **The package must not ship a configuration that refuses to start.** Naming a media
 # address with no media directory is a startup error, and the first version of this
 # wrote exactly that — the harness caught a package that could not start at all.
-grep -q "^RESCRIPTUM_MEDIA_ADDR=" "$ENV_FILE" && bad "RESCRIPTUM_MEDIA_ADDR is live while RESCRIPTUM_MEDIA_DIR is not — that is a fatal start" || ok "no live media address without a media directory"
-grep -q "^# RESCRIPTUM_MEDIA_DIR=$SHARE/media\$" "$ENV_FILE" && ok "the media folder is pre-set, one uncommented line away" || bad "no commented RESCRIPTUM_MEDIA_DIR pointing at the share"
+# The folders the start script creates are *named* in the file, not left blank for an
+# operator to guess at in a settings panel with no hint of what to type.
+grep -q "^RESCRIPTUM_MEDIA_DIR=$SHARE/media\$" "$ENV_FILE" && ok "the media folder is named, not left to be guessed" || bad "RESCRIPTUM_MEDIA_DIR is not set to $SHARE/media"
+grep -q "^RESCRIPTUM_BOOT_DIR=$SHARE/boot\$" "$ENV_FILE" && ok "and the boot folder too" || bad "RESCRIPTUM_BOOT_DIR is not set to $SHARE/boot"
+
+# **The trap this removes.** Naming a boot folder otherwise starts a TFTP server on port
+# 69, which this package cannot bind — and a failed bind is a server that does not start
+# at all, so the folder setting would be a trap rather than a constraint.
+grep -q "^RESCRIPTUM_TFTP_ADDR=off\$" "$ENV_FILE" && ok "and TFTP is off, which is what makes naming the boot folder safe here" || bad "RESCRIPTUM_TFTP_ADDR is not off — naming a boot folder would stop the package starting"
 grep -q "TFTP" "$ENV_FILE" && ok "the file says why TFTP is not available here" || bad "nothing in the file explains the missing TFTP"
 
 section "install without a wizard (silent_install, or a reinstall that shows none)"

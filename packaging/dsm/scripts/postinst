@@ -133,13 +133,13 @@ RESCRIPTUM_DB_PATH=$ROOT/shares/$PKG/answers.db
 #
 # **No image ships with this package.** An ISO is somebody else's artefact, gigabytes,
 # on its own schedule; this folder is where you keep them and it is the archive —
-# nothing here ever modifies an image after it lands.
-# RESCRIPTUM_MEDIA_DIR=$SHARE_MEDIA
+# nothing here ever modifies an image after it lands. It is set rather than commented
+# because the folder already exists and the port is already registered: leaving it blank
+# would mean a settings panel with an empty field and no hint of what to type.
+RESCRIPTUM_MEDIA_DIR=$SHARE_MEDIA
 
-# The listener's own port. Left commented because the default is already $MEDIA_PORT and
-# the firewall entry above already covers it — and because naming an address with no
-# directory to serve is a startup error, so an uncommented line here would be a package
-# that refuses to start until somebody uncommented the one above too.
+# The listener's own port. Left commented because the default is already $MEDIA_PORT,
+# which the firewall entry above already covers and which every loader we ship chains to.
 # RESCRIPTUM_MEDIA_ADDR=0.0.0.0:$MEDIA_PORT
 
 # ---------------------------------------------------------------------------
@@ -163,8 +163,17 @@ RESCRIPTUM_DB_PATH=$ROOT/shares/$PKG/answers.db
 #      prints.
 #
 # The rest of the chain is this package's: the loader chains to port 8001 above, and
-# everything after that is HTTP.
-# RESCRIPTUM_BOOT_DIR=$SHARE_BOOT
+# everything after that is HTTP. The folder is named here so `rescriptum-cli boot check`
+# works and so the loaders are reachable over HTTP at /boot/ — which is what UEFI HTTP
+# Boot fetches, and where the boot menu looks for its logo.
+RESCRIPTUM_BOOT_DIR=$SHARE_BOOT
+
+# **This is what makes the line above safe here.** Naming a boot folder otherwise starts
+# a TFTP server on port 69, which this package cannot bind — and a failed bind is a
+# server that does not start at all, so the folder setting would be a trap rather than a
+# constraint. Off means no listener; the loaders are still served over HTTP and still
+# checked, and DSM's own TFTP server hands the file over.
+RESCRIPTUM_TFTP_ADDR=off
 BODY
 }
 
