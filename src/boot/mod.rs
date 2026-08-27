@@ -13,7 +13,10 @@
 pub mod catalog;
 pub mod cpio;
 pub mod iso;
+pub mod loaders;
 pub mod media;
+pub mod privileges;
 pub mod probe;
 pub mod sha256;
 pub mod stanza;
+pub mod tftp;

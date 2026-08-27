@@ -40,6 +40,13 @@ pub const DEFAULT_MEDIA_TIMEOUT_SECS: u64 = 600;
 /// Concurrent transfers, low on purpose. A download holds its permit for minutes, and
 /// the small end of the range this has to work on is a NAS with one spinning disk.
 pub const DEFAULT_MEDIA_MAX_CONNECTIONS: usize = 16;
+/// TFTP's well-known port, and privileged. It is the only privileged port this server
+/// ever wants — with no DHCP responder there is nothing after 67 or 4011.
+pub const DEFAULT_TFTP_ADDR: &str = "0.0.0.0:69";
+/// Seconds the built-in menu waits before falling through to local boot. **The name
+/// spells the unit because `choose` counts milliseconds**: a seconds value passed
+/// through unconverted is a menu that flashes past before a human has read its title.
+pub const DEFAULT_BOOT_TIMEOUT_SECS: u64 = 15;
 
 /// Where answers are read from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -103,6 +110,21 @@ pub struct Config {
     pub media_max_connections: usize,
     /// A CIDR allowlist for boot traffic. Unset means anyone who can reach the port.
     pub boot_allow: Option<String>,
+    /// Loaders and menus — what TFTP hands out. **Unset means no TFTP at all**, the
+    /// same off switch shape the media directory has.
+    pub boot_dir: Option<PathBuf>,
+    /// The TFTP listener, as the operator set it. `None` means nobody did; see
+    /// `tftp_addr()`.
+    pub tftp_addr: Option<String>,
+    /// Seconds before the built-in menu falls through to booting from local disk.
+    pub boot_timeout: Duration,
+    /// Replace the embedded logo and the menu's title, for a site that wants its own.
+    pub boot_logo: Option<PathBuf>,
+    pub boot_title: Option<String>,
+    /// Drop to this user and group **after** binding. Binding first is the whole point:
+    /// the other order works as root in testing and fails on deployment.
+    pub user: Option<String>,
+    pub group: Option<String>,
 }
 
 impl Config {
@@ -224,6 +246,16 @@ impl Config {
                 DEFAULT_MEDIA_MAX_CONNECTIONS,
             ),
             boot_allow: optional("RESCRIPTUM_BOOT_ALLOW"),
+            boot_dir: optional("RESCRIPTUM_BOOT_DIR").map(PathBuf::from),
+            tftp_addr: optional("RESCRIPTUM_TFTP_ADDR"),
+            boot_timeout: Duration::from_secs(get_usize(
+                "RESCRIPTUM_BOOT_TIMEOUT_SECS",
+                DEFAULT_BOOT_TIMEOUT_SECS as usize,
+            ) as u64),
+            boot_logo: optional("RESCRIPTUM_BOOT_LOGO").map(PathBuf::from),
+            boot_title: optional("RESCRIPTUM_BOOT_TITLE"),
+            user: optional("RESCRIPTUM_USER"),
+            group: optional("RESCRIPTUM_GROUP"),
         }
     }
 }
@@ -310,6 +342,14 @@ impl Config {
             }
         }
 
+        if self.tftp_addr.is_some() && self.boot_dir.is_none() {
+            return Err(format!(
+                "RESCRIPTUM_TFTP_ADDR is set ({}), but RESCRIPTUM_BOOT_DIR is not. There would \
+                 be a listener with no loaders to hand out.",
+                self.tftp_addr.as_deref().unwrap_or_default()
+            ));
+        }
+
         if self.media_addr.is_some() && self.media_dir.is_none() {
             return Err(format!(
                 "RESCRIPTUM_MEDIA_ADDR is set ({}), but RESCRIPTUM_MEDIA_DIR is not. There \
@@ -340,6 +380,19 @@ impl Config {
             }
         }
         Ok(())
+    }
+
+    /// The TFTP listener's effective address.
+    pub fn tftp_addr(&self) -> String {
+        self.tftp_addr
+            .clone()
+            .unwrap_or_else(|| DEFAULT_TFTP_ADDR.to_string())
+    }
+
+    /// The menu timeout **in milliseconds**, which is the unit `choose` counts. The
+    /// conversion has exactly one place, and this is it.
+    pub fn boot_timeout_millis(&self) -> u64 {
+        self.boot_timeout.as_millis() as u64
     }
 
     /// The media listener's effective address.
@@ -481,7 +534,7 @@ pub struct Known {
 
 /// Every variable, in the order a person would want to meet them: what answers come
 /// from, where the server listens, how much it says, then the two credentials.
-pub const KNOWN: [Known; 19] = [
+pub const KNOWN: [Known; 26] = [
     Known {
         key: "RESCRIPTUM_STORE",
         default: Some("files"),
@@ -597,6 +650,48 @@ pub const KNOWN: [Known; 19] = [
         default: None,
         secret: false,
         help: "Client CIDRs allowed to fetch boot media. Unset means anyone who can reach it.",
+    },
+    Known {
+        key: "RESCRIPTUM_BOOT_DIR",
+        default: None,
+        secret: false,
+        help: "Loaders and menus, handed out over TFTP. Unset means no TFTP at all.",
+    },
+    Known {
+        key: "RESCRIPTUM_TFTP_ADDR",
+        default: Some(DEFAULT_TFTP_ADDR),
+        secret: false,
+        help: "The TFTP listener. Port 69 is privileged; see RESCRIPTUM_USER.",
+    },
+    Known {
+        key: "RESCRIPTUM_BOOT_TIMEOUT_SECS",
+        default: Some("15"),
+        secret: false,
+        help: "Seconds before the menu falls through to local disk. Rendered as milliseconds.",
+    },
+    Known {
+        key: "RESCRIPTUM_BOOT_LOGO",
+        default: None,
+        secret: false,
+        help: "A PNG to show behind the menu, replacing the built-in one.",
+    },
+    Known {
+        key: "RESCRIPTUM_BOOT_TITLE",
+        default: None,
+        secret: false,
+        help: "The menu's title bar, replacing the built-in one.",
+    },
+    Known {
+        key: "RESCRIPTUM_USER",
+        default: None,
+        secret: false,
+        help: "Drop to this user after binding. Binding first is the point.",
+    },
+    Known {
+        key: "RESCRIPTUM_GROUP",
+        default: None,
+        secret: false,
+        help: "Drop to this group after binding.",
     },
 ];
 

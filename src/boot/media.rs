@@ -605,7 +605,7 @@ fn allowed(cfg: &Config, peer: SocketAddr) -> bool {
         .any(|cidr| in_cidr(peer.ip(), cidr))
 }
 
-fn in_cidr(address: std::net::IpAddr, cidr: &str) -> bool {
+pub(crate) fn in_cidr(address: std::net::IpAddr, cidr: &str) -> bool {
     let (network, bits) = match cidr.split_once('/') {
         Some((network, bits)) => match bits.parse::<u32>() {
             Ok(bits) => (network, bits),

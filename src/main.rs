@@ -204,6 +204,56 @@ async fn serve(cfg: Arc<Config>) -> ExitCode {
         tokio::spawn(rescriptum::boot::media::serve(media_listener, media));
     }
 
+    // TFTP, if a boot directory was named. It hands over **one file** — the loader —
+    // and everything after that is HTTP: at 1468 bytes a round-trip, an image would
+    // take twenty minutes where HTTP takes fifteen seconds.
+    #[cfg(feature = "boot")]
+    if let Some(dir) = cfg.boot_dir.clone() {
+        let tftp = match rescriptum::boot::tftp::Tftp::new(&dir, Arc::clone(&cfg)) {
+            Ok(tftp) => Arc::new(tftp),
+            // Fatal: a boot directory that cannot be resolved is not something that
+            // fixes itself, and every path check below compares against it.
+            Err(e) => {
+                log::server(&format!("configuration error: {e}"));
+                return ExitCode::FAILURE;
+            }
+        };
+        let addr = cfg.tftp_addr();
+        let socket = match tokio::net::UdpSocket::bind(&addr).await {
+            Ok(socket) => socket,
+            Err(e) => {
+                log::server(&format!(
+                    "cannot bind TFTP on {addr}: {e}{}",
+                    if addr.ends_with(":69") {
+                        " — port 69 is privileged; run as root and set RESCRIPTUM_USER to \
+                         drop afterwards, use setcap, or choose another port"
+                    } else {
+                        ""
+                    }
+                ));
+                return ExitCode::FAILURE;
+            }
+        };
+        let bound = socket
+            .local_addr()
+            .map(|a| a.to_string())
+            .unwrap_or_else(|_| addr.clone());
+        log::server(&format!(
+            "tftp listening on {bound} — serving {}",
+            tftp.root().display()
+        ));
+        tokio::spawn(rescriptum::boot::tftp::serve(socket, tftp));
+    }
+
+    // **Bind everything first, then drop.** The other order works as root in testing
+    // and fails on deployment, which is the bug this ordering exists to prevent.
+    #[cfg(feature = "boot")]
+    if let Err(e) = rescriptum::boot::privileges::drop_to(cfg.user.as_deref(), cfg.group.as_deref())
+    {
+        log::server(&format!("configuration error: {e}"));
+        return ExitCode::FAILURE;
+    }
+
     // Report the address actually bound, not the one requested: with `:0` (used by the
     // integration tests, and handy for debugging) they differ.
     let bound = listener
