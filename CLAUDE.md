@@ -557,9 +557,13 @@ could not check. Note it needs `Resolution::format_name` (the extension), not
   strings carry the whole rule: a package failing `verifyPackageSignature` may not have a
   `ctrl-script` or `executable` section, must have `defaults.run-as` = `package`, and
   — the line that matters — `tool capabilities should not exist`. DSM's privilege format
-  has a native `capabilities` field, so a **signed** package declares
-  `cap_net_bind_service` and never needs `setcap`. The mechanism we want exists and is
-  closed to us; no packaging cleverness opens it.
+  has a native `capabilities` field (documented since 7.0-40656), so a **signed** package
+  declares `cap_net_bind_service` and never needs `setcap`. Synology's guide states it
+  plainly — *"you are not able to install that package unless it is signed by synology"* —
+  so it is their signature, not a trusted publisher's. The one documented bypass, a
+  *development token*, is valid only on the NAS that generated its `debug.dat`, so it is
+  not a distribution path. **The manual `setcap` is settled, not provisional**; no
+  packaging change removes it.
 - **A file capability does not survive an upgrade** — the new binary is a different file.
   That is why a failed TFTP bind is the **one** listener failure here that is not fatal:
   when it was, an upgrade took the answer endpoint down with it, failing every install in

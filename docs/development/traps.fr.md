@@ -251,14 +251,31 @@ et que nous ne le pouvons pas : la forme est légale, c'est la signature qui la 
 *pour eux*.
 
 **La ligne la plus importante est `tool capabilities should not exist`.** Le format de
-privilège de DSM a un champ `capabilities` natif — `SYNOPackageTool::Privilege::ChangeCapabilities`
-est là — donc un paquet signé déclare `cap_net_bind_service` dans `conf/privilege` et n'a
-jamais besoin de `setcap`. Le mécanisme que nous voulons existe et nous est fermé. Si ce
-paquet est un jour signé par Synology, l'étape manuelle et la tâche au démarrage
-disparaissent toutes les deux ; d'ici là elles sont le prix de ne pas être signé, et aucune
-astuce d'empaquetage n'y changera rien. La signature d'un éditeur tiers est autre chose que
-celle de Synology, et savoir si elle passerait ce contrôle n'est **pas mesuré** — la chaîne
-dit *non-synology*, pas *non fiable*.
+privilège de DSM a un champ `capabilities` natif — documenté comme
+`"capabilities": "cap_chown,cap_net_raw"` sur une entrée `tool` depuis 7.0-40656, et
+`SYNOPackageTool::Privilege::ChangeCapabilities` est bien là dans la bibliothèque. Un paquet
+signé déclare `cap_net_bind_service` et n'a jamais besoin de `setcap`. **Le mécanisme que
+nous voulons existe, est documenté, et nous est fermé.**
+
+Le guide développeur de Synology énonce la règle sans détour : *« If you are developing a
+package with root privilege, you are not able to install that package unless it is signed
+by synology. »* C'est donc **leur** signature, pas celle d'un éditeur tiers de confiance —
+ce qui tranche ce que la chaîne de la bibliothèque laissait ouvert. SynoCommunity a heurté
+le même mur ([spksrc#4170](https://github.com/SynoCommunity/spksrc/issues/4170),
+[#4215](https://github.com/SynoCommunity/spksrc/issues/4215)).
+
+Il existe un contournement documenté, et ce **n'est pas une voie de distribution** : un
+*jeton de développement*. On génère `debug.dat` depuis Centre d'assistance → Services
+d'assistance, on l'envoie à Synology, on reçoit un jeton signé, on le dépose dans
+`/var/packages/syno_dev_token`. Il n'est valable **que sur le NAS qui a produit le
+`debug.dat`** : livrer ainsi voudrait dire que chaque utilisateur fasse un aller-retour avec
+Synology avant de pouvoir installer. Un `setcap` est une commande locale, et c'est
+strictement mieux pour lui.
+
+Conclusion, tranchée et non provisoire : **le `setcap` manuel est le prix de ne pas être
+signé par Synology, et aucun changement d'empaquetage ne l'enlève.** Si le paquet est un
+jour signé, l'étape manuelle et la tâche au démarrage sont remplacées par trois lignes dans
+`conf/privilege`.
 
 **La capacité appartient au fichier, donc une mise à jour la perd.** Une nouvelle version
 remplace le binaire et la capacité part avec l'ancien — d'où la tâche au démarrage du

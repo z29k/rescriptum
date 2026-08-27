@@ -232,14 +232,30 @@ Which is why FileStation, StorageManager, QuickConnect and SecureSignIn all carr
 we cannot: the shape is legal, the signature is what makes it legal *for them*.
 
 **The line that matters most is `tool capabilities should not exist`.** DSM's privilege
-format has a native `capabilities` field — `SYNOPackageTool::Privilege::ChangeCapabilities`
-is right there — so a signed package declares `cap_net_bind_service` in `conf/privilege`
-and never needs `setcap` at all. The mechanism we want exists and is closed to us. If this
-package is ever signed by Synology, the manual step and the boot-up task both disappear;
-until then they are the price of not being signed, and no amount of packaging cleverness
-changes it. A third-party publisher's signature is a different thing from Synology's, and
-whether one would pass this check is **not measured** — the string says *non-synology*, not
-*untrusted*.
+format has a native `capabilities` field — documented as
+`"capabilities": "cap_chown,cap_net_raw"` on a `tool` entry since 7.0-40656, and
+`SYNOPackageTool::Privilege::ChangeCapabilities` is right there in the library. A signed
+package declares `cap_net_bind_service` and never needs `setcap` at all. **The mechanism we
+want exists, is documented, and is closed to us.**
+
+Synology's developer guide states the rule outright: *"If you are developing a package with
+root privilege, you are not able to install that package unless it is signed by synology."*
+So it is **their** signature, not any trusted publisher's — which answers what the library
+string left open. SynoCommunity hit the same wall
+([spksrc#4170](https://github.com/SynoCommunity/spksrc/issues/4170),
+[#4215](https://github.com/SynoCommunity/spksrc/issues/4215)).
+
+There is one documented bypass and it is **not a distribution path**: a *development
+token*. Generate `debug.dat` from Support Center → Support Services, send it to Synology,
+receive a signed token, drop it at `/var/packages/syno_dev_token`. It is valid **only on
+the NAS that generated the `debug.dat`**, so shipping this way would mean every single user
+doing a round trip with Synology before they could install. `setcap` is one local command
+and strictly better for them.
+
+Conclusion, and it is settled rather than provisional: **the manual `setcap` is the price
+of not being signed by Synology, and no packaging change removes it.** If the package is
+ever signed, the manual step and the boot-up task are both replaced by three lines in
+`conf/privilege`.
 
 **The capability belongs to the file, so an upgrade drops it.** A new version replaces the
 binary and the capability goes with the old one — which is why the package documents a
