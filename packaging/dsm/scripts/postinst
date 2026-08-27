@@ -37,7 +37,13 @@ EXAMPLE="$DEST/etc/$PKG.env.example"
 SC_FILE="$DEST/port_conf/$PKG.sc"
 
 SHARE_ANSWERS="$ROOT/shares/$PKG/answers"
+SHARE_MEDIA="$ROOT/shares/$PKG/media"
+SHARE_BOOT="$ROOT/shares/$PKG/boot"
 DEFAULT_PORT=8000
+# Fixed, and a contract rather than a preference: the loader we ship embeds a script
+# that chains to `${next-server}:8001` before any deployment exists, so a media listener
+# anywhere else is one every already-shipped loader cannot reach.
+MEDIA_PORT=8001
 
 say() { echo "$PKG: $*"; }
 
@@ -88,6 +94,12 @@ RESCRIPTUM_LOG_FILE=$VAR/$PKG.log
 RESCRIPTUM_DB_PATH=$ROOT/shares/$PKG/answers.db
 # RESCRIPTUM_STORE=sqlite
 
+# The address this NAS is reachable at, which the server writes into every script it
+# generates. A NAS is often multi-homed, and the value derived by asking the routing
+# table is then the wrong interface — a machine that boots, chains, and hangs on an
+# address that does not exist. Set it once and the guessing stops.
+# RESCRIPTUM_PUBLIC_HOST=
+
 # Keeps the failures and drops the requests that worked. Worth it once a rollout is
 # routine: successful answers are the only high-volume thing in the log.
 # RESCRIPTUM_LOG=problems
@@ -105,8 +117,54 @@ RESCRIPTUM_DB_PATH=$ROOT/shares/$PKG/answers.db
 # and speaks plain HTTP, which is why it is deliberately not registered with the firewall.
 # It also requires the sqlite store and a token of at least 16 characters; both are
 # startup errors, so getting them wrong shows up as a package that will not start.
-# RESCRIPTUM_ADMIN_ADDR=127.0.0.1:8001
+# Not 8001: that is the media listener's port below, and two listeners on one port is a
+# startup error rather than a race.
+# RESCRIPTUM_ADMIN_ADDR=127.0.0.1:9000
 # RESCRIPTUM_ADMIN_TOKEN=
+
+# ---------------------------------------------------------------------------
+# Boot media — serving the installer itself, not only its answer.
+#
+# Uncomment the directory and restart the package. The share already has the folder;
+# drop an ISO in it over File Station or SMB, then register it:
+#
+#     rescriptum-cli media add $SHARE_MEDIA/proxmox-ve_8.4-1.iso --sha256 ...
+#     rescriptum-cli media list
+#
+# **No image ships with this package.** An ISO is somebody else's artefact, gigabytes,
+# on its own schedule; this folder is where you keep them and it is the archive —
+# nothing here ever modifies an image after it lands.
+# RESCRIPTUM_MEDIA_DIR=$SHARE_MEDIA
+
+# The listener's own port. Left commented because the default is already $MEDIA_PORT and
+# the firewall entry above already covers it — and because naming an address with no
+# directory to serve is a startup error, so an uncommented line here would be a package
+# that refuses to start until somebody uncommented the one above too.
+# RESCRIPTUM_MEDIA_ADDR=0.0.0.0:$MEDIA_PORT
+
+# ---------------------------------------------------------------------------
+# TFTP: **not available in this package, and it is not an oversight.**
+#
+# DSM 7 does not let an unsigned package run as root, and port 69 is privileged, so
+# nothing here can bind it. Setting RESCRIPTUM_TFTP_ADDR would produce a package that
+# refuses to start, which is why it is not offered.
+#
+# DSM has its own TFTP server, and it is the right one to use:
+#
+#   1. Control Panel > File Services > Advanced > TFTP: enable it, and set the root to
+#      the '$PKG' shared folder's boot folder.
+#   2. Put the loaders there. On any Linux box with a C toolchain:
+#        packaging/ipxe/build.sh --out /path/to/$PKG/boot
+#      They are not in this package either: they are GPLv2 and belong beside it, not
+#      welded into it.
+#   3. Point DHCP at this NAS — Control Panel > DHCP Server > PXE if this NAS serves
+#      DHCP, or your own server with what
+#        rescriptum-cli boot dhcp-snippet --format dnsmasq
+#      prints.
+#
+# The rest of the chain is this package's: the loader chains to port 8001 above, and
+# everything after that is HTTP.
+# RESCRIPTUM_BOOT_DIR=$SHARE_BOOT
 BODY
 }
 
@@ -152,7 +210,10 @@ fi
 #   sudo /usr/syno/sbin/synopkghelper update rescriptum port-config
 # because Acquire skips a file that already exists in /usr/local/etc/service.d/.
 if [ -f "$SC_FILE" ]; then
-    sed "s|^dst.ports=.*|dst.ports=\"$port/tcp\"|" "$SC_FILE" >"$SC_FILE.new" &&
+    # Both listeners. The media one is registered even while it is commented out of the
+    # env file: registering a port does not open it, and the alternative is an operator
+    # who enables boot media and then cannot find rescriptum in the firewall list.
+    sed "s|^dst.ports=.*|dst.ports=\"$port/tcp $MEDIA_PORT/tcp\"|" "$SC_FILE" >"$SC_FILE.new" &&
         mv "$SC_FILE.new" "$SC_FILE"
 fi
 

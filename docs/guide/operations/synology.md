@@ -57,8 +57,12 @@ and then the package:
 
 ## What the package does not do
 
-Four things worth knowing before they surprise you.
+Five things worth knowing before they surprise you.
 
+- **It cannot serve TFTP.** Port 69 is privileged and DSM 7 does not let an unsigned
+  package run as root, so the loader handoff is DSM's own TFTP server's job — see
+  [Serving installer media, and PXE](#serving-installer-media-and-pxe). Everything after
+  the loader is this package's.
 - **It does not open the firewall.** Registering the port makes *rescriptum* appear by name
   in the rule editor instead of you typing a number. If your firewall is on with a
   default-deny rule, you still have to create the rule.
@@ -209,6 +213,71 @@ the firewall entry, which does not follow by itself:
 ```console
 $ sudo /usr/syno/sbin/synopkghelper update rescriptum port-config
 ```
+
+## Serving installer media, and PXE
+
+The package can also serve the installer itself — kernels, initrds and images — from the
+same NAS that decides the answer. It is off until you turn it on:
+
+1. Uncomment `RESCRIPTUM_MEDIA_DIR` in the env file and restart the package.
+2. Drop an ISO into the `rescriptum` share's `media` folder, over File Station or SMB.
+3. Register it, so it is verified and probed once rather than per request:
+
+```console
+$ rescriptum-cli media add /volume1/rescriptum/media/proxmox-ve_8.4-1.iso \
+    --sha256 9f86d081884c7d65…
+$ rescriptum-cli media list
+```
+
+The media listener is on **port 8001**, already registered with the firewall alongside
+the answer port — you still have to create the rule.
+
+**No image ships with the package**, and none ever will: an ISO is somebody else's
+artefact, gigabytes, on its own schedule. That folder is where you keep them, and it is
+**the archive** — nothing here modifies an image after it lands. Preparing a Proxmox
+image produces a two-hundred-byte sidecar and an injection applied on the wire, so the
+bytes on disk stay exactly what Proxmox published and their checksum stays verifiable
+against Proxmox's own. See [Serving boot media](./media.md).
+
+### TFTP: use DSM's, not ours
+
+**The package cannot run a TFTP server, and that is not an oversight.** Port 69 is
+privileged, and DSM 7 does not let an unsigned package run as root — so setting
+`RESCRIPTUM_TFTP_ADDR` would produce a package that refuses to start. It is documented in
+the env file as unavailable rather than offered and broken.
+
+DSM has its own TFTP server, and it is the right one here:
+
+1. **Control Panel → File Services → Advanced → TFTP** — enable it, and set the root to
+   the `rescriptum` share's `boot` folder.
+2. Put the loaders there. They are not in the package either — they are iPXE, GPLv2, and
+   belong beside it rather than welded into it. On any Linux box with a C toolchain:
+
+   ```console
+   $ packaging/ipxe/build.sh --out /path/to/rescriptum/boot
+   ```
+3. Point DHCP at this NAS — **Control Panel → DHCP Server → PXE** if the NAS serves DHCP,
+   or your own server with what this prints:
+
+   ```console
+   $ rescriptum-cli boot dhcp-snippet --format dnsmasq
+   ```
+
+**Everything after the loader is this package's.** The loader chains to port 8001, and
+from there the menu, the answers and the images are all served by rescriptum. DSM hands
+over one file; that is the whole of its part.
+
+### One setting worth filling in
+
+```
+RESCRIPTUM_PUBLIC_HOST=192.168.1.10
+```
+
+Every generated script names this address. Left empty it is derived by asking the routing
+table, and **a NAS is often multi-homed** — the derived answer is then the wrong
+interface, and the symptom is a machine that boots, chains, and hangs on an address that
+does not exist. The startup log says which address was guessed; that line is the only
+place the answer appears.
 
 ## The log
 

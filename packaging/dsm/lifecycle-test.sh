@@ -107,7 +107,17 @@ mode=$(file_mode "$ENV_FILE")
 [ "$(value_of RESCRIPTUM_LISTEN_ADDR)" = "0.0.0.0:$PORT" ] && ok "the wizard's port reached the env file" || bad "listen addr is $(value_of RESCRIPTUM_LISTEN_ADDR)"
 [ "$(value_of RESCRIPTUM_ANSWERS_DIR)" = "$SHARE/answers" ] && ok "the answers default to the share" || bad "answers dir is $(value_of RESCRIPTUM_ANSWERS_DIR)"
 grep -q "^RESCRIPTUM_DB_PATH=$SHARE/answers.db\$" "$ENV_FILE" && ok "the database path is pre-set in the share" || bad "RESCRIPTUM_DB_PATH is not pre-set — switching stores would be a fatal start"
-grep -q "dst.ports=\"$PORT/tcp\"" "$ROOT/target/port_conf/rescriptum.sc" && ok "the .sc file carries the chosen port" || bad ".sc file: $(tail -1 "$ROOT/target/port_conf/rescriptum.sc")"
+# Both listeners, and the media one even while boot media is commented out of the env
+# file: registering a port does not open it, and the alternative is an operator who
+# enables media and then cannot find rescriptum in the firewall list.
+grep -q "dst.ports=\"$PORT/tcp 8001/tcp\"" "$ROOT/target/port_conf/rescriptum.sc" && ok "the .sc file carries the answer port and the media one" || bad ".sc file: $(tail -1 "$ROOT/target/port_conf/rescriptum.sc")"
+
+# **The package must not ship a configuration that refuses to start.** Naming a media
+# address with no media directory is a startup error, and the first version of this
+# wrote exactly that — the harness caught a package that could not start at all.
+grep -q "^RESCRIPTUM_MEDIA_ADDR=" "$ENV_FILE" && bad "RESCRIPTUM_MEDIA_ADDR is live while RESCRIPTUM_MEDIA_DIR is not — that is a fatal start" || ok "no live media address without a media directory"
+grep -q "^# RESCRIPTUM_MEDIA_DIR=$SHARE/media\$" "$ENV_FILE" && ok "the media folder is pre-set, one uncommented line away" || bad "no commented RESCRIPTUM_MEDIA_DIR pointing at the share"
+grep -q "TFTP" "$ENV_FILE" && ok "the file says why TFTP is not available here" || bad "nothing in the file explains the missing TFTP"
 
 section "install without a wizard (silent_install, or a reinstall that shows none)"
 saved=$(cat "$ENV_FILE")
@@ -145,6 +155,11 @@ out=$(sss start 2>&1)
 rc=$?
 [ $rc -eq 0 ] && ok "start returns 0" || bad "start returned $rc: $out"
 [ -d "$SHARE/answers" ] && ok "start created the answers directory inside the share" || bad "no answers directory — DSM creates the share, not this"
+# Made whether or not the env file names them yet: a folder that only appears once a
+# setting is enabled is one nobody discovers, and the boot one is what DSM's own TFTP
+# server is pointed at.
+[ -d "$SHARE/media" ] && ok "and the media folder, ready for an ISO" || bad "no $SHARE/media"
+[ -d "$SHARE/boot" ] && ok "and the boot folder, for DSM's own TFTP server" || bad "no $SHARE/boot"
 
 answered=no
 for _ in 1 2 3 4 5 6 7 8 9 10; do

@@ -60,8 +60,13 @@ puis le paquet :
 
 ## Ce que le paquet ne fait pas
 
-Quatre choses à savoir avant qu'elles ne vous surprennent.
+Cinq choses à savoir avant qu'elles ne vous surprennent.
 
+- **Il ne peut pas servir de TFTP.** Le port 69 est privilégié et DSM 7 n'autorise pas un
+  paquet non signé à tourner en root : la livraison du chargeur revient donc au serveur
+  TFTP de DSM — voir [Servir les médias d'installation, et le
+  PXE](#servir-les-médias-dinstallation-et-le-pxe). Tout ce qui suit le chargeur
+  appartient à ce paquet.
 - **Il n'ouvre pas le pare-feu.** Enregistrer le port fait apparaître *rescriptum* par son
   nom dans l'éditeur de règles au lieu d'un numéro à taper. Si votre pare-feu est actif avec
   une règle par défaut qui refuse, il faut toujours créer la règle.
@@ -225,6 +230,75 @@ d'environnement puis déplacez l'entrée du pare-feu, qui ne suit pas toute seul
 ```console
 $ sudo /usr/syno/sbin/synopkghelper update rescriptum port-config
 ```
+
+## Servir les médias d'installation, et le PXE
+
+Le paquet sait aussi servir l'installeur lui-même — noyaux, initrds et images — depuis le
+NAS qui décide déjà la réponse. C'est éteint jusqu'à ce que vous l'allumiez :
+
+1. Décommentez `RESCRIPTUM_MEDIA_DIR` dans le fichier d'environnement et redémarrez le
+   paquet.
+2. Posez une ISO dans le dossier `media` du partage `rescriptum`, via File Station ou SMB.
+3. Enregistrez-la, pour qu'elle soit vérifiée et analysée une fois plutôt qu'à chaque
+   requête :
+
+```console
+$ rescriptum-cli media add /volume1/rescriptum/media/proxmox-ve_8.4-1.iso \
+    --sha256 9f86d081884c7d65…
+$ rescriptum-cli media list
+```
+
+Le listener média est sur le **port 8001**, déjà déclaré au pare-feu à côté du port de
+réponse — il reste à créer la règle.
+
+**Aucune image n'est livrée avec le paquet**, et aucune ne le sera jamais : une ISO est
+l'artefact de quelqu'un d'autre, elle pèse des gigaoctets, et elle évolue à son rythme. Ce
+dossier est là où vous les gardez, et c'est **l'archive** — rien ici ne modifie une image
+après son arrivée. Préparer une image Proxmox produit un fichier compagnon de deux cents
+octets et une injection appliquée au fil de l'eau, donc les octets sur disque restent
+exactement ce que Proxmox a publié et leur somme reste vérifiable contre celle de Proxmox.
+Voir [Servir les médias de démarrage](./media.md).
+
+### TFTP : celui de DSM, pas le nôtre
+
+**Le paquet ne peut pas faire tourner de serveur TFTP, et ce n'est pas un oubli.** Le port
+69 est privilégié, et DSM 7 n'autorise pas un paquet non signé à tourner en root — définir
+`RESCRIPTUM_TFTP_ADDR` produirait donc un paquet qui refuse de démarrer. C'est documenté
+comme indisponible dans le fichier d'environnement plutôt que proposé et cassé.
+
+DSM a son propre serveur TFTP, et c'est le bon ici :
+
+1. **Panneau de configuration → Services de fichiers → Avancé → TFTP** — activez-le, et
+   définissez la racine sur le dossier `boot` du partage `rescriptum`.
+2. Posez-y les chargeurs. Ils ne sont pas non plus dans le paquet — c'est iPXE, en GPLv2,
+   et ils ont leur place à côté plutôt que soudés dedans. Depuis n'importe quelle machine
+   Linux avec une chaîne de compilation C :
+
+   ```console
+   $ packaging/ipxe/build.sh --out /chemin/vers/rescriptum/boot
+   ```
+3. Faites pointer le DHCP vers ce NAS — **Panneau de configuration → Serveur DHCP → PXE**
+   si le NAS sert le DHCP, ou votre propre serveur avec ce qu'imprime :
+
+   ```console
+   $ rescriptum-cli boot dhcp-snippet --format dnsmasq
+   ```
+
+**Tout ce qui suit le chargeur appartient à ce paquet.** Le chargeur enchaîne vers le port
+8001, et à partir de là le menu, les réponses et les images sont tous servis par
+rescriptum. DSM livre un fichier ; c'est toute sa part.
+
+### Un réglage qui mérite d'être rempli
+
+```
+RESCRIPTUM_PUBLIC_HOST=192.168.1.10
+```
+
+Chaque script généré nomme cette adresse. Laissée vide, elle est déduite en interrogeant
+la table de routage, et **un NAS est souvent multi-domicilié** — la déduction porte alors
+sur la mauvaise interface, et le symptôme est une machine qui démarre, enchaîne, et se
+bloque sur une adresse qui n'existe pas. Le journal de démarrage dit quelle adresse a été
+devinée ; cette ligne est le seul endroit où la réponse apparaît.
 
 ## Le journal
 

@@ -27,6 +27,9 @@ ROOT="${RESCRIPTUM_PKG_ROOT:-/var/packages/${SYNOPKG_PKGNAME:-$PKG}}"
 DEST="${SYNOPKG_PKGDEST:-$ROOT/target}"
 VAR="${SYNOPKG_PKGVAR:-$ROOT/var}"
 ETC="$ROOT/etc"
+# The data share DSM created. `shares/` is a symlink into the volume; the package root
+# is the fixed path, which is why it is derived from ROOT rather than from DEST.
+SHARE="$ROOT/shares/$PKG"
 
 BIN="$DEST/bin/$PKG"
 ENV_FILE="$ETC/$PKG.env"
@@ -95,6 +98,16 @@ start() {
             say "$answers is not readable by $(id -u -n 2>/dev/null || echo "$PKG") — check the shared folder's permissions"
         fi
     fi
+
+    # The media and boot folders, made whether or not the env file names them yet. An
+    # operator who uncomments RESCRIPTUM_MEDIA_DIR should find somewhere to drop an ISO
+    # already there — and a folder that only appears after a setting is enabled is one
+    # nobody discovers. Both are inside the share DSM created, so this costs nothing
+    # when they are unused, and neither may abort the start.
+    for extra in media boot; do
+        dir="$SHARE/$extra"
+        [ -d "$dir" ] || mkdir -p "$dir" 2>/dev/null || true
+    done
 
     RESCRIPTUM_ENV_FILE="$ENV_FILE"
     export RESCRIPTUM_ENV_FILE
