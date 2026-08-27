@@ -9,6 +9,10 @@
 //! the one that matters: a listener that survives one bad request and then serves
 //! nothing has failed the only test a provisioning server has to pass.
 
+// There is nothing here to test in a binary built without the feature, and compiling to
+// nothing is a clearer answer than a wall of unresolved imports.
+#![cfg(feature = "boot")]
+
 use rescriptum::boot::iso::build;
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};

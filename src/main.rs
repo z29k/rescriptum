@@ -159,6 +159,7 @@ async fn serve(cfg: Arc<Config>) -> ExitCode {
     // The media listener, if a media directory was named. Its own socket, its own
     // timeout and its own connection budget — see `boot::media` for why all three are
     // forced rather than preferred.
+    #[cfg(feature = "boot")]
     if let Some(dir) = cfg.media_dir.clone() {
         let addr = cfg.media_addr();
         let media_listener = match TcpListener::bind(&addr).await {

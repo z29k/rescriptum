@@ -431,6 +431,13 @@ fn copy(
 /// keeps the server honest is that no request ever triggers work proportional to the
 /// size of an image; hashing 1.5 GB happens here, once, and the result is recorded
 /// beside the image so nothing ever recomputes it.
+#[cfg(not(feature = "boot"))]
+pub fn media(_cfg: &Config, _args: &[String]) -> ExitCode {
+    eprintln!("this binary was built without the `boot` feature, so it has no media commands");
+    ExitCode::FAILURE
+}
+
+#[cfg(feature = "boot")]
 pub fn media(cfg: &Config, args: &[String]) -> ExitCode {
     let Some(dir) = &cfg.media_dir else {
         eprintln!("there is no media directory: RESCRIPTUM_MEDIA_DIR names one, and nothing does");
@@ -457,6 +464,7 @@ pub fn media(cfg: &Config, args: &[String]) -> ExitCode {
     }
 }
 
+#[cfg(feature = "boot")]
 fn media_list(catalog: &crate::boot::catalog::Catalog) -> ExitCode {
     let listing = match catalog.listing() {
         Ok(listing) => listing,
@@ -493,6 +501,7 @@ fn media_list(catalog: &crate::boot::catalog::Catalog) -> ExitCode {
     ExitCode::SUCCESS
 }
 
+#[cfg(feature = "boot")]
 fn media_add(catalog: &crate::boot::catalog::Catalog, args: &[String]) -> ExitCode {
     let mut path: Option<&String> = None;
     let mut expected: Option<&String> = None;
@@ -647,6 +656,7 @@ fn media_add(catalog: &crate::boot::catalog::Catalog, args: &[String]) -> ExitCo
 
 /// `media check` — re-verify what was recorded. Its exit code is a contract, like
 /// `check`'s: `deploy.sh` keys on it.
+#[cfg(feature = "boot")]
 fn media_check(catalog: &crate::boot::catalog::Catalog) -> ExitCode {
     let listing = match catalog.listing() {
         Ok(listing) => listing,
@@ -720,6 +730,7 @@ fn media_check(catalog: &crate::boot::catalog::Catalog) -> ExitCode {
 /// booting, it gains a generator.
 ///
 /// stdout is the script and stderr is everything else, so `media ipxe … > file` works.
+#[cfg(feature = "boot")]
 fn media_ipxe(cfg: &Config, catalog: &crate::boot::catalog::Catalog, id: &str) -> ExitCode {
     let entry = match catalog.get(id) {
         Ok(Some(entry)) => entry,
@@ -759,6 +770,7 @@ fn media_ipxe(cfg: &Config, catalog: &crate::boot::catalog::Catalog, id: &str) -
 
 /// Whether two paths name the same directory, resolving symlinks where it can. A media
 /// directory reached as `/srv/media` and as `./media` is the same directory.
+#[cfg(feature = "boot")]
 fn same_directory(a: &std::path::Path, b: &std::path::Path) -> bool {
     match (a.canonicalize(), b.canonicalize()) {
         (Ok(a), Ok(b)) => a == b,
@@ -766,6 +778,7 @@ fn same_directory(a: &std::path::Path, b: &std::path::Path) -> bool {
     }
 }
 
+#[cfg(feature = "boot")]
 fn human(bytes: u64) -> String {
     const UNITS: [&str; 5] = ["B", "K", "M", "G", "T"];
     let mut size = bytes as f64;
@@ -781,6 +794,7 @@ fn human(bytes: u64) -> String {
     }
 }
 
+#[cfg(feature = "boot")]
 fn truncate(text: &str, width: usize) -> String {
     if text.chars().count() <= width {
         return text.to_string();

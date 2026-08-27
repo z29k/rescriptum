@@ -27,10 +27,16 @@ tokio = { version = "1.53.1", features = ["rt-multi-thread", "net", "time", "io-
 toml_edit = "0.25.13"
 
 [features]
-default = ["sqlite"]
+default = ["sqlite", "boot"]
 # SQLite backs the admin API. Turn it off for the smallest possible binary when the
 # answers directory is all you need: `cargo build --no-default-features`.
 sqlite = ["dep:rusqlite"]
+# Boot media: the catalogue, the ISO reader and the media listener. On by default,
+# because an appliance that cannot serve the installer is half a product — but off in
+# one flag, so `--no-default-features` still produces the smallest possible answer
+# server. One feature and not two: media and TFTP share the catalogue and the address
+# logic, and splitting them would buy kilobytes at the cost of a seam.
+boot = []
 # Compiles `boot::iso::build`, which writes ISO9660 images in memory for tests. There is
 # deliberately **no binary ISO fixture in this repository**: a checked-in image is a blob
 # nobody can review and nobody can vary. The builder is the alternative, and it has no
@@ -48,7 +54,12 @@ strip = true
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 # The crate itself, so an integration test can build an ISO to serve. This is what turns
 # `test-support` on for a test build and leaves it off for every other one.
-rescriptum = { path = ".", features = ["test-support"] }
+#
+# `default-features = false` is load-bearing: without it this line re-enables `sqlite`
+# and `boot` for every test build, so `cargo test --no-default-features` would quietly
+# test the full binary and report coverage that does not exist. Features are a union, so
+# an ordinary `cargo test` still gets the defaults from the normal build.
+rescriptum = { path = ".", default-features = false, features = ["test-support"] }
 
 # `panic = "abort"` is deliberately ABSENT. With one thread per connection, unwinding
 # means a panic kills only the connection that caused it; aborting would take down the

@@ -271,6 +271,19 @@ impl Config {
     /// what would not work or would not be safe, and warn about everything that can be
     /// fixed while the server runs.
     fn validate_media(&self) -> Result<(), String> {
+        // A binary built without the feature must say so rather than ignoring the
+        // directory it was pointed at. Same shape as `open_store` refusing
+        // `RESCRIPTUM_STORE=sqlite` without the `sqlite` feature: the variable stays
+        // described everywhere, and only the binary that cannot honour it objects.
+        #[cfg(not(feature = "boot"))]
+        if self.media_dir.is_some() {
+            return Err(
+                "RESCRIPTUM_MEDIA_DIR is set, but this binary was built without the `boot` \
+                 feature, so it can serve no media."
+                    .to_string(),
+            );
+        }
+
         // A host, never a URL. One port in the value would silently pin every generated
         // script to one listener, and the symptom is a machine chaining into nowhere.
         if let Some(host) = &self.public_host {
@@ -354,6 +367,7 @@ impl Config {
     }
 
     /// The two URLs a generated script needs, each with its own listener's port.
+    #[cfg(feature = "boot")]
     pub fn endpoints(&self) -> crate::boot::stanza::Endpoints {
         let (host, _) = self.public_host();
         crate::boot::stanza::Endpoints {
@@ -416,6 +430,9 @@ fn ephemeral(addr: &str) -> bool {
 }
 
 /// A reachable host plus the port of a listen address, ready to go into a URL.
+///
+/// Only `endpoints` calls this, and only a binary that can serve media has one.
+#[cfg(feature = "boot")]
 ///
 /// The listen address is usually `0.0.0.0:8001`, which is not something anybody can
 /// fetch from — the port is the only part of it worth keeping.
@@ -978,6 +995,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "boot")]
     fn each_generated_url_carries_its_own_listeners_port() {
         // The whole reason the variable is a host: one value, two listeners.
         let c = Config::from_lookup(lookup(&[
@@ -990,6 +1008,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "boot")]
     fn an_ipv6_host_is_bracketed_before_a_port_is_appended() {
         let c = Config::from_lookup(lookup(&[
             ("RESCRIPTUM_PUBLIC_HOST", "2001:db8::1"),

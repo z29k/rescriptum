@@ -5,6 +5,7 @@
 //! for the design constraints.
 
 pub mod admin;
+#[cfg(feature = "boot")]
 pub mod boot;
 pub mod capture;
 pub mod cli;
