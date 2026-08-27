@@ -161,6 +161,76 @@ Cela laisse un répertoire contenant `vmlinuz`, `initrd.img` et une ISO allégé
 reconnue comme Proxmox, et le noyau et l'initrd posés à côté sont trouvés et servis.
 :::
 
+## Préparer une image Proxmox
+
+Proxmox est la seule famille à porter l'*emplacement* de la réponse à l'intérieur de
+l'image, dans `/auto-installer-mode.toml`. Cela imposait jusqu'ici de lancer
+`proxmox-auto-install-assistant prepare-iso` ailleurs d'abord.
+
+```console
+$ rescriptum media prepare pve-8.4
+pve-8.4-http  prepared from pve-8.4
+  answer   http://192.0.2.10:8000/proxmox
+  injects  /auto-installer-mode.toml (198 bytes)
+  image    1610612736 bytes (source 1610610688 + 2048 appended)
+  wrote    /srv/media/pve-8.4-http.media
+
+Nothing was copied. Serve it as /pve-8.4-http/iso, or write it to a stick with
+  rescriptum media export pve-8.4-http /tmp/pve-8.4-http.iso
+```
+
+**Ce qui vient d'être écrit est un fichier compagnon : environ deux cents octets qui
+tiennent lieu de 1,5 Go.** La source n'est jamais modifiée, jamais copiée, et son
+empreinte publiée reste vérifiable. Le fichier est injecté *au fil de l'eau*, donc
+changer plus tard l'URL de réponse réécrit ces deux cents octets plutôt qu'un gigaoctet —
+et les deux entrées apparaissent dans `media list`, adossées à une seule image sur disque.
+
+`--as NOM` choisit le nom de l'entrée dérivée, et `--url`, `--cert-fingerprint` et
+`--token` disent ce qui va dans le fichier.
+
+### Pour une clé USB
+
+```console
+$ rescriptum media export pve-8.4-http /tmp/pve-auto.iso
+```
+
+Matérialise exactement ce que le listener aurait servi, par le même chemin de code. Une
+clé écrite autrement serait une seconde implémentation à maintenir honnête, et l'écart ne
+se verrait que sur le bureau de quelqu'un.
+
+### Quand il refuse
+
+Refuser est ici une réponse **complète**, parce que le repli tient en une commande sur
+n'importe quelle Debian et que ce serveur sert très bien son résultat :
+
+```console
+$ proxmox-auto-install-assistant prepare-iso pve.iso --fetch-from http --url …
+```
+
+Il refuse quand l'image n'a **ni Rock Ridge ni Joliet** — le fichier ne pourrait alors
+exister que sous un nom 8.3 tronqué comme `AUTO_INS.TOM;1`, et l'installeur ne le
+trouverait jamais. Il refuse une image **UDF**, parce qu'une ISO Windows ne garde ses gros
+fichiers que dans l'arbre UDF et que patcher l'arbre ISO9660 produirait quelque chose qui
+a l'air juste et ne l'est pas. Et il refuse quand le répertoire racine n'a **pas de mou**
+dans aucun de ses secteurs : déplacer l'extent entraînerait les tables de chemins, ce qui
+n'est délibérément pas fait.
+
+Il refuse aussi de préparer une image non-Proxmox, en nommant l'alternative : toutes les
+autres familles prennent l'URL sur la ligne de commande du noyau, là où `media ipxe` la
+met déjà.
+
+### Si la source change en dessous
+
+Les décalages d'injection sont calculés contre une image donnée. Une source qui aurait
+changé serait patchée au mauvais endroit, produisant une image qui se monte et qui est
+fausse — le fichier compagnon retient donc la taille de la source, et le catalogue refuse
+quand elle ne correspond plus :
+
+```
+  problem: pve-8.4-http.media: pve-8.4 was 1610610688 bytes when this was prepared and
+  is 1610612736 now. The injection offsets no longer apply — re-run `media prepare`.
+```
+
 ## Dire au serveur son propre nom
 
 Dès qu'il écrit des URL dans les scripts qu'il sert, le serveur a besoin d'un nom pour

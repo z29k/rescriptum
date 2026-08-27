@@ -134,6 +134,8 @@ $ rescriptum media list                    # what is held: family, architecture,
 $ rescriptum media add FILE [--sha256 D]   # register one already in the directory
 $ rescriptum media check                   # re-verify every recorded digest
 $ rescriptum media ipxe ID                 # print the .ipxe answer that boots one image
+$ rescriptum media prepare ID [--url URL]  # a Proxmox image with its answer URL inside
+$ rescriptum media export ID FILE          # materialise a prepared entry, for a stick
 ```
 
 `media add` takes a file **already inside the media directory** — nothing is downloaded

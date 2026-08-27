@@ -157,6 +157,73 @@ That leaves a directory holding `vmlinuz`, `initrd.img` and a trimmed ISO. Point
 as Proxmox, and the kernel and initrd beside it are found and served.
 :::
 
+## Preparing a Proxmox image
+
+Proxmox is the only family that carries the answer's *location* inside the image, in
+`/auto-installer-mode.toml`. That used to mean running
+`proxmox-auto-install-assistant prepare-iso` somewhere else first.
+
+```console
+$ rescriptum media prepare pve-8.4
+pve-8.4-http  prepared from pve-8.4
+  answer   http://192.0.2.10:8000/proxmox
+  injects  /auto-installer-mode.toml (198 bytes)
+  image    1610612736 bytes (source 1610610688 + 2048 appended)
+  wrote    /srv/media/pve-8.4-http.media
+
+Nothing was copied. Serve it as /pve-8.4-http/iso, or write it to a stick with
+  rescriptum media export pve-8.4-http /tmp/pve-8.4-http.iso
+```
+
+**What that wrote is a sidecar: about two hundred bytes standing in for 1.5 GB.** The
+source is never modified, never copied, and its published digest stays verifiable. The
+file is injected *on the wire*, so changing the answer URL later rewrites those two
+hundred bytes rather than a gigabyte — and both entries appear in `media list`, backed by
+one image on disk.
+
+`--as NAME` picks the derived entry's name, and `--url`, `--cert-fingerprint` and
+`--token` say what goes in the file.
+
+### For a USB stick
+
+```console
+$ rescriptum media export pve-8.4-http /tmp/pve-auto.iso
+```
+
+Materialises exactly what the listener would have served, through the same code path. A
+stick written any other way would be a second implementation to keep honest, and the
+difference would only show up on somebody's desk.
+
+### When it refuses
+
+Refusing is a **complete** answer here, because the fallback is one command on any Debian
+box and this server is perfectly happy to serve its output:
+
+```console
+$ proxmox-auto-install-assistant prepare-iso pve.iso --fetch-from http --url …
+```
+
+It refuses when the image has **neither Rock Ridge nor Joliet** — the file could then
+only exist under a mangled 8.3 name like `AUTO_INS.TOM;1`, and the installer would never
+find it. It refuses a **UDF** image, because a Windows ISO keeps its large files only in
+the UDF tree and patching the ISO9660 tree would produce something that looks right and
+is not. And it refuses when the root directory has **no slack** in any of its sectors:
+relocating the extent would drag in the path tables, which is deliberately not done.
+
+It also refuses to prepare a non-Proxmox image, and names the alternative: every other
+family takes the URL on the kernel command line, where `media ipxe` already puts it.
+
+### If the source changes underneath
+
+The injection offsets are computed against one image. A source that changed would be
+patched in the wrong place, producing an image that mounts and is wrong — so the sidecar
+records the source's length and the catalogue refuses when it no longer matches:
+
+```
+  problem: pve-8.4-http.media: pve-8.4 was 1610610688 bytes when this was prepared and
+  is 1610612736 now. The injection offsets no longer apply — re-run `media prepare`.
+```
+
 ## Telling the server its own name
 
 The moment it writes URLs into scripts, the server needs a name for itself that a machine

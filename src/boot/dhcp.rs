@@ -203,8 +203,16 @@ fn dnsmasq(handoff: &Handoff) -> String {
     }
     out.push('\n');
 
+    // Two architectures can share a tag — 0x0007 and 0x0009 are both x64 — and dnsmasq
+    // would take the first `dhcp-boot` and ignore the rest. Emitting it twice is
+    // harmless and untidy, and an operator reads this file.
+    let mut emitted: Vec<String> = Vec::new();
     for (client, loader) in served() {
         let tag = tag(client.arch, client.transport);
+        if emitted.contains(&tag) {
+            continue;
+        }
+        emitted.push(tag.clone());
         match client.transport {
             Transport::Tftp => {
                 out.push_str(&format!("dhcp-boot=tag:{tag},{loader},,{host}\n"));
@@ -557,6 +565,26 @@ mod tests {
         // Real x64 firmware announces 0x0007 or 0x0009, so a snippet that covered only
         // the one the registry blesses would leave half a fleet unbootable.
         let text = snippet(Format::Dnsmasq, &handoff());
+        assert!(text.contains("option:client-arch,7"), "{text}");
+        assert!(text.contains("option:client-arch,9"), "{text}");
+    }
+
+    #[test]
+    fn a_tag_gets_exactly_one_boot_line() {
+        // 0x0007 and 0x0009 are both x64 and share a tag; dnsmasq would take the first
+        // `dhcp-boot` and ignore the rest. Emitting it twice is harmless and untidy, and
+        // an operator reads this file.
+        let text = snippet(Format::Dnsmasq, &handoff());
+        let mut seen: Vec<&str> = text
+            .lines()
+            .filter(|l| l.starts_with("dhcp-boot=tag:"))
+            .collect();
+        let before = seen.len();
+        seen.sort_unstable();
+        seen.dedup();
+        assert_eq!(seen.len(), before, "a duplicated boot line: {text}");
+        // Both architectures still get their *match* line, which is what actually has
+        // to cover them.
         assert!(text.contains("option:client-arch,7"), "{text}");
         assert!(text.contains("option:client-arch,9"), "{text}");
     }

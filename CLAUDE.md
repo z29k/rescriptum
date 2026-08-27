@@ -95,10 +95,18 @@ These are deliberate design decisions, not oversights. Do not "improve" them wit
   never an extraction); `probe.rs` places an image from a table of markers; `catalog.rs`
   discovers what is held, cached behind the directory mtime like the answer listing;
   `media.rs` is the listener, on its own socket; `stanza.rs` holds what each installer
-  family needs on the wire; `cpio.rs` and `sha256.rs` are hand-written and dependency-free.
-  Behind the `boot` cargo feature, default on. `select.rs` knows none of this exists, and
-  the only seam is that `media ipxe` **prints an ordinary `.ipxe` answer document** —
-  selection, layering and templating then apply unchanged.
+  family needs on the wire; `patch.rs` adds one file to an ISO as a *plan* rather than a
+  rewrite; `tftp.rs` hands over the loader and nothing else; `loaders.rs` is the option-93
+  table **both** TFTP and `boot dhcp-snippet` read, so the two cannot drift; `menu.rs`
+  writes the bootstrap and the menu; `dhcp.rs` generates six configuration formats;
+  `privileges.rs` drops after binding; `cpio.rs` and `sha256.rs` are hand-written and
+  dependency-free. Behind the `boot` cargo feature, default on. `select.rs` knows none of
+  this exists, and the only seam is that `media ipxe` **prints an ordinary `.ipxe` answer
+  document** — selection, layering and templating then apply unchanged.
+- `packaging/ipxe/` — the branded loaders: `branding.h`, the embedded script, a
+  SHA-pinned upstream commit and `build.sh`. **No binaries in git, ever**; this directory
+  is the GPLv2 written offer. `packaging/boot-rig/` — the boot rig, three services on an
+  `internal: true` network, so a harness that runs DHCP cannot answer on the host's LAN.
 - `src/facts.rs` — what a request says about the machine: query parameters, a flattened
   JSON body, and the raw haystack.
 - `src/format/` — one interface per document format. `xml.rs` holds the XML tree and its
@@ -357,10 +365,13 @@ spend into an apparent 293% overrun.**
 
 | Build | Bytes |
 |---|---|
-| `sqlite` + `boot` (default) | 2,602,056 |
+| `sqlite` + `boot` (default) | 2,709,840 |
 | `sqlite` only | 2,482,000 |
-| `boot` only | 1,436,704 |
 | neither | 1,316,648 |
+
+**`boot` costs 227,840 bytes, against a ≤170 KB budget the plan set before any of it was
+written.** That is recorded in `plans/boot-media.md` with a per-phase breakdown rather
+than quietly exceeded; the figure needs re-deciding against the measurement.
 
 ## The admin API
 
@@ -491,6 +502,27 @@ could not check. Note it needs `Resolution::format_name` (the extension), not
 - **`;` in an iPXE script separates commands only as a whole whitespace-delimited token**
   (`split_command` in iPXE's `core/exec.c`). So `ds=nocloud-net;s=http://…` is one
   argument and must **not** be escaped, while `foo ; bar` is two commands.
+- **A PXE ROM retransmits its read request** when an answer is slow — a sleeping NAS disk
+  is enough. A per-peer transfer cap is therefore a fairness bound, not a hostility
+  threshold; counting malformed packets against it locks a machine out of the server it
+  is retrying to reach.
+- **A TFTP transfer ends on a *short* block, and "short" includes empty.** A file whose
+  length divides exactly by the block size must end with an empty data packet, or the
+  client waits forever for a final block that never comes.
+- **`;` separates iPXE commands only as a whole whitespace-delimited token**
+  (`split_command` in iPXE's `core/exec.c`), so `ds=nocloud-net;s=…` is one argument and
+  must not be escaped. And **`${version}` is iPXE's own version**, not ours.
+- **`net0` is the first NIC, not the booting one** — `${netX/mac}` names the device that
+  actually booted. **iPXE percent-encodes nothing on plain expansion**, so an SMBIOS
+  string in a URL needs `${…:uristring}`.
+- **A UEFI HTTP Boot client discards a DHCP offer that does not echo `HTTPClient`** in
+  option 60. **A Windows DHCP policy cannot condition on option 93 at all** — the
+  architecture reaches it only inside the option-60 string.
+- **`auto-installer-mode.toml` is not a legal ISO9660 identifier.** Without a Rock Ridge
+  `NM` entry the file is in the image and invisible to the installer, which looks like
+  this server being broken.
+- **iPXE's BIOS targets need an x86 compiler and its ARM64 ones need
+  `CROSS_COMPILE=aarch64-linux-gnu-`.** Both failures read like a broken Makefile.
 - **The size figures in this file go stale.** They moved ~375 KB when armv7 changed from
   musl to glibc. Re-measure before concluding anything from them; a stale baseline once
   turned a 71% budget spend into an apparent 293% overrun.
@@ -826,10 +858,13 @@ the image and not derived from `DISK_SIZE`. `run-vm.sh` is the loader-image fall
 
 ## Testing expectations
 
-426 tests, plus the package's own harnesses (see *The DSM package*, and note that
+524 tests, plus the package's own harnesses (see *The DSM package*, and note that
 `cargo test` does not run those). `docs/development/testing.md` has the per-suite table;
 the rules that decide where a test goes:
 
+- **TFTP belongs in `tests/tftp.rs`**, speaking the protocol over real UDP. A transfer is
+  a conversation, and every bug worth catching lives in the turn-taking: the first run
+  found two, both of the "works by hand, never after a reboot" kind.
 - **Boot media belongs in `tests/media.rs`**, against the real binary with both listeners
   up. Every abuse case there ends by proving the server still answers, and one case proves
   the property the separate socket exists for: **answers keep succeeding while four image

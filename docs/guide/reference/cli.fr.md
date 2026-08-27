@@ -136,6 +136,8 @@ $ rescriptum media list                    # ce qui est détenu : famille, archi
 $ rescriptum media add FILE [--sha256 D]   # enregistrer une image déjà dans le répertoire
 $ rescriptum media check                   # revérifier chaque empreinte enregistrée
 $ rescriptum media ipxe ID                 # imprimer la réponse .ipxe qui démarre une image
+$ rescriptum media prepare ID [--url URL]  # une image Proxmox avec son URL de réponse dedans
+$ rescriptum media export ID FICHIER       # matérialiser une entrée préparée, pour une clé
 ```
 
 `media add` prend un fichier **déjà dans le répertoire de médias** — rien n'est
