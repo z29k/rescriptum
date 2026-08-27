@@ -115,6 +115,16 @@ PORT=$(sed -n 's/^RESCRIPTUM_LISTEN_ADDR=.*:\([0-9]*\)$/\1/p' "$ROOT/etc/$PKG.en
 [ -n "$PORT" ] || PORT=8000
 
 [ -d "$SHARE/answers" ] && ok "start created the answers directory inside the share" || bad "no $SHARE/answers"
+# The media and boot folders, made whether or not the env file names them yet: a folder
+# that only appears once a setting is enabled is one nobody discovers, and the boot one
+# is what DSM's own TFTP server gets pointed at. The package cannot serve TFTP itself —
+# port 69 is privileged and DSM 7 does not let an unsigned package run as root.
+for extra in media boot; do
+    [ -d "$SHARE/$extra" ] && ok "and the $extra folder, ready to be filled" || bad "no $SHARE/$extra"
+    sudo -u "$PKG" test -w "$SHARE/$extra" 2>/dev/null &&
+        ok "  which the package user can write" ||
+        bad "  but the package user cannot write it"
+done
 if sudo -u "$PKG" test -w "$SHARE/answers" 2>/dev/null; then
     ok "the package user can write it — the ACL landed on the right name"
 else

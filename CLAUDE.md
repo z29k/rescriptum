@@ -732,10 +732,15 @@ strip = true
 
 `packaging/dsm/` wraps an already-built binary as a DSM 7 `.spk`. It is a **release
 format**, exactly like the `.tar.gz` archives — no DSM-specific build, no feature flag,
-nothing in `src/`. The three places DSM pressed back are answered in packaging: log rotation
-by a `copytruncate` stanza, a CLI that cannot find its configuration by a three-line wrapper
-(`rescriptum-cli`, which names `RESCRIPTUM_ENV_FILE`), and no settings panel by the desktop
-application below. If this ever seems to need a `#[cfg]`, the design has gone wrong.
+nothing in `src/`. The **four** places DSM pressed back are answered in packaging: log
+rotation by a `copytruncate` stanza, a CLI that cannot find its configuration by a
+three-line wrapper (`rescriptum-cli`, which names `RESCRIPTUM_ENV_FILE`), no settings panel
+by the desktop application below, and **a privileged port by not having one**. DSM 7 does
+not let an unsigned package run as root, so TFTP's port 69 is unreachable: the env file
+says so and points at DSM's own TFTP server (`/usr/bin/opentftp`, verified on a 7.2.2
+machine) pointed at the share's `boot` folder. Media over HTTP on 8001 works normally, and
+both ports are registered with the firewall. `RESCRIPTUM_USER`/`_GROUP` are documented the
+same way — the package already is its own unprivileged user. If this ever seems to need a `#[cfg]`, the design has gone wrong.
 
 ```bash
 ./build.sh --spk x86_64-unknown-linux-musl   # build, then wrap
@@ -753,8 +758,10 @@ a canary — with `etc/` surviving and with it wiped — and an uninstall; both 
 push. `vm/on-dsm.sh` runs the rest on a DSM 7 VM and then on the DS416j: `data-share`'s
 ACL, `port-config`, the generated unit, `logrotate -f` against a live descriptor, and
 whether Package Center accepts the archive at all. **Nothing ships on VM evidence alone**,
-and `lifecycle-test.sh` was watched failing — breaking four guards turns 33 green into 25
-green and 8 red.
+and `lifecycle-test.sh` was watched failing — reintroducing one defect turns 54 green into
+46 green and 8 red. **It earns its keep:** its first run over the boot-media package caught
+a live `RESCRIPTUM_MEDIA_ADDR` with `RESCRIPTUM_MEDIA_DIR` still commented, which is a
+startup error — the package would not have started at all.
 
 ### The desktop application
 

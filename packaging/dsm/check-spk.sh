@@ -210,6 +210,13 @@ check_one() {
         ok "port_conf/rescriptum.sc declares [rescriptum]" ||
         bad "port_conf/rescriptum.sc does not declare [rescriptum]"
 
+    # Both listeners. postinst rewrites this line with the wizard's port, but a template
+    # that lost the media one would produce a firewall entry an operator cannot find
+    # rescriptum in once they enable boot media — and nothing else would say so.
+    grep -q '^dst.ports=.*8001/tcp' "$work/target/port_conf/rescriptum.sc" &&
+        ok "and registers the media port beside the answer one" ||
+        bad "port_conf/rescriptum.sc does not register the media port"
+
     # ── the desktop application ────────────────────────────────────────────────
     local uidir appname
     uidir=$(info_value dsmuidir "$work/INFO")
