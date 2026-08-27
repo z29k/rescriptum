@@ -5,6 +5,7 @@
 //! for the design constraints.
 
 pub mod admin;
+pub mod boot;
 pub mod capture;
 pub mod cli;
 pub mod config;
