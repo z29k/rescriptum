@@ -631,3 +631,133 @@ fn an_address_with_no_boot_directory_is_refused_at_startup() {
         String::from_utf8_lossy(&out.stderr)
     );
 }
+
+/// **A TFTP port that cannot be bound must not take the answer endpoint down with it.**
+///
+/// This is the one listener in the server whose failed bind is not fatal, and the reason
+/// is a measurement rather than a preference: port 69 is privileged, so it is the only
+/// bind that can fail for something nobody configured. On DSM the capability is granted
+/// by a `setcap` outside the package and **an upgrade replaces the binary and drops it**;
+/// when that was fatal the whole package went to `start_failed`, which failed every
+/// install in flight to report that a second port could not be opened.
+///
+/// The bind is made to fail deterministically by holding the address first — no
+/// privileges involved, so this proves the same thing whether or not CI runs as root.
+/// What is asserted is all three halves of the decision: the server lives, it says so,
+/// and `boot check` still calls it a problem.
+#[test]
+fn a_tftp_port_that_cannot_be_bound_does_not_take_the_answers_down() {
+    let squatter = UdpSocket::bind("127.0.0.1:0").expect("hold the port first");
+    let taken = squatter.local_addr().expect("addr").to_string();
+
+    let base = std::env::temp_dir().join(format!("rescriptum-tftp-busy-{}", std::process::id()));
+    let boot_dir = base.join("boot");
+    let answers_dir = base.join("answers");
+    fs::create_dir_all(&boot_dir).expect("boot dir");
+    fs::create_dir_all(&answers_dir).expect("answers dir");
+    // **Every loader the table names, not just one.** With any of them missing,
+    // `boot check` exits non-zero for that instead and the assertion below passes
+    // without proving anything — which is what happened the first time this was
+    // written, and is the exact shape CLAUDE.md warns about.
+    for name in rescriptum::boot::loaders::loaders() {
+        fs::write(boot_dir.join(name), loader(100)).expect("loader");
+    }
+    fs::write(answers_dir.join("default.toml"), "keyboard = \"fr\"\n").expect("answer");
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_rescriptum"))
+        .env("RESCRIPTUM_LISTEN_ADDR", "127.0.0.1:0")
+        .env("RESCRIPTUM_ANSWERS_DIR", &answers_dir)
+        .env("RESCRIPTUM_BOOT_DIR", &boot_dir)
+        .env("RESCRIPTUM_TFTP_ADDR", &taken)
+        .stderr(Stdio::piped())
+        .stdout(Stdio::null())
+        .spawn()
+        .expect("spawn server");
+
+    let stderr = child.stderr.take().expect("piped stderr");
+    let mut lines = BufReader::new(stderr).lines();
+    let mut log = Vec::new();
+    let mut answer_addr = None;
+    for _ in 0..16 {
+        let Some(Ok(line)) = lines.next() else { break };
+        let done = line.contains("rescriptum ") && line.contains("listening on");
+        if done && let Some(rest) = line.split("listening on ").nth(1) {
+            answer_addr = Some(
+                rest.split_whitespace()
+                    .next()
+                    .unwrap_or_default()
+                    .to_string(),
+            );
+        }
+        log.push(line);
+        if done {
+            break;
+        }
+    }
+    let log = log.join("\n");
+
+    // 1. It said so, and said what it costs. A degraded server that says nothing is the
+    //    failure mode this whole decision exists to refuse.
+    assert!(
+        log.contains("warning: cannot bind TFTP"),
+        "no warning about the failed bind; saw:\n{log}"
+    );
+    assert!(
+        log.contains("Answers and media are unaffected"),
+        "the warning has to say what still works; saw:\n{log}"
+    );
+
+    // 2. It is still serving answers — the product.
+    let addr = answer_addr.unwrap_or_else(|| panic!("the server never came up; saw:\n{log}"));
+    let body = r#"{"dmi":{"system":{"serial":"unclaimed"}}}"#;
+    let mut sock = std::net::TcpStream::connect(&addr).expect("connect to answers");
+    sock.set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    std::io::Write::write_all(
+        &mut sock,
+        format!(
+            "POST /answer HTTP/1.1\r\nHost: nas\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        )
+        .as_bytes(),
+    )
+    .expect("write");
+    let mut response = String::new();
+    let _ = std::io::Read::read_to_string(&mut sock, &mut response);
+    assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+    assert!(response.contains("keyboard"), "{response}");
+
+    // 3. And `boot check` still calls it a problem, because a startup warning scrolls
+    //    past and a non-zero exit is what a deploy script and a monitor can see.
+    let out = Command::new(env!("CARGO_BIN_EXE_rescriptum"))
+        .arg("boot")
+        .arg("check")
+        .env("RESCRIPTUM_BOOT_DIR", &boot_dir)
+        .env("RESCRIPTUM_TFTP_ADDR", &taken)
+        .output()
+        .expect("run boot check");
+    let said = String::from_utf8_lossy(&out.stdout).to_string();
+    assert!(!out.status.success(), "boot check called it fine: {said}");
+    assert!(said.contains("BROKEN nothing answers on"), "{said}");
+    assert!(
+        said.contains("1 problem(s)"),
+        "the TFTP port is the only one: {said}"
+    );
+
+    // And the control: the same directory with TFTP turned off is clean. Without this
+    // the assertions above could be passing on some unrelated complaint.
+    let out = Command::new(env!("CARGO_BIN_EXE_rescriptum"))
+        .arg("boot")
+        .arg("check")
+        .env("RESCRIPTUM_BOOT_DIR", &boot_dir)
+        .env("RESCRIPTUM_TFTP_ADDR", "off")
+        .output()
+        .expect("run boot check");
+    let said = String::from_utf8_lossy(&out.stdout).to_string();
+    assert!(out.status.success(), "{said}");
+
+    let _ = child.kill();
+    let _ = child.wait();
+    let _ = fs::remove_dir_all(&base);
+    drop(squatter);
+}

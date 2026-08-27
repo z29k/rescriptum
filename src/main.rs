@@ -235,12 +235,10 @@ async fn serve(cfg: Arc<Config>) -> ExitCode {
                 return ExitCode::FAILURE;
             }
         };
-        // **Off is a value, not an absence.** Naming a boot directory used to imply a
-        // TFTP server on port 69, so on a platform that cannot bind a privileged port —
-        // a DSM package, a container without the capability — telling the server where
-        // the loaders are turned into a server that refuses to start. That is a trap
-        // rather than a constraint. Said once at startup, because "where did my TFTP
-        // go" is otherwise a silent question.
+        // **Off is a value, not an absence.** It is how an operator says another daemon
+        // hands the loader over while rescriptum serves the rest of the chain — a
+        // deployment workaround, never what a package ships with. Said once at startup,
+        // because "where did my TFTP go" is otherwise a silent question.
         match cfg.tftp_addr() {
             None => log::server(&format!(
                 "tftp is off — {} is still served over HTTP at /boot/ and still checked \
@@ -249,31 +247,54 @@ async fn serve(cfg: Arc<Config>) -> ExitCode {
             )),
             Some(addr) => {
                 let socket = match tokio::net::UdpSocket::bind(&addr).await {
-                    Ok(socket) => socket,
+                    Ok(socket) => Some(socket),
+                    // **This is the one listener whose failure to bind does not end the
+                    // server, and the reason is measured rather than argued.** Every
+                    // other one here is fatal, on the rule that a server which accepts
+                    // and never answers is worse than one that does not start. TFTP is
+                    // where that rule inverts: port 69 is privileged — the only
+                    // privileged port in the whole design — so this bind is the only one
+                    // that can fail for a reason nobody configured. On a DSM 7.2.2
+                    // machine the capability is granted by a `setcap` outside the
+                    // package, and **an upgrade replaces the binary and silently drops
+                    // it**; with a fatal bind the whole package then goes to
+                    // `start_failed`, taking answers and media with it and failing every
+                    // install in flight to report that a second port could not be opened.
+                    //
+                    // Answers are the product. TFTP hands over one file and something
+                    // else can, so this degrades instead — loudly, in three places at
+                    // once: this line, `boot check`'s non-zero exit, and the settings
+                    // panel. **The failure mode being refused is the silent one, not the
+                    // degraded one**, and a warning nobody can miss is not silent.
                     Err(e) => {
                         log::server(&format!(
-                            "cannot bind TFTP on {addr}: {e}{}",
+                            "warning: cannot bind TFTP on {addr}: {e}{}. Answers and media \
+                             are unaffected and {} is still served over HTTP at /boot/, \
+                             but nothing here hands a loader over UDP — a machine sent to \
+                             this server by DHCP will ask and get nothing",
                             if addr.ends_with(":69") {
                                 " — port 69 is privileged. Run as root and set \
-                                 RESCRIPTUM_USER to drop afterwards, use setcap, choose \
-                                 another port, or set RESCRIPTUM_TFTP_ADDR=off and let \
-                                 something else hand the loader over"
+                                 RESCRIPTUM_USER to drop afterwards, or grant the binary \
+                                 cap_net_bind_service with setcap"
                             } else {
                                 ""
-                            }
+                            },
+                            tftp.root().display()
                         ));
-                        return ExitCode::FAILURE;
+                        None
                     }
                 };
-                let bound = socket
-                    .local_addr()
-                    .map(|a| a.to_string())
-                    .unwrap_or_else(|_| addr.clone());
-                log::server(&format!(
-                    "tftp listening on {bound} — serving {}",
-                    tftp.root().display()
-                ));
-                tokio::spawn(rescriptum::boot::tftp::serve(socket, tftp));
+                if let Some(socket) = socket {
+                    let bound = socket
+                        .local_addr()
+                        .map(|a| a.to_string())
+                        .unwrap_or_else(|_| addr.clone());
+                    log::server(&format!(
+                        "tftp listening on {bound} — serving {}",
+                        tftp.root().display()
+                    ));
+                    tokio::spawn(rescriptum::boot::tftp::serve(socket, tftp));
+                }
             }
         }
     }

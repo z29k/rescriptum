@@ -1231,6 +1231,7 @@ fn boot_menu(cfg: &Config) -> ExitCode {
 #[cfg(feature = "boot")]
 fn boot_check(cfg: &Config) -> ExitCode {
     use crate::boot::loaders;
+    use crate::boot::tftp::ProbeResult;
 
     let mut failures = 0usize;
     let mut notes: Vec<String> = Vec::new();
@@ -1263,6 +1264,70 @@ fn boot_check(cfg: &Config) -> ExitCode {
                     "{variant} is absent — it is the one to reach for when the plain UEFI \
                      build cannot see a NIC"
                 ));
+            }
+        }
+    }
+
+    // **Can a loader actually be handed over?** Everything above is about the files
+    // being on disk; this is about anything reaching them over UDP, which is the first
+    // question a booting machine asks and the one nothing else here answers.
+    //
+    // **Binding is not the check, and finding that out cost a test.** A bind that
+    // *succeeds* means nothing is listening — the degraded state, not the healthy one —
+    // and a bind that fails cannot tell this server apart from another daemon squatting
+    // the port, because both are `AddrInUse`. So the probe is a real read request: what
+    // comes back is what a machine would get.
+    match cfg.tftp_addr() {
+        None => notes.push(
+            "TFTP is off (RESCRIPTUM_TFTP_ADDR) — the loaders above are served over HTTP \
+             at /boot/ and something else has to hand one over on port 69"
+                .to_string(),
+        ),
+        Some(addr) => {
+            // Ask for a loader that is actually here, so `Refused` means what it says.
+            let wanted = loaders::loaders()
+                .iter()
+                .find(|l| dir.join(l).is_file())
+                .copied()
+                .unwrap_or("ipxe-undionly.kpxe");
+            match crate::boot::tftp::probe(&addr, wanted, std::time::Duration::from_secs(2)) {
+                ProbeResult::Served => println!("  ok   {addr} handed over {wanted}"),
+                ProbeResult::Refused => {
+                    println!(
+                        "  BROKEN a TFTP server answered on {addr} but would not serve \
+                         {wanted} — it is not this one, or not rooted at {}",
+                        dir.display()
+                    );
+                    failures += 1;
+                }
+                // Silence splits on whether the port is even obtainable, and the two
+                // halves are different problems. Cannot bind: something else holds it,
+                // or the privilege is missing — the DSM case, where an upgrade drops the
+                // `setcap` and the server warns and carries on. Can bind: nothing is
+                // there at all, which is simply what "the server is not running" looks
+                // like from a command run before starting it, so it is a note.
+                ProbeResult::Silent => match std::net::UdpSocket::bind(&addr) {
+                    Ok(_) => notes.push(format!(
+                        "nothing is listening on {addr} — expected if the server is not \
+                         running; if it is, it failed to bind and said so at startup"
+                    )),
+                    Err(e) => {
+                        println!(
+                            "  BROKEN nothing answers on {addr} and it cannot be bound \
+                             either: {e}{} — the server still answers and still serves \
+                             media, but a machine sent here by DHCP asks for a loader and \
+                             gets nothing",
+                            if addr.ends_with(":69") {
+                                ". Port 69 is privileged: run as root and set \
+                                 RESCRIPTUM_USER to drop afterwards, or grant the binary \
+                                 cap_net_bind_service with setcap"
+                            } else {
+                                ""
+                            }
+                        );
+                        failures += 1;
+                    }
+                },
             }
         }
     }

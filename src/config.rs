@@ -384,13 +384,17 @@ impl Config {
 
     /// The TFTP listener's effective address, or `None` when TFTP is off.
     ///
-    /// **`off` is a value, not an absence**, and it exists because naming a boot
-    /// directory used to imply a TFTP server on port 69. On a platform that cannot bind
-    /// a privileged port — a DSM package, a container without the capability — that
-    /// turned "tell the server where the loaders are" into "the server refuses to
-    /// start", which is a trap rather than a constraint. The loaders are still served
-    /// over HTTP at `/boot/…` and still checked by `boot check`; only the listener is
-    /// gone, and something else hands the file over.
+    /// **`off` is a value, not an absence** — it is how an operator says the loader will
+    /// come from somebody else's TFTP server while rescriptum keeps serving the rest of
+    /// the chain. The loaders stay served over HTTP at `/boot/…` and stay checked by
+    /// `boot check`; only the listener is gone.
+    ///
+    /// **It is a deployment workaround, never a packaged default.** rescriptum *is* the
+    /// TFTP server; a build or a package that ships with `off` set has traded away the
+    /// thing it is for. Where the platform makes port 69 hard, the answer is to make one
+    /// of the three routes durable there — bind then drop, socket activation, `setcap` —
+    /// not to hand the port to another daemon. See `tftp_addr_is_named` for what happens
+    /// when the route has not been opened yet.
     pub fn tftp_addr(&self) -> Option<String> {
         match self.tftp_addr.as_deref() {
             Some(value) if is_off(value) => None,
@@ -1151,10 +1155,10 @@ mod tests {
 
     #[test]
     fn tftp_can_be_turned_off_without_giving_up_the_boot_directory() {
-        // **The trap this exists to remove.** Naming a boot directory used to imply a
-        // TFTP server on port 69, so on a platform that cannot bind a privileged port —
-        // a DSM package, a container without the capability — telling the server where
-        // the loaders are turned into a server that refuses to start.
+        // **Off is a deployment workaround, never a packaged default.** It is how an
+        // operator says another daemon on this host hands the loader over while
+        // rescriptum serves the rest of the chain. rescriptum *is* the TFTP server; a
+        // package that shipped with this set would have traded away the thing it is for.
         let c = Config::from_lookup(lookup(&[
             ("RESCRIPTUM_BOOT_DIR", "/srv/boot"),
             ("RESCRIPTUM_TFTP_ADDR", "off"),

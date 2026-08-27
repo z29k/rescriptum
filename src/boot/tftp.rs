@@ -499,6 +499,62 @@ fn error_packet(code: u16, message: &str) -> Vec<u8> {
     packet
 }
 
+/// Ask a TFTP server on `addr` for `filename`, and say whether anything served it.
+///
+/// **This exists because binding is not a health check, and the test that found that out
+/// is in `tests/tftp.rs`.** A successful bind means *nothing is listening* — which is
+/// exactly the degraded state, not the healthy one — and a failed bind cannot tell our
+/// own running server apart from some other daemon squatting port 69. Both are
+/// `AddrInUse`. The only question with a real answer is the one a booting machine asks:
+/// send a read request, and see whether a loader comes back.
+///
+/// Synchronous and short on purpose: this is `boot check`'s, not the server's, and a
+/// command an operator runs must not hang on a silent port. One request, one wait, and
+/// the first reply decides — `DATA` or `OACK` means served, an `ERROR` means a server is
+/// there and this file is not, silence means nothing is.
+pub fn probe(addr: &str, filename: &str, wait: Duration) -> ProbeResult {
+    let Ok(socket) = std::net::UdpSocket::bind("0.0.0.0:0") else {
+        return ProbeResult::Silent;
+    };
+    if socket.set_read_timeout(Some(wait)).is_err() {
+        return ProbeResult::Silent;
+    }
+
+    let mut packet = Vec::new();
+    packet.extend_from_slice(&OP_RRQ.to_be_bytes());
+    packet.extend_from_slice(filename.as_bytes());
+    packet.push(0);
+    packet.extend_from_slice(b"octet\0");
+    // No options. A server that negotiates none still has to answer with plain 512-byte
+    // blocks, so this is the one request every TFTP server on earth understands.
+    if socket.send_to(&packet, addr).is_err() {
+        return ProbeResult::Silent;
+    }
+
+    let mut buffer = [0u8; 1024];
+    let Ok((n, _)) = socket.recv_from(&mut buffer) else {
+        return ProbeResult::Silent;
+    };
+    if n < 2 {
+        return ProbeResult::Silent;
+    }
+    match u16::from_be_bytes([buffer[0], buffer[1]]) {
+        OP_DATA | OP_OACK => ProbeResult::Served,
+        OP_ERROR => ProbeResult::Refused,
+        _ => ProbeResult::Silent,
+    }
+}
+
+/// What [`probe`] found. Three outcomes because they mean three different things to an
+/// operator: a loader was handed over, a TFTP server is there but does not have that
+/// file, or nothing answered at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProbeResult {
+    Served,
+    Refused,
+    Silent,
+}
+
 /// Whether an address is one nothing legitimate asks for a loader from.
 fn is_broadcastish(ip: IpAddr) -> bool {
     match ip {
