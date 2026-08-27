@@ -13,6 +13,7 @@
 pub mod catalog;
 pub mod cpio;
 pub mod dhcp;
+pub mod fetch;
 pub mod iso;
 pub mod loaders;
 pub mod media;

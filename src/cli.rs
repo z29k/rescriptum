@@ -29,7 +29,8 @@ USAGE:
     rescriptum config set K=V     edit the file RESCRIPTUM_ENV_FILE names
     rescriptum config unset K     comment a setting back out of it
     rescriptum media list         the installer images this server holds
-    rescriptum media add FILE     register one: verify, probe, record its digest
+    rescriptum media add FILE     register one already in the media directory
+    rescriptum media add URL      fetch one into it, then register it
     rescriptum media check        re-verify every recorded digest, report what drifted
     rescriptum media ipxe ID      print the .ipxe answer that boots one image
     rescriptum boot dhcp-snippet  their DHCP server's two lines, generated
@@ -469,7 +470,7 @@ pub fn media(cfg: &Config, args: &[String]) -> ExitCode {
         _ => {
             eprintln!(
                 "usage: rescriptum media list\n\
-                 \x20      rescriptum media add FILE [--sha256 DIGEST]\n\
+                 \x20      rescriptum media add FILE|URL [--sha256 D] [--as NAME]\n\
                  \x20      rescriptum media check\n\
                  \x20      rescriptum media ipxe ID\n\
                  \x20      rescriptum media prepare ID [--as NAME] [--url URL]\n\
@@ -490,22 +491,30 @@ fn media_list(catalog: &crate::boot::catalog::Catalog) -> ExitCode {
         }
     };
 
+    // **The last column is what makes the archive visible.** A base image is what the
+    // vendor published, on disk, never modified; a prepared one is a few hundred bytes
+    // of sidecar over it. Seeing which is which is the difference between a directory
+    // and an archive somebody can reason about.
     println!(
-        "{:<20} {:<8} {:<10} {:<28} {:>8}  PINNED",
+        "{:<20} {:<8} {:<10} {:<24} {:>8}  SOURCE",
         "ID", "FAMILY", "ARCH", "VERSION", "SIZE"
     );
     for entry in &listing.entries {
+        let source = match &entry.prepared {
+            Some(prepared) => format!("{} -> {}", prepared.source_id, prepared.url),
+            None => match &entry.digest {
+                Some(digest) => format!("base, pinned {}", &digest[..12.min(digest.len())]),
+                None => "base".to_string(),
+            },
+        };
         println!(
-            "{:<20} {:<8} {:<10} {:<28} {:>8}  {}",
+            "{:<20} {:<8} {:<10} {:<24} {:>8}  {}",
             entry.id,
             entry.family().label(),
-            entry.arch().map(|a| a.label()).unwrap_or("—"),
-            truncate(&entry.describe(), 28),
+            entry.arch().map(|a| a.label()).unwrap_or("-"),
+            truncate(&entry.describe(), 24),
             human(entry.size),
-            match &entry.digest {
-                Some(digest) => digest[..12.min(digest.len())].to_string(),
-                None => "—".to_string(),
-            },
+            source,
         );
     }
     if listing.entries.is_empty() {
@@ -517,29 +526,58 @@ fn media_list(catalog: &crate::boot::catalog::Catalog) -> ExitCode {
     ExitCode::SUCCESS
 }
 
+/// `media add FILE` or `media add URL` — register an image, or fetch one and register it.
+///
+/// **No base image is ever in this repository or in a release.** An ISO is somebody
+/// else's artefact, it is gigabytes, and it changes on its own schedule; it belongs on
+/// the deployment's disk. Two ways to get it there, and the difference is only who does
+/// the download:
+///
+/// - **Drop it in the media directory** — over SMB, over `scp`, from wherever it already
+///   is — and register it. The native act on a NAS.
+/// - **Give this a URL** and the server fetches it, through `curl` or `wget`, straight
+///   into that directory.
+///
+/// Either way the file lands in the directory and **is never modified afterwards**. That
+/// is what makes the media directory the archive: preparing an image produces a sidecar
+/// and an injection applied on the wire, so the bytes on disk stay exactly what the
+/// vendor published and their digest stays checkable against the vendor's own checksums.
 #[cfg(feature = "boot")]
 fn media_add(catalog: &crate::boot::catalog::Catalog, args: &[String]) -> ExitCode {
-    let mut path: Option<&String> = None;
+    let mut source: Option<&String> = None;
     let mut expected: Option<&String> = None;
+    let mut name: Option<String> = None;
+    let mut unverified = false;
     let mut rest = args.iter();
     while let Some(arg) = rest.next() {
-        if arg == "--sha256" {
-            match rest.next() {
+        match arg.as_str() {
+            "--sha256" => match rest.next() {
                 Some(digest) => expected = Some(digest),
                 None => {
                     eprintln!("--sha256 wants a digest");
                     return ExitCode::FAILURE;
                 }
+            },
+            "--as" => match rest.next() {
+                Some(value) => name = Some(value.clone()),
+                None => {
+                    eprintln!("--as wants a filename");
+                    return ExitCode::FAILURE;
+                }
+            },
+            "--unverified" => unverified = true,
+            _ if source.is_none() => source = Some(arg),
+            other => {
+                eprintln!("unexpected argument {other:?}");
+                return ExitCode::FAILURE;
             }
-        } else if path.is_none() {
-            path = Some(arg);
-        } else {
-            eprintln!("unexpected argument {arg:?}");
-            return ExitCode::FAILURE;
         }
     }
-    let Some(path) = path.map(std::path::PathBuf::from) else {
-        eprintln!("usage: rescriptum media add FILE [--sha256 DIGEST]");
+    let Some(source) = source else {
+        eprintln!(
+            "usage: rescriptum media add FILE [--sha256 DIGEST]\n\
+             \x20      rescriptum media add URL --sha256 DIGEST [--as NAME.iso]"
+        );
         return ExitCode::FAILURE;
     };
 
@@ -549,22 +587,64 @@ fn media_add(catalog: &crate::boot::catalog::Catalog, args: &[String]) -> ExitCo
         eprintln!("{digest:?} is not a SHA-256 — it is 64 hexadecimal characters");
         return ExitCode::FAILURE;
     }
+
+    let path = if crate::boot::fetch::looks_like_a_url(source) {
+        // **A digest is required for a URL**, and `--unverified` is what makes going
+        // without one a deliberate act rather than the default. This decides what every
+        // machine on the network installs; an image pulled off a mirror with nothing
+        // checking it is the one place in this design where that would be a shrug.
+        if expected.is_none() && !unverified {
+            eprintln!(
+                "fetching {source} needs --sha256, because nothing else would check what \
+                 arrived. Vendors publish a SHA256SUMS beside the image.\n\
+                 If you genuinely mean to skip it, say --unverified."
+            );
+            return ExitCode::FAILURE;
+        }
+        match crate::boot::fetch::fetch(
+            source,
+            catalog.dir(),
+            name.as_deref(),
+            expected.map(String::as_str),
+        ) {
+            Ok(fetched) => {
+                eprintln!(
+                    "fetched {} via {}{}",
+                    human(fetched.bytes),
+                    fetched.via,
+                    if expected.is_some() {
+                        ", digest verified"
+                    } else {
+                        " — UNVERIFIED"
+                    }
+                );
+                fetched.path
+            }
+            Err(e) => {
+                eprintln!("{e}");
+                return ExitCode::FAILURE;
+            }
+        }
+    } else {
+        std::path::PathBuf::from(source)
+    };
+
     if !path.is_file() {
         eprintln!("{} is not a file", path.display());
         return ExitCode::FAILURE;
     }
 
-    // **The server never downloads images; it receives them.** Dropping the file into
-    // the directory is the native act — over SMB, over scp, from wherever the ISO
-    // already is — and this only registers what is already there. Registering something
-    // outside the directory would record a digest for a file the listener cannot serve.
+    // A file already on disk is registered where it lies: nothing is copied, so
+    // registering one outside the directory would record a digest for a file the
+    // listener cannot serve.
     let inside = path
         .parent()
         .map(|p| same_directory(p, catalog.dir()))
         .unwrap_or(false);
     if !inside {
         eprintln!(
-            "{} is not in {} — put the image there first, then register it.\n\
+            "{} is not in {} — put the image there first, then register it, or give a \
+             URL and let the server fetch it.\n\
              Nothing is copied: the catalogue serves the file where it lies.",
             path.display(),
             catalog.dir().display()

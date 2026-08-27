@@ -103,6 +103,15 @@ These are deliberate design decisions, not oversights. Do not "improve" them wit
   dependency-free. Behind the `boot` cargo feature, default on. `select.rs` knows none of
   this exists, and the only seam is that `media ipxe` **prints an ordinary `.ipxe` answer
   document** — selection, layering and templating then apply unchanged.
+- **No installer image is in this repository or in a release.** An ISO is somebody
+  else's artefact, gigabytes, on its own schedule. `RESCRIPTUM_MEDIA_DIR` is where a
+  deployment keeps them and **that directory is the archive**: `media add <url>` fetches
+  one into it (through `curl`/`wget` — there is no TLS in the binary), and nothing ever
+  modifies it afterwards. Preparing an image produces a sidecar plus an injection applied
+  on the wire, so the bytes on disk stay what the vendor published and stay checkable
+  against the vendor's own `SHA256SUMS`. A URL **requires** `--sha256` unless
+  `--unverified` is passed: this decides what every machine installs, and the unsafe path
+  has to be a deliberate act.
 - `packaging/ipxe/` — the branded loaders: `branding.h`, the embedded script, a
   SHA-pinned upstream commit and `build.sh`. **No binaries in git, ever**; this directory
   is the GPLv2 written offer. `packaging/boot-rig/` — the boot rig, three services on an

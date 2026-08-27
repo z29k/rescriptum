@@ -1116,3 +1116,170 @@ fn preparing_a_family_that_reads_no_mode_file_is_refused_with_the_alternative() 
     assert!(printed.contains("only Proxmox"), "{printed}");
     assert!(printed.contains("media ipxe ubuntu"), "{printed}");
 }
+
+// ---- getting an image in ---------------------------------------------------
+
+#[test]
+fn media_add_fetches_a_url_into_the_directory() {
+    // **No base image is in this repository or in a release**, so the server has to be
+    // able to go and get one. There is no TLS in the binary — forty crates and a
+    // megabyte on armv7 for a job the host already does — so this shells out, and the
+    // test serves the image over a plain local socket to prove the whole path.
+    let s = Server::start(&[]);
+    let image = pve_image();
+    let (addr, done) = serve_one_file(image.clone());
+
+    let digest = rescriptum::boot::sha256::hex(&image);
+    let out = s.run(&[
+        "media",
+        "add",
+        &format!("http://{addr}/proxmox-ve_8.4-1.iso"),
+        "--sha256",
+        &digest,
+    ]);
+    let _ = done.join();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    // The image is in the directory, byte for byte, under the name the URL implied.
+    let landed = s.media_dir().join("proxmox-ve_8.4-1.iso");
+    assert!(
+        landed.is_file(),
+        "{:?}",
+        fs::read_dir(s.media_dir()).unwrap().count()
+    );
+    assert_eq!(fs::read(&landed).expect("read"), image);
+    // And no `.part` survives: a partial download must never become a catalogue entry.
+    assert!(!s.media_dir().join("proxmox-ve_8.4-1.iso.part").exists());
+
+    // It is registered, so the catalogue can see it.
+    assert!(s.media_dir().join("proxmox-ve_8.4-1.media").is_file());
+}
+
+#[test]
+fn a_fetched_image_that_does_not_match_its_digest_is_deleted() {
+    // A mismatch is a corrupted transfer, the wrong file, or a mirror that is not what
+    // it claims. Leaving it on disk means somebody registers it by hand tomorrow.
+    let s = Server::start(&[]);
+    let (addr, done) = serve_one_file(pve_image());
+
+    let out = s.run(&[
+        "media",
+        "add",
+        &format!("http://{addr}/pve.iso"),
+        "--sha256",
+        &"a".repeat(64),
+    ]);
+    let _ = done.join();
+    assert!(!out.status.success());
+    let printed = String::from_utf8_lossy(&out.stderr).to_string();
+    assert!(printed.contains("digest mismatch"), "{printed}");
+    assert!(printed.contains("was deleted"), "{printed}");
+    assert!(
+        !s.media_dir().join("pve.iso").exists(),
+        "nothing may be left behind"
+    );
+    assert!(!s.media_dir().join("pve.iso.part").exists());
+}
+
+#[test]
+fn fetching_without_a_digest_has_to_be_asked_for() {
+    // This decides what every machine on the network installs. An image pulled off a
+    // mirror with nothing checking it is the one place that would be a shrug, so the
+    // unsafe path is a deliberate flag rather than the default.
+    let s = Server::start(&[]);
+    let out = s.run(&["media", "add", "http://192.0.2.1/pve.iso"]);
+    assert!(!out.status.success());
+    let printed = String::from_utf8_lossy(&out.stderr).to_string();
+    assert!(printed.contains("--sha256"), "{printed}");
+    assert!(
+        printed.contains("--unverified"),
+        "the way out has to be named: {printed}"
+    );
+    assert!(
+        printed.contains("SHA256SUMS"),
+        "and where to find one: {printed}"
+    );
+}
+
+#[test]
+fn a_fetch_never_overwrites_an_image_machines_may_be_booting() {
+    let s = Server::start(&[("pve.iso", pve_image())]);
+    let out = s.run(&[
+        "media",
+        "add",
+        "http://192.0.2.1/pve.iso",
+        "--sha256",
+        &"a".repeat(64),
+    ]);
+    assert!(!out.status.success());
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("already exists"),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn the_listing_says_which_entries_are_the_archive_and_which_derive_from_it() {
+    // **The base image is the archive**: what the vendor published, on disk, never
+    // modified. A prepared entry is a few hundred bytes over it. Seeing which is which
+    // is the difference between a directory and an archive somebody can reason about.
+    let s = Server::start(&[("pve-8.4.iso", pve_image())]);
+    assert!(s.run(&["media", "prepare", "pve-8.4"]).status.success());
+    std::thread::sleep(Duration::from_millis(1200));
+
+    let out = s.run(&["media", "list"]);
+    assert!(out.status.success());
+    let printed = String::from_utf8_lossy(&out.stdout).to_string();
+    assert!(printed.contains("SOURCE"), "{printed}");
+
+    let base = printed
+        .lines()
+        .find(|l| l.starts_with("pve-8.4 "))
+        .unwrap_or_else(|| panic!("{printed}"));
+    assert!(base.contains("base"), "the source image says so: {base}");
+
+    let derived = printed
+        .lines()
+        .find(|l| l.starts_with("pve-8.4-http"))
+        .unwrap_or_else(|| panic!("{printed}"));
+    assert!(
+        derived.contains("pve-8.4 ->"),
+        "and the derived one names it: {derived}"
+    );
+}
+
+/// A one-shot HTTP server that hands over `body` and exits. Enough to prove the fetch
+/// path end to end without reaching the internet from a test.
+fn serve_one_file(body: Vec<u8>) -> (String, std::thread::JoinHandle<()>) {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let addr = listener.local_addr().expect("addr").to_string();
+    let handle = std::thread::spawn(move || {
+        let Ok((mut sock, _)) = listener.accept() else {
+            return;
+        };
+        // Read the request line and headers, then answer. `curl --continue-at -` sends
+        // a Range header for a zero-length target, which a 200 satisfies.
+        let mut request = Vec::new();
+        let mut byte = [0u8; 1];
+        while let Ok(1) = sock.read(&mut byte) {
+            request.push(byte[0]);
+            if request.ends_with(b"\r\n\r\n") {
+                break;
+            }
+        }
+        let head = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\n\
+             Content-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        );
+        let _ = sock.write_all(head.as_bytes());
+        let _ = sock.write_all(&body);
+        let _ = sock.flush();
+    });
+    (addr, handle)
+}

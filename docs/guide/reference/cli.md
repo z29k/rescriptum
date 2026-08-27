@@ -132,6 +132,7 @@ Boot media: the installer images this server holds. Every one of these needs
 ```console
 $ rescriptum media list                    # what is held: family, architecture, version, digest
 $ rescriptum media add FILE [--sha256 D]   # register one already in the directory
+$ rescriptum media add URL --sha256 D      # fetch one into it, then register it
 $ rescriptum media check                   # re-verify every recorded digest
 $ rescriptum media ipxe ID                 # print the .ipxe answer that boots one image
 $ rescriptum media prepare ID [--url URL]  # a Proxmox image with its answer URL inside

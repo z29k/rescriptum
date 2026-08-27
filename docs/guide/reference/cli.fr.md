@@ -134,6 +134,7 @@ ces commandes exige `RESCRIPTUM_MEDIA_DIR` ; sans elle, elles le disent et sorte
 ```console
 $ rescriptum media list                    # ce qui est détenu : famille, architecture, version, empreinte
 $ rescriptum media add FILE [--sha256 D]   # enregistrer une image déjà dans le répertoire
+$ rescriptum media add URL --sha256 D      # la récupérer dedans, puis l'enregistrer
 $ rescriptum media check                   # revérifier chaque empreinte enregistrée
 $ rescriptum media ipxe ID                 # imprimer la réponse .ipxe qui démarre une image
 $ rescriptum media prepare ID [--url URL]  # une image Proxmox avec son URL de réponse dedans

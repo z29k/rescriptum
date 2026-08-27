@@ -23,10 +23,63 @@ $ export RESCRIPTUM_MEDIA_DIR=/srv/media
 Non défini, tout est éteint. Rien ne change pour un déploiement existant tant que vous ne
 la définissez pas.
 
+## Où vivent les images de base
+
+**Aucune image d'installation n'est dans ce projet, ni dans une version publiée.** Une
+ISO est l'artefact de quelqu'un d'autre, elle pèse un à quatre gigaoctets, et elle change
+à son propre rythme — trois raisons distinctes pour qu'elle vive sur votre disque plutôt
+que dans le nôtre. `RESCRIPTUM_MEDIA_DIR` est l'endroit où vous les gardez, et **ce
+répertoire est l'archive** : ce que l'éditeur a publié, sur disque, jamais modifié
+ensuite.
+
+Ce dernier point est une propriété, pas une promesse. Rien ici ne réécrit une image —
+en préparer une produit un fichier compagnon et une injection appliquée *au fil de
+l'eau* (voir [Préparer une image Proxmox](#préparer-une-image-proxmox)), de sorte que les
+octets sur disque restent exactement ce que l'éditeur a publié et que leur empreinte
+reste vérifiable contre le `SHA256SUMS` de l'éditeur. `media list` dit quelles entrées
+sont l'archive et lesquelles en dérivent.
+
 ## Faire entrer une image
 
-Le serveur ne télécharge jamais d'image ; il la reçoit. Posez le fichier là où est le
-répertoire — en SMB, en `scp`, depuis là où l'ISO se trouve déjà — puis enregistrez-le :
+Deux façons, et la seule différence est qui fait le téléchargement.
+
+### Laisser le serveur la récupérer
+
+```console
+$ rescriptum media add https://enterprise.proxmox.com/iso/proxmox-ve_8.4-1.iso \
+    --sha256 9f86d081884c7d65…
+fetching https://enterprise.proxmox.com/iso/proxmox-ve_8.4-1.iso
+  with curl, into /srv/media/proxmox-ve_8.4-1.iso.part
+######################################################################## 100.0%
+verifying 1.5G …
+fetched 1.5G via curl, digest verified
+```
+
+Elle atterrit sous un nom en `.part` et n'est renommée qu'une fois l'empreinte
+vérifiée : **un téléchargement partiel ne devient jamais une entrée du catalogue** — le
+catalogue analyse ce qu'il trouve, et une ISO tronquée s'analyse comme une image inconnue
+qu'une machine essaierait ensuite de démarrer. Une récupération interrompue laisse le
+`.part` en place, et relancer la commande la reprend.
+
+`--sha256` est **obligatoire** ici, parce que rien d'autre ne vérifierait ce qui est
+arrivé. Les éditeurs publient un `SHA256SUMS` à côté de l'image. Si vous voulez vraiment
+vous en passer, dites `--unverified` — l'important est que sauter cette vérification soit
+un acte délibéré et non le défaut, puisque cela décide ce que chaque machine du réseau
+installe.
+
+`--as NOM.iso` choisit le nom de fichier quand l'URL n'en implique pas d'utilisable.
+
+::: tip Il n'y a pas de TLS dans ce binaire
+rustls et un magasin de racines, c'est une quarantaine de crates et plus d'un mégaoctet
+sur ARMv7, pour un travail dont chaque hôte a déjà l'outil. Donc ceci lance `curl`, ou
+`wget` si c'est lui qui est installé, et le dit franchement s'il n'en trouve aucun — auquel
+cas la réponse est celle ci-dessous.
+:::
+
+### Ou la poser vous-même
+
+En SMB, en `scp`, depuis là où l'ISO se trouve déjà — le geste naturel sur un NAS — puis
+l'enregistrer :
 
 ```console
 $ rescriptum media add /srv/media/pve-8.4.iso --sha256 9f86d081884c7d65…

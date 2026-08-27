@@ -23,10 +23,60 @@ $ export RESCRIPTUM_MEDIA_DIR=/srv/media
 Unset is the whole off switch. Nothing changes for an existing deployment until you set
 it.
 
+## Where the base images live
+
+**No installer image is in this project, and none is in a release.** An ISO is somebody
+else's artefact, it is one to four gigabytes, and it changes on its own schedule — three
+separate reasons it belongs on your disk rather than in ours. `RESCRIPTUM_MEDIA_DIR` is
+where you keep them, and **that directory is the archive**: what a vendor published, on
+disk, never modified afterwards.
+
+That last part is a property rather than a promise. Nothing here rewrites an image —
+preparing one produces a sidecar and an injection applied *on the wire* (see
+[Preparing a Proxmox image](#preparing-a-proxmox-image)), so the bytes on disk stay
+exactly what the vendor published and their digest stays checkable against the vendor's
+own `SHA256SUMS`. `media list` says which entries are the archive and which derive from
+it.
+
 ## Getting an image in
 
-The server never downloads images; it receives them. Put the file where the directory
-is — over SMB, over `scp`, from wherever the ISO already is — and then register it:
+Two ways, and the only difference is who does the download.
+
+### Let the server fetch it
+
+```console
+$ rescriptum media add https://enterprise.proxmox.com/iso/proxmox-ve_8.4-1.iso \
+    --sha256 9f86d081884c7d65…
+fetching https://enterprise.proxmox.com/iso/proxmox-ve_8.4-1.iso
+  with curl, into /srv/media/proxmox-ve_8.4-1.iso.part
+######################################################################## 100.0%
+verifying 1.5G …
+fetched 1.5G via curl, digest verified
+```
+
+It lands on a `.part` name and is renamed only once the digest matches, so **a partial
+download never becomes a catalogue entry** — the catalogue probes whatever it finds, and
+a truncated ISO probes as an unknown image a machine would then try to boot. An
+interrupted fetch leaves the `.part` in place and running the command again resumes it.
+
+`--sha256` is **required** here, because nothing else would check what arrived. Vendors
+publish a `SHA256SUMS` beside the image. If you genuinely mean to go without, say
+`--unverified` — the point is that skipping it is a deliberate act rather than the
+default, since this decides what every machine on the network installs.
+
+`--as NAME.iso` picks the filename when the URL does not imply a usable one.
+
+::: tip There is no TLS in this binary
+rustls plus a root store is forty-odd crates and over a megabyte on ARMv7, for a job
+every host already has a tool for. So this runs `curl`, or `wget` if that is what is
+installed, and says plainly when it finds neither — in which case the answer is the one
+below.
+:::
+
+### Or put it there yourself
+
+Over SMB, over `scp`, from wherever the ISO already is — the native act on a NAS — and
+then register it:
 
 ```console
 $ rescriptum media add /srv/media/pve-8.4.iso --sha256 9f86d081884c7d65…
