@@ -339,11 +339,30 @@ async fn transfer(request: &[u8], peer: SocketAddr, tftp: &Tftp) {
                 &peer.to_string(),
                 500,
                 &format!(
-                    "tftp: {} FAILED at the option handshake — the client asked for \
-                     blksize={asked_block} and would not take {block_size}. \
-                     RESCRIPTUM_TFTP_BLKSIZE is what caps it; unset it to agree to what \
-                     the client wants",
-                    parsed.filename
+                    "tftp: {} FAILED at the option handshake — {}",
+                    parsed.filename,
+                    // **Name the cap only when the cap did something.** The first version
+                    // named it either way, and printed "asked for 1468 and would not take
+                    // 1468" — which sent both the maintainer and me after a setting that
+                    // was not involved, while the real cause went unlooked-at for an hour.
+                    // A message that suggests a cause it has already ruled out is worse
+                    // than one that suggests none.
+                    if block_size != asked_block {
+                        format!(
+                            "the client asked for blksize={asked_block} and would not take \
+                             {block_size}. RESCRIPTUM_TFTP_BLKSIZE is what caps it; unset \
+                             it to agree to what the client wants"
+                        )
+                    } else {
+                        format!(
+                            "it never acknowledged the options it asked for itself \
+                             (blksize={asked_block}). **The reply comes from a fresh port** \
+                             — that is how TFTP works — so this is what a firewall or a NAT \
+                             between the two looks like: the request arrives, the answer \
+                             goes out, and the acknowledgement never comes back. On a NAS, \
+                             check the firewall; in a container, host networking"
+                        )
+                    }
                 ),
             );
             return;

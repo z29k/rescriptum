@@ -966,3 +966,39 @@ fn a_refused_option_handshake_says_so_and_names_the_cap() {
         "and the setting that caused it: {log}"
     );
 }
+
+/// **A message must not suggest a cause it has already ruled out.**
+///
+/// When the server agrees to exactly what the client asked for and the client still walks
+/// away, the block-size cap is provably not involved — it did nothing. Naming it anyway
+/// printed "asked for 1468 and would not take 1468", which sent two people after the wrong
+/// setting for an hour while the real cause (the reply comes from a fresh port, so a
+/// firewall between the two eats the acknowledgement) went unexamined.
+#[test]
+fn a_handshake_failure_blames_the_cap_only_when_the_cap_did_something() {
+    // Nothing capped: the server grants what was asked, and the client still stops.
+    let s = Server::start(&[("ipxe.kpxe", loader(32 * 1024))]);
+    let mut client = s.client();
+    client.read("ipxe.kpxe", &[("blksize", "1468")]);
+    let _ = client.receive();
+    drop(client);
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    let mut log = String::new();
+    while std::time::Instant::now() < deadline {
+        log = s.log();
+        if log.contains("option handshake") {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    assert!(log.contains("FAILED at the option handshake"), "{log}");
+    assert!(
+        !log.contains("RESCRIPTUM_TFTP_BLKSIZE"),
+        "it blamed a cap that did nothing: {log}"
+    );
+    assert!(
+        log.contains("fresh port"),
+        "and it has to point at what this actually looks like: {log}"
+    );
+}
