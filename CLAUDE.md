@@ -537,6 +537,18 @@ could not check. Note it needs `Resolution::format_name` (the extension), not
   identical — a machine on a real network fetched a loader, nothing happened, and the log
   said success. It is reported at the end now, `sent` or `FAILED after N of M`, with 500
   so `RESCRIPTUM_LOG=problems` keeps it.
+- **Never acknowledge a TFTP option that is not implemented.** `windowsize` (RFC 7440) was
+  echoed back in the OACK while the transfer loop sent one block and waited for its ACK. A
+  client told `windowsize 4` waits for four blocks before acknowledging anything, so both
+  sides waited and only the 700 ms retransmit broke the deadlock — every block costing a
+  resend and 700 ms, which makes a 1.1 MB loader take **nine minutes** and the firmware
+  give up first. RFC 2347 says an option left out of the OACK is treated as never
+  requested, so declining costs one ACK per block and nothing else. Found on the wire, in a
+  capture on the NAS, after firewalls and block sizes had both been wrongly blamed.
+- **A test client that does not behave like the client it stands in for proves nothing.**
+  The first version of the test for the above acknowledged every block whatever was
+  negotiated, so the deadlock could not happen and it passed with the bug reintroduced. It
+  honours the granted window now: 0.5 s healthy, 63 s with the bug back.
 - **A `connect`ed data socket makes the kernel drop what you most need to see.** It
   filters on the peer's address *and port*, so a client that acknowledges from a different
   source port has its packets discarded before any code runs — and the transfer dies

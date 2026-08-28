@@ -22,7 +22,8 @@
 //! RFC 1350 alone is not enough. The options are what decide whether firmware actually
 //! works: `blksize` (RFC 2348) because 512-byte blocks make a megabyte take 2,000
 //! round-trips, `tsize` (RFC 2349) because a number of ROMs will not proceed without
-//! being told the size up front, `timeout` (RFC 2349), and `windowsize` (RFC 7440) —
+//! being told the size up front, and `timeout` (RFC 2349). **`windowsize` (RFC 7440) is
+//! declined** — see the option table for the nine minutes that cost —
 //! offered only when asked, because some ROMs get it wrong.
 //!
 //! ## UDP is forgeable, so this is defensive by construction
@@ -80,9 +81,6 @@ const MAX_TRANSFER: Duration = Duration::from_secs(60);
 /// out of the boot server it was retrying to reach.
 const MAX_TRANSFERS: usize = 64;
 const MAX_PER_PEER: usize = 8;
-/// Windowing is offered when asked for, and capped: a ROM that asks for 64 and then
-/// mishandles the window turns one lost packet into a stall.
-const MAX_WINDOW: u16 = 8;
 
 pub struct Tftp {
     /// The boot-asset directory, canonicalised at start. Every request resolves inside
@@ -293,13 +291,22 @@ async fn transfer(request: &[u8], peer: SocketAddr, tftp: &Tftp) {
                     accepted.push(("timeout".to_string(), seconds.to_string()));
                 }
             }
-            "windowsize" => {
-                if let Ok(asked) = value.parse::<u16>()
-                    && asked >= 1
-                {
-                    accepted.push(("windowsize".to_string(), asked.min(MAX_WINDOW).to_string()));
-                }
-            }
+            // **Declined, and that is the fix rather than a limitation.** This used to
+            // echo the option back — agreeing to a window — while the transfer loop sent
+            // one block and waited for its acknowledgement. A client told `windowsize 4`
+            // waits for four blocks before acknowledging anything, so both sides waited,
+            // and only the 700 ms retransmit broke the deadlock. Every block then cost a
+            // resend and 700 ms: a 1.1 MB loader takes nine minutes that way, and the
+            // firmware gives up long before. Measured on the wire, from a capture on the
+            // NAS, after several wrong guesses about firewalls and block sizes.
+            //
+            // RFC 2347 is explicit that an option the server leaves out of the OACK is to
+            // be treated as never requested, so declining costs a client nothing but an
+            // acknowledgement per block — which on a LAN is a round trip of under a
+            // millisecond. **Agreeing to something not implemented is what cost nine
+            // minutes.** Implementing RFC 7440 properly is worth doing and is not this
+            // change: correctness first, and a window is an optimisation.
+            "windowsize" => {}
             // An option we do not implement is left out of the OACK, which is exactly
             // how RFC 2347 says to decline one.
             _ => {}

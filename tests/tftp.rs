@@ -1068,3 +1068,120 @@ fn a_client_that_acknowledges_from_another_port_is_still_served() {
     // And it says the client moved, because that is worth knowing about a ROM.
     assert!(log.contains("the client moved to port"), "{log}");
 }
+
+/// **Never agree to an option that is not implemented.**
+///
+/// `windowsize` used to be echoed back — the server saying "yes, four blocks per
+/// acknowledgement" — while the transfer loop sent one block and waited. A client told
+/// four waits for four, so both sides waited, and only the 700 ms retransmit broke the
+/// deadlock. Every block then cost a resend and 700 ms: 1.1 MB takes nine minutes that
+/// way, and firmware gives up long before. Found on the wire, from a capture on the NAS,
+/// after several wrong guesses about firewalls and block sizes.
+///
+/// RFC 2347 says an option left out of the OACK is to be treated as never requested, so
+/// declining costs a client one acknowledgement per block and nothing else.
+#[test]
+fn windowsize_is_declined_rather_than_agreed_to_and_ignored() {
+    let s = Server::start(&[("ipxe.kpxe", loader(8000))]);
+    let mut client = s.client();
+    // Exactly what a UEFI ROM sends: tsize, blksize and windowsize together.
+    client.read(
+        "ipxe.kpxe",
+        &[("tsize", "0"), ("blksize", "1468"), ("windowsize", "4")],
+    );
+    let (opcode, payload) = client.receive().expect("an option reply");
+    assert_eq!(opcode, OP_OACK);
+    let text = String::from_utf8_lossy(&payload);
+    assert!(
+        !text.contains("windowsize"),
+        "agreed to a window it does not implement: {text:?}"
+    );
+    // The options that *are* implemented still come back, so declining one is not
+    // declining all of them.
+    assert!(
+        text.contains("blksize") && text.contains("1468"),
+        "{text:?}"
+    );
+    assert!(text.contains("tsize"), "{text:?}");
+}
+
+/// And the whole file still arrives, one acknowledgement per block, without a single
+/// retransmission — which is what nine minutes versus a second comes down to.
+#[test]
+fn a_rom_that_asks_for_a_window_still_gets_its_file_promptly() {
+    let s = Server::start(&[("ipxe.kpxe", loader(64 * 1024))]);
+
+    // **The client has to behave like the ROM it is standing in for**, or this proves
+    // nothing: the ordinary test client acknowledges every block whatever was negotiated,
+    // so the deadlock cannot happen and the test passes with the bug reintroduced. Which
+    // it did, first time round. This one honours the window it was granted — waiting for
+    // that many blocks before acknowledging, exactly as RFC 7440 says a client should.
+    let sock = UdpSocket::bind("127.0.0.1:0").expect("bind");
+    sock.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+    let mut request = vec![0, 1];
+    // Built field by field rather than as one byte string: `\\00` reads as an
+    // octal escape, which in a protocol test is exactly the ambiguity to keep out.
+    for field in [
+        "ipxe.kpxe",
+        "octet",
+        "tsize",
+        "0",
+        "blksize",
+        "1468",
+        "windowsize",
+        "4",
+    ] {
+        request.extend_from_slice(field.as_bytes());
+        request.push(0);
+    }
+    let started = std::time::Instant::now();
+    sock.send_to(&request, &s.tftp_addr).expect("send");
+
+    let mut buffer = vec![0u8; 4096];
+    let (n, server) = sock.recv_from(&mut buffer).expect("a reply");
+    let mut window = 1usize;
+    if u16::from_be_bytes([buffer[0], buffer[1]]) == OP_OACK {
+        let text = String::from_utf8_lossy(&buffer[2..n]).to_string();
+        let parts: Vec<&str> = text.split('\0').collect();
+        for pair in parts.windows(2) {
+            if pair[0].eq_ignore_ascii_case("windowsize") {
+                window = pair[1].parse().unwrap_or(1);
+            }
+        }
+        sock.send_to(&[0, 4, 0, 0], server)
+            .expect("ack the options");
+    }
+
+    let mut got = Vec::new();
+    let mut since_ack = 0usize;
+    loop {
+        let Ok((n, _)) = sock.recv_from(&mut buffer) else {
+            break;
+        };
+        if u16::from_be_bytes([buffer[0], buffer[1]]) != OP_DATA {
+            break;
+        }
+        let last = u16::from_be_bytes([buffer[2], buffer[3]]);
+        got.extend_from_slice(&buffer[4..n]);
+        since_ack += 1;
+        let short = n - 4 < 1468;
+        if since_ack >= window || short {
+            let mut ack = vec![0, 4];
+            ack.extend_from_slice(&last.to_be_bytes());
+            sock.send_to(&ack, server).expect("ack");
+            since_ack = 0;
+        }
+        if short {
+            break;
+        }
+    }
+    assert_eq!(got.len(), 64 * 1024, "the whole file has to arrive");
+    assert_eq!(got, loader(64 * 1024));
+    // 45 blocks at one retransmit each would be 31 seconds. Anything near that is the
+    // deadlock back.
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "took {:?} — that is the retransmit deadlock, not a transfer",
+        started.elapsed()
+    );
+}
