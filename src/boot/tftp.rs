@@ -256,11 +256,13 @@ async fn transfer(request: &[u8], peer: SocketAddr, tftp: &Tftp) {
 
     // Options are negotiated in one OACK, acknowledged with block 0, before any data.
     let mut block_size = DEFAULT_BLOCK;
+    let mut asked_block = DEFAULT_BLOCK;
     let mut accepted: Vec<(String, String)> = Vec::new();
     for (name, value) in &parsed.options {
         match name.as_str() {
             "blksize" => {
                 if let Ok(asked) = value.parse::<usize>() {
+                    asked_block = asked;
                     block_size = asked.clamp(DEFAULT_BLOCK, tftp.cfg.tftp_blksize());
                     accepted.push(("blksize".to_string(), block_size.to_string()));
                 }
@@ -287,6 +289,25 @@ async fn transfer(request: &[u8], peer: SocketAddr, tftp: &Tftp) {
         }
     }
 
+    // **A request that arrived must always leave a trace, whatever happens next.**
+    // Moving the only line to the end of the transfer meant a request that never got
+    // going logged nothing at all — and that is precisely the case somebody is trying to
+    // diagnose. It cost the maintainer an evening: the machine said it was downloading,
+    // the server said nothing, and the two were both telling the truth.
+    //
+    // Two lines, then. This one says a machine asked; the one after the transfer says
+    // what it got. `RESCRIPTUM_LOG=problems` keeps only the second, which is the right
+    // split — but `all` is the default, and at `all` a silent request is a bug.
+    log::request(
+        &peer.to_string(),
+        200,
+        &format!(
+            "tftp: {} requested, {} bytes, blksize={block_size}",
+            parsed.filename,
+            contents.len()
+        ),
+    );
+
     if !accepted.is_empty() {
         let mut oack = vec![0, OP_OACK as u8];
         for (name, value) in &accepted {
@@ -296,10 +317,35 @@ async fn transfer(request: &[u8], peer: SocketAddr, tftp: &Tftp) {
             oack.push(0);
         }
         if socket.send(&oack).await.is_err() {
+            log::request(
+                &peer.to_string(),
+                500,
+                &format!(
+                    "tftp: {} FAILED — could not send the option reply",
+                    parsed.filename
+                ),
+            );
             return;
         }
         // The client acknowledges the option set with block 0 before data starts.
+        //
+        // **A client is allowed to hate the answer.** RFC 2348 lets a server reply with a
+        // *smaller* block size than was asked for, and the client is supposed to accept
+        // it — but a PXE ROM that wanted 1468 and is offered 512 often just stops, and
+        // this used to `return` without a word. Which is how capping the block size to
+        // help one network broke a machine that had been booting fine, invisibly.
         if !matches!(wait_for_ack(&socket, 0, &oack).await, Ack::Ok) {
+            log::request(
+                &peer.to_string(),
+                500,
+                &format!(
+                    "tftp: {} FAILED at the option handshake — the client asked for \
+                     blksize={asked_block} and would not take {block_size}. \
+                     RESCRIPTUM_TFTP_BLKSIZE is what caps it; unset it to agree to what \
+                     the client wants",
+                    parsed.filename
+                ),
+            );
             return;
         }
     }

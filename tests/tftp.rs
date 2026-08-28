@@ -903,3 +903,66 @@ fn the_health_probe_leaves_no_failure_in_the_log() {
         "the cancel left no trace at all: {log}"
     );
 }
+
+/// **A request that arrived must leave a trace, whatever happens next.**
+///
+/// Reporting the transfer at its end — right on its own — meant a request that never got
+/// going logged nothing at all, which is exactly the case somebody is trying to diagnose.
+/// It cost an evening on a real NAS: the machine said it was downloading, the server said
+/// nothing, and both were telling the truth.
+#[test]
+fn a_request_is_logged_when_it_arrives_not_only_when_it_finishes() {
+    let s = Server::start(&[("ipxe.kpxe", loader(32 * 1024))]);
+    let mut client = s.client();
+    client.read("ipxe.kpxe", &[("blksize", "1468")]);
+    let _ = client.receive();
+    // Deliberately never acknowledge, and look *before* the retries could have expired.
+    std::thread::sleep(Duration::from_millis(400));
+    let log = s.log();
+    assert!(
+        log.contains("ipxe.kpxe requested"),
+        "a request that has not finished yet is invisible: {log}"
+    );
+}
+
+/// **A client is allowed to hate the answer, and that must be visible.**
+///
+/// RFC 2348 lets a server reply with a smaller block size than was asked for, and the
+/// client is meant to accept it — but a PXE ROM that wanted 1468 and is offered 512 often
+/// just stops. That path used to return without a word, so capping the block size to help
+/// one network broke a machine that had been booting fine, invisibly.
+#[test]
+fn a_refused_option_handshake_says_so_and_names_the_cap() {
+    let s = Server::start_env(
+        &[("ipxe.kpxe", loader(32 * 1024))],
+        &[("RESCRIPTUM_TFTP_BLKSIZE", "512")],
+    );
+    let mut client = s.client();
+    client.read("ipxe.kpxe", &[("blksize", "1468")]);
+    let (opcode, _) = client.receive().expect("an option reply");
+    assert_eq!(opcode, OP_OACK);
+    // A ROM that will not take the smaller size simply stops here.
+    drop(client);
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    let mut log = String::new();
+    while std::time::Instant::now() < deadline {
+        log = s.log();
+        if log.contains("option handshake") {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    assert!(
+        log.contains("FAILED at the option handshake"),
+        "the handshake failed in silence: {log}"
+    );
+    assert!(
+        log.contains("blksize=1468") && log.contains("512"),
+        "the line has to name both sides of the disagreement: {log}"
+    );
+    assert!(
+        log.contains("RESCRIPTUM_TFTP_BLKSIZE"),
+        "and the setting that caused it: {log}"
+    );
+}
