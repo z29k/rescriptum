@@ -537,6 +537,12 @@ could not check. Note it needs `Resolution::format_name` (the extension), not
   identical — a machine on a real network fetched a loader, nothing happened, and the log
   said success. It is reported at the end now, `sent` or `FAILED after N of M`, with 500
   so `RESCRIPTUM_LOG=problems` keeps it.
+- **Intel AMT with a static address starves the host's DHCP on a shared NIC.** The
+  Proxmox installer's `dhclient` gives up after about eleven seconds; with the Management
+  Engine holding the interface statically while the host asks for a lease, no offer
+  arrives and the install aborts on `Network is unreachable` — while `dhclient -v eno1`
+  from the installer's own shell succeeds instantly afterwards. Setting AMT to DHCP fixes
+  it. Nothing here can widen that window, so it is documented rather than worked around.
 - **`auto-installer-mode.toml`'s keys are snake case, and one hyphen rejects the file.**
   `AutoInstSettings` is `deny_unknown_fields`, so `partition-label` is not a warning — the
   installer refuses the whole document and stops, asking a human who is not coming. Its own

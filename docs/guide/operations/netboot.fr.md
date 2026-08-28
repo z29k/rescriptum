@@ -320,6 +320,37 @@ L'endpoint accepte les deux formes du justificatif : l'`auth-token` de Proxmox a
 le corps JSON parce que c'est ce que Proxmox envoie, et un en-tête bearer parce que c'est
 ce qu'envoie un script shell. Même secret, même comparaison en temps constant.
 
+## Quand tout est juste et que la machine refuse quand même de s'installer
+
+La chaîne peut être parfaite et échouer à la dernière marche, côté machine et non côté
+serveur. Deux cas réellement rencontrés, tous deux sur un Lenovo vPro :
+
+**Intel AMT en adresse statique, sur une carte partagée avec le système.** Le `dhclient` de
+l'installateur envoie deux requêtes à onze secondes d'intervalle puis abandonne ; si le
+Management Engine tient l'interface avec une configuration statique pendant que l'hôte
+demande du DHCP, ces onze secondes passent sans offre et l'installation s'arrête sur
+`Fetching answer file via HTTP failed: Network is unreachable`. **Mettez l'AMT en DHCP
+aussi.** Lancer `dhclient -v eno1` à la main depuis le shell de l'installateur réussit
+ensuite immédiatement, et c'est ce qui rend le diagnostic déroutant : le réseau va bien,
+c'est la temporisation qui ne va pas.
+
+**Un port de commutateur qui ne transmet pas tout de suite**, pour la même raison et avec
+le même symptôme — RSTP en convergence, ou un lien encore en négociation après que le noyau
+a repris la carte des mains d'iPXE. Ce serveur n'y peut rien dans les deux cas : les onze
+secondes sont la fenêtre de l'installateur, pas la nôtre.
+
+L'installateur ouvre un shell root quand il abandonne, et ce shell est le diagnostic le
+plus rapide qui soit :
+
+```console
+# ip link                 # l'interface est-elle seulement montée ?
+# dhclient -v eno1        # une offre revient-elle quand on la demande à la main ?
+# ip addr show eno1
+```
+
+Une adresse qui apparaît là et pas pendant l'installation veut dire que le réseau
+fonctionne et que la machine a simplement demandé trop tôt.
+
 ## Comment iPXE finit par parler à *nous*
 
 La question qu'on ne s'attend pas à devoir trancher. Quel que soit le livreur du

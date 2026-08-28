@@ -304,6 +304,37 @@ The endpoint takes the credential either way — Proxmox's `auth-token` arrives 
 JSON body because that is what Proxmox sends, and a bearer header because that is what a
 shell script sends. Same secret, same constant-time comparison.
 
+## When everything is right and the machine still will not install
+
+The chain can be perfect and fail at the last step, on the machine rather than on the
+server. Two that have actually happened, both on a Lenovo with vPro:
+
+**Intel AMT with a static address, on a NIC it shares with the host.** The installer's own
+`dhclient` sends two requests about eleven seconds apart and then gives up; if the
+Management Engine holds the interface with a static configuration while the host asks for
+DHCP, those eleven seconds pass with no offer and the install aborts with
+`Fetching answer file via HTTP failed: Network is unreachable`. **Set AMT to DHCP too.**
+Running `dhclient -v eno1` by hand from the installer's shell afterwards succeeds
+immediately, which is what makes this so confusing to diagnose: the network is fine, the
+timing is not.
+
+**A switch port that does not forward straight away**, for the same reason and with the
+same symptom — RSTP converging, or a link still negotiating after the kernel takes the NIC
+over from iPXE. There is nothing this server can do about either: eleven seconds is the
+installer's window, not ours.
+
+The installer drops to a root shell when it aborts, and that shell is the fastest
+diagnosis there is:
+
+```console
+# ip link                 # is the interface up at all?
+# dhclient -v eno1        # does an offer come back when asked by hand?
+# ip addr show eno1
+```
+
+An address appearing there and not during the install means the network works and the
+machine simply asked too early.
+
 ## How iPXE ends up talking to *us*
 
 The question nobody expects to have to answer. Whatever delivers the loader:
