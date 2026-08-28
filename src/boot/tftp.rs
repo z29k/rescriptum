@@ -57,11 +57,11 @@ const ERR_ILLEGAL: u16 = 4;
 const ERR_NO_USER: u16 = 7;
 
 /// RFC 1350's block size, and the floor every implementation understands.
-const DEFAULT_BLOCK: usize = 512;
+pub const DEFAULT_BLOCK: usize = 512;
 /// **Clamped so a data packet still fits one Ethernet frame.** 1500 minus 20 bytes of
 /// IP and 8 of UDP leaves 1472; minus TFTP's own 4-byte header, 1468. Larger merely
 /// invites fragmentation, and a fragmented TFTP transfer to a PXE ROM is a coin toss.
-const MAX_BLOCK: usize = 1468;
+pub const MAX_BLOCK: usize = 1468;
 /// A request larger than this is not a request.
 const MAX_REQUEST: usize = 1024;
 /// How long to wait for an acknowledgement before sending the block again.
@@ -261,7 +261,7 @@ async fn transfer(request: &[u8], peer: SocketAddr, tftp: &Tftp) {
         match name.as_str() {
             "blksize" => {
                 if let Ok(asked) = value.parse::<usize>() {
-                    block_size = asked.clamp(DEFAULT_BLOCK, MAX_BLOCK);
+                    block_size = asked.clamp(DEFAULT_BLOCK, tftp.cfg.tftp_blksize());
                     accepted.push(("blksize".to_string(), block_size.to_string()));
                 }
             }
@@ -304,20 +304,17 @@ async fn transfer(request: &[u8], peer: SocketAddr, tftp: &Tftp) {
         }
     }
 
-    log::request(
-        &peer.to_string(),
-        200,
-        &format!(
-            "tftp: {} {} bytes blksize={block_size}",
-            parsed.filename,
-            contents.len()
-        ),
-    );
-
+    // **This used to be logged here, before a single byte went out** — so a line reading
+    // `ipxe-x86_64.efi 1164800 bytes` meant "about to send", and every stalled transfer
+    // in the world looked exactly like a completed one. It cost a real afternoon on a
+    // real machine: the loader was fetched, nothing happened, and the log said success.
+    // An intention is not an outcome, and this is a boot path where the difference is
+    // the whole diagnosis.
+    let total = contents.len();
     let mut block: u16 = 1;
     let mut sent = 0usize;
-    loop {
-        let end = (sent + block_size).min(contents.len());
+    let outcome = loop {
+        let end = (sent + block_size).min(total);
         let chunk = &contents[sent..end];
         // **A short block is what ends a transfer**, and "short" includes empty. A file
         // whose length is an exact multiple of the block size therefore ends with a
@@ -331,20 +328,46 @@ async fn transfer(request: &[u8], peer: SocketAddr, tftp: &Tftp) {
         packet.extend_from_slice(chunk);
 
         if socket.send(&packet).await.is_err() {
-            return;
+            break Some("the socket went away");
         }
         if !wait_for_ack(&socket, block, &packet).await {
-            return;
+            // Either the client said ERROR or it stopped acknowledging. From here the
+            // two are indistinguishable, and both mean the same thing to whoever is
+            // watching a machine fail to boot: it did not get the file.
+            break Some("the client stopped acknowledging");
         }
 
         sent = end;
         if last {
-            break;
+            break None;
         }
         // Block numbers are 16 bits and wrap. A loader will never reach 65535 at 1468
         // bytes a block; be correct anyway, because "never" is how this kind of bug
         // gets in.
         block = block.wrapping_add(1);
+    };
+
+    match outcome {
+        None => log::request(
+            &peer.to_string(),
+            200,
+            &format!(
+                "tftp: sent {} {total} bytes blksize={block_size}",
+                parsed.filename
+            ),
+        ),
+        // Status 500 rather than 0, so `RESCRIPTUM_LOG=problems` keeps it: a machine
+        // that did not get its loader is the definition of a problem worth keeping.
+        Some(why) => log::request(
+            &peer.to_string(),
+            500,
+            &format!(
+                "tftp: {} FAILED after {sent} of {total} bytes at blksize={block_size} \
+                 — {why}. If it stalls at the first block, the block size is too large \
+                 for this path: RESCRIPTUM_TFTP_BLKSIZE caps it",
+                parsed.filename
+            ),
+        ),
     }
 }
 

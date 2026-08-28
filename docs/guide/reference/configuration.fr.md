@@ -37,6 +37,7 @@ pas de *format* de configuration à apprendre ni de ligne de commande à se trom
 | `RESCRIPTUM_BOOT_ALLOW` | non défini | CIDR clients autorisés à récupérer les médias. Non défini = quiconque atteint le port |
 | `RESCRIPTUM_BOOT_DIR` | non défini | Chargeurs et menus, distribués en TFTP. **Non défini = pas de TFTP du tout** |
 | `RESCRIPTUM_TFTP_ADDR` | `0.0.0.0:69` | Le listener TFTP, ou **`off`** pour aucun. Le port 69 est privilégié ; voir `RESCRIPTUM_USER` |
+| `RESCRIPTUM_TFTP_BLKSIZE` | `1468` | Le plus grand bloc TFTP accepté. 1468 remplit **exactement** un chemin de 1500 octets — 1468 de charge, 4 TFTP, 8 UDP, 20 IP — donc un tag VLAN ou un tunnel rend la trame trop grande et une ROM PXE s'arrête en général sans rien dire. À baisser (1400, ou 512) quand un démarrage cale au premier bloc |
 | `RESCRIPTUM_BOOT_TIMEOUT_SECS` | `15` | Secondes avant que le menu ne retombe sur le disque local |
 | `RESCRIPTUM_BOOT_UNCLAIMED` | `menu` | Ce que reçoit une machine qu'aucune réponse ne revendique. `local` la rend à son firmware, ce qui inverse le sens d'un fichier de réponse : présent veut dire *installe celle-ci* plutôt que *laisse celle-ci tranquille* |
 | `RESCRIPTUM_INSTALLED_TOKEN` | non défini | Le jeton du `[post-installation-webhook]` de Proxmox. Défini, `POST /installed` existe et retire la revendication d'installation d'une machine quand elle signale sa réussite. **Non défini, il n'y a pas d'endpoint** |

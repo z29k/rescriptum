@@ -532,6 +532,15 @@ could not check. Note it needs `Resolution::format_name` (the extension), not
   is enough. A per-peer transfer cap is therefore a fairness bound, not a hostility
   threshold; counting malformed packets against it locks a machine out of the server it
   is retrying to reach.
+- **Logging an intention is not logging an outcome.** The TFTP transfer line was written
+  before the first byte went out, so a stalled transfer and a completed one looked
+  identical — a machine on a real network fetched a loader, nothing happened, and the log
+  said success. It is reported at the end now, `sent` or `FAILED after N of M`, with 500
+  so `RESCRIPTUM_LOG=problems` keeps it.
+- **`blksize=1468` fills a 1500-byte path exactly** — 1468 payload, 4 TFTP, 8 UDP, 20 IP —
+  which is what iPXE asks for and what leaves no room at all. One VLAN tag makes the frame
+  1504, and a PXE ROM meeting that usually stops without a message. `RESCRIPTUM_TFTP_BLKSIZE`
+  caps it; 1400 covers a tag and most tunnels, 512 always works.
 - **A TFTP transfer ends on a *short* block, and "short" includes empty.** A file whose
   length divides exactly by the block size must end with an empty data packet, or the
   client waits forever for a final block that never comes.

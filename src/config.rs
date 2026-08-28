@@ -119,6 +119,8 @@ pub struct Config {
     /// The TFTP listener, as the operator set it. `None` means nobody did; see
     /// `tftp_addr()`.
     pub tftp_addr: Option<String>,
+    /// The largest TFTP block this server will agree to. See `tftp_blksize`.
+    pub tftp_blksize: Option<usize>,
     /// Seconds before the built-in menu falls through to booting from local disk.
     pub boot_timeout: Duration,
     /// What a machine no answer claims is offered. See `unclaimed_boots_local`.
@@ -258,6 +260,9 @@ impl Config {
                 "RESCRIPTUM_BOOT_TIMEOUT_SECS",
                 DEFAULT_BOOT_TIMEOUT_SECS as usize,
             ) as u64),
+            tftp_blksize: optional("RESCRIPTUM_TFTP_BLKSIZE")
+                .and_then(|v| v.trim().parse::<usize>().ok())
+                .filter(|n| *n > 0),
             boot_unclaimed: optional("RESCRIPTUM_BOOT_UNCLAIMED"),
             boot_logo: optional("RESCRIPTUM_BOOT_LOGO").map(PathBuf::from),
             boot_title: optional("RESCRIPTUM_BOOT_TITLE"),
@@ -437,6 +442,28 @@ impl Config {
             .as_deref()
             .map(str::trim)
             .is_some_and(|v| v.eq_ignore_ascii_case("local"))
+    }
+
+    /// The largest TFTP block to agree to, when a client asks for a bigger one.
+    ///
+    /// **1468 exactly fills a 1500-byte path and leaves nothing over**: 1468 of payload,
+    /// 4 of TFTP header, 8 of UDP, 20 of IP. iPXE asks for precisely that, and on a plain
+    /// untagged Ethernet it is right. Put one VLAN tag in the way and the frame is 1504,
+    /// which is dropped or fragmented — and a PXE ROM meeting either usually just stops,
+    /// with no message, having downloaded nothing. Same for PPPoE, and for any tunnel.
+    ///
+    /// So this exists to be lowered when a boot stalls at the first block. 1400 leaves 68
+    /// bytes of headroom, which covers a tag and most tunnels; 512 is the RFC default and
+    /// always works. The default stays at what fits a clean path, because lowering it for
+    /// everybody costs every deployment throughput to fix a minority's network — but the
+    /// failure it causes is now loud enough to find.
+    pub fn tftp_blksize(&self) -> usize {
+        self.tftp_blksize
+            .unwrap_or(crate::boot::tftp::MAX_BLOCK)
+            .clamp(
+                crate::boot::tftp::DEFAULT_BLOCK,
+                crate::boot::tftp::MAX_BLOCK,
+            )
     }
 
     /// The menu timeout **in milliseconds**, which is the unit `choose` counts. The
@@ -665,7 +692,7 @@ pub struct Known {
 
 /// Every variable, in the order a person would want to meet them: what answers come
 /// from, where the server listens, how much it says, then the two credentials.
-pub const KNOWN: [Known; 28] = [
+pub const KNOWN: [Known; 29] = [
     Known {
         key: "RESCRIPTUM_STORE",
         default: Some("files"),
@@ -808,6 +835,12 @@ pub const KNOWN: [Known; 28] = [
         default: None,
         secret: true,
         help: "Proxmox's post-installation-webhook token. Set it and POST /installed exists, which drops a machine's install claim when it reports success. Unset, there is no endpoint.",
+    },
+    Known {
+        key: "RESCRIPTUM_TFTP_BLKSIZE",
+        default: Some("1468"),
+        secret: false,
+        help: "The largest TFTP block to agree to. 1468 fills a 1500-byte path exactly; lower it (1400, or 512) if a boot stalls at the first block, which is what a VLAN tag or a tunnel does to it.",
     },
     Known {
         key: "RESCRIPTUM_BOOT_UNCLAIMED",

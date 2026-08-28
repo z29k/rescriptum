@@ -797,3 +797,66 @@ fn boot_check_says_so_when_a_loader_really_is_handed_over() {
         ProbeResult::Refused
     );
 }
+
+/// **A stalled transfer must not look like a completed one.**
+///
+/// The line that reports a transfer used to be written *before the first byte went out*,
+/// so `ipxe-x86_64.efi 1164800 bytes` meant "about to send". A machine on a real network
+/// fetched a loader, did nothing, and the log said success — which is how an afternoon
+/// goes. The size is now reported at the end, with what actually happened.
+#[test]
+fn a_transfer_that_dies_halfway_is_logged_as_a_failure() {
+    // Big enough to need many blocks, so abandoning it lands mid-transfer.
+    let s = Server::start(&[("ipxe-x86_64.efi", loader(64 * 1024))]);
+
+    let mut client = s.client();
+    client.read("ipxe-x86_64.efi", &[]);
+    // Take the first data packet and then stop answering, which is exactly what a ROM
+    // does when the block size is too large for the path: it never sees block 2.
+    let first = client.receive().expect("the first block");
+    assert_eq!(first.0, OP_DATA);
+    drop(client);
+
+    // The server retries, gives up, and says so. Six retries at 700ms is the bound.
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    let mut log = String::new();
+    while std::time::Instant::now() < deadline {
+        log = s.log();
+        if log.contains("FAILED") {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    assert!(
+        log.contains("FAILED after"),
+        "an abandoned transfer left no trace: {log}"
+    );
+    assert!(
+        log.contains("RESCRIPTUM_TFTP_BLKSIZE"),
+        "the line has to name the knob that fixes the commonest cause: {log}"
+    );
+    assert!(
+        !log.contains("tftp: sent ipxe-x86_64.efi"),
+        "it also claimed to have sent it: {log}"
+    );
+}
+
+/// The cap exists to be lowered when a path cannot carry a full-MTU block, so the value
+/// a client asks for has to actually be bounded by it.
+#[test]
+fn the_block_size_can_be_capped_below_what_a_client_asks_for() {
+    let s = Server::start_env(
+        &[("ipxe.kpxe", loader(8000))],
+        &[("RESCRIPTUM_TFTP_BLKSIZE", "512")],
+    );
+    let mut client = s.client();
+    client.read("ipxe.kpxe", &[("blksize", "1468")]);
+    let (opcode, payload) = client.receive().expect("an answer");
+    assert_eq!(opcode, OP_OACK, "the option must still be negotiated");
+    let text = String::from_utf8_lossy(&payload);
+    assert!(
+        text.contains("512"),
+        "asked for 1468 with a cap of 512 and got: {text:?}"
+    );
+    assert!(!text.contains("1468"), "the cap was ignored: {text:?}");
+}
