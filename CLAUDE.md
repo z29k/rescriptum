@@ -537,6 +537,12 @@ could not check. Note it needs `Resolution::format_name` (the extension), not
   identical — a machine on a real network fetched a loader, nothing happened, and the log
   said success. It is reported at the end now, `sent` or `FAILED after N of M`, with 500
   so `RESCRIPTUM_LOG=problems` keeps it.
+- **`auto-installer-mode.toml`'s keys are snake case, and one hyphen rejects the file.**
+  `AutoInstSettings` is `deny_unknown_fields`, so `partition-label` is not a warning — the
+  installer refuses the whole document and stops, asking a human who is not coming. Its own
+  refusal enumerates them: `mode`, `partition_label`, `http`; and inside `[http]`, `url`,
+  `cert_fingerprint`, `token`. The doc comment above the writer said exactly this while the
+  code wrote two hyphenated keys, and the test enumerated the hyphenated ones too.
 - **In iPXE, naming an initrd turns it into a *file* rather than the initramfs.**
   `initrd <uri> <name>` gets a cpio header and lands as `/name`; `initrd <uri>` is
   appended raw and *is* the initramfs. Naming Proxmox's real initrd produced an initramfs

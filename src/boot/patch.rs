@@ -395,10 +395,18 @@ pub fn mode_file(url: &str, fingerprint: Option<&str>, token: Option<&str>) -> S
          # to learn where to POST its hardware inventory.\n\
          mode = \"http\"\n",
     );
-    out.push_str("partition-label = \"proxmox-ais\"\n\n[http]\n");
+    // **Underscores, and the installer is the authority.** It rejected a hyphenated key
+    // with `unknown field \`partition-label\`, expected one of \`mode\`,
+    // \`partition_label\`, \`http\`` — on a real machine, after every other link in the
+    // chain had been made to work. `deny_unknown_fields` means one wrong key is a
+    // *rejected file*, not a warning, so the whole automated install stops and a human
+    // who is not coming is asked to continue.
+    out.push_str("partition_label = \"proxmox-ais\"\n\n[http]\n");
     out.push_str(&format!("url = \"{}\"\n", escape(url)));
     if let Some(fingerprint) = fingerprint {
-        out.push_str(&format!("cert-fingerprint = \"{}\"\n", escape(fingerprint)));
+        // Snake case here too, for the same reason — this one has simply never been
+        // exercised, because it only appears when somebody pins a certificate.
+        out.push_str(&format!("cert_fingerprint = \"{}\"\n", escape(fingerprint)));
     }
     if let Some(token) = token {
         out.push_str(&format!("token = \"{}\"\n", escape(token)));
@@ -615,21 +623,40 @@ mod tests {
             .filter(|l| !l.trim_start().starts_with('#') && l.contains('='))
             .map(|l| l.split('=').next().unwrap_or("").trim())
             .collect();
+        // **The names are the installer's, quoted from its own refusal.** It stopped a
+        // real machine with `unknown field \`partition-label\`, expected one of
+        // \`mode\`, \`partition_label\`, \`http\`` — after every other link in the
+        // chain had been made to work, which is the expensive place to learn it.
         for key in &keys {
             assert!(
                 [
                     "mode",
-                    "partition-label",
+                    "partition_label",
                     "url",
-                    "cert-fingerprint",
+                    "cert_fingerprint",
                     "token"
                 ]
                 .contains(key),
                 "{key} is not a key the installer defines"
             );
         }
+        // Said separately because it is the specific mistake that was made: every key
+        // here is snake case, and a hyphen anywhere in this file rejects the whole of it.
+        assert!(
+            !keys.iter().any(|k| k.contains('-')),
+            "a hyphenated key rejects the entire file: {keys:?}"
+        );
         assert!(text.contains("mode = \"http\""), "{text}");
         assert!(text.contains("[http]"), "{text}");
+
+        // The fingerprint path is the one nobody exercises, so it is pinned here rather
+        // than left to be discovered by whoever first pins a certificate.
+        let with_cert = mode_file("http://192.0.2.10:8000/proxmox", Some("AB:CD"), None);
+        assert!(
+            with_cert.contains("cert_fingerprint = \"AB:CD\""),
+            "{with_cert}"
+        );
+        assert!(!with_cert.contains("cert-fingerprint"), "{with_cert}");
     }
 
     #[test]
