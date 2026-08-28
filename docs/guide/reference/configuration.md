@@ -39,6 +39,7 @@ no configuration *format* to learn and no command line to get wrong.
 | `RESCRIPTUM_TFTP_ADDR` | `0.0.0.0:69` | The TFTP listener, or **`off`** for none. Port 69 is privileged; see `RESCRIPTUM_USER` |
 | `RESCRIPTUM_BOOT_TIMEOUT_SECS` | `15` | Seconds before the menu falls through to local boot |
 | `RESCRIPTUM_BOOT_UNCLAIMED` | `menu` | What a machine no answer claims gets. `local` hands it back to its firmware instead, which inverts what an answer file means: present is *install this one* rather than *leave this one alone* |
+| `RESCRIPTUM_INSTALLED_TOKEN` | unset | Proxmox's `[post-installation-webhook]` token. Set it and `POST /installed` exists, dropping a machine's install claim when it reports success. **Unset, there is no endpoint** |
 | `RESCRIPTUM_BOOT_LOGO` | built-in | A PNG to show behind the menu |
 | `RESCRIPTUM_BOOT_TITLE` | built-in | The menu's title bar |
 | `RESCRIPTUM_USER` / `_GROUP` | unset | Drop to these **after** binding. The other order fails on deployment |

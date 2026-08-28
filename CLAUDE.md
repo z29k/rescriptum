@@ -134,6 +134,13 @@ These are deliberate design decisions, not oversights. Do not "improve" them wit
 - `src/admin.rs` — the write API: its own listener, the constant-time token, the failure
   guard, and the rollback that keeps a write from breaking the answer set.
 - `src/capture.rs` — recording request bodies (`RESCRIPTUM_CAPTURE_DIR`).
+- `src/installed.rs` — a machine reporting it finished, and its install claim being
+  dropped. **The one path where something arriving over the network changes the answer
+  set**, so it is narrow by construction: machine documents only (never a group — one
+  machine finishing must not disarm a rack), format `ipxe` only (the `.toml` is the record
+  of how it was built), and moved under an `installed-` prefix rather than deleted. The
+  token is Proxmox's, and it arrives **in the JSON body**, not as a bearer — so the route
+  runs before the answer token's guard, which would otherwise reject every webhook.
 - `src/config.rs` — environment configuration. `Config::from_lookup` takes a lookup closure so
   tests never touch the process environment.
 - `src/envfile.rs` — the optional file of defaults `RESCRIPTUM_ENV_FILE` names, and the
@@ -669,6 +676,7 @@ Environment variables only — plus an optional file to read some of them from:
 | `RESCRIPTUM_PUBLIC_HOST` | the routing table's answer, else a sole interface | The host generated URLs name. **A host, never a URL**. Warns and names the alternatives when the host has several |
 | `RESCRIPTUM_BOOT_ALLOW` | unset | Client CIDRs allowed to fetch boot media |
 | `RESCRIPTUM_BOOT_UNCLAIMED` | `menu` | Or `local`. **Inverts what an answer file means**: with `local`, present is *install this one* and absent is the safe state |
+| `RESCRIPTUM_INSTALLED_TOKEN` | unset | Proxmox's webhook token. Set it and `POST /installed` drops a machine's `.ipxe` claim when it reports success. **Unset, the endpoint does not exist** |
 | `RESCRIPTUM_BOOT_DIR` | unset | Loaders and menus. **Unset means no TFTP at all** |
 | `RESCRIPTUM_TFTP_ADDR` | `0.0.0.0:69` when `RESCRIPTUM_BOOT_DIR` is set | Or `off`, a deployment workaround, never a packaged default. A failed bind here warns rather than killing the server |
 

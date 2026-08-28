@@ -244,6 +244,50 @@ $ rescriptum config set RESCRIPTUM_BOOT_UNCLAIMED=local
 Dans les deux cas l'identité de la machine part d'abord. Le réglage décide seulement de ce
 qui arrive quand rien ne l'a revendiquée — pas s'il faut demander.
 
+## Installer une machine une fois, et une seule
+
+Une machine revendiquée par une réponse `.ipxe` s'installe, redémarre, est revendiquée de
+nouveau, et se réinstalle — en effaçant son disque à chaque tour. Tous les systèmes de
+provisionnement répondent pareil : une machine est *armée* pour l'installation, et quelque
+chose la désarme ensuite.
+
+**C'est la machine qui sait.** Proxmox appelle un webhook après une installation réussie et
+**avant le redémarrage**, avec ses interfaces réseau dans le corps :
+
+```toml
+[post-installation-webhook]
+url = "http://192.0.2.10:8000/installed"
+auth-token = "nas:s3cr3t"
+```
+
+```console
+$ rescriptum config set RESCRIPTUM_INSTALLED_TOKEN=nas:s3cr3t
+```
+
+C'est tout. La machine termine, elle le dit, et `98fa9b50d810.ipxe` devient
+`installed-98fa9b50d810.ipxe` — qui ne lui correspond plus, le préfixe faisant partie du
+nom comparé. Elle démarre sur son disque désormais, et la réarmer consiste à renommer le
+fichier dans l'autre sens.
+
+**Pas de jeton, pas d'endpoint** — absent plutôt qu'ouvert. Sans lui, `/installed` est une
+demande de réponse ordinaire comme n'importe quel chemin, ce qui permet à une URL de rester
+gravable dans une ISO.
+
+Trois choses qu'il ne fait pas, et chacune est délibérée :
+
+- **Il ne touche jamais un groupe.** Un groupe revendique un rack entier, et une machine
+  qui finit son installation ne doit pas désarmer ses voisines. La recherche ne consulte
+  pas les groupes du tout, plutôt que de les écarter après coup.
+- **Il ne touche rien d'autre que le `.ipxe`.** Le `.toml` de la machine est ce que
+  l'installateur a lu pour la construire, et il reste comme trace de la manière.
+- **Il déplace, il ne supprime pas.** C'est le seul chemin où quelque chose venu du réseau
+  modifie le jeu de réponses : rien de ce qu'il fait n'est irréversible.
+
+Arriver deux fois n'est pas une erreur — un webhook peut être réessayé, et une machine
+installée depuis le menu n'a jamais été revendiquée. Un désarmement qui *échoue* est
+journalisé en `still armed`, parce que sa conséquence est autrement silencieuse : la
+machine se réinstalle au démarrage suivant et rien d'autre ne le dirait.
+
 ## Comment iPXE finit par parler à *nous*
 
 La question qu'on ne s'attend pas à devoir trancher. Quel que soit le livreur du

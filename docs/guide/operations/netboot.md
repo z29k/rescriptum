@@ -229,6 +229,49 @@ $ rescriptum config set RESCRIPTUM_BOOT_UNCLAIMED=local
 Either way the machine's identity still goes up first. The setting decides only what
 happens when nothing claimed it — not whether to ask.
 
+## Installing a machine once, and only once
+
+A machine claimed by an `.ipxe` answer installs, reboots, is claimed again, and installs
+again — wiping its disk every time. Every provisioning system answers this the same way: a
+machine is *armed* for install, and something disarms it afterwards.
+
+**The machine is what knows.** Proxmox calls a webhook after a successful install and
+**before the reboot**, with its network interfaces in the body:
+
+```toml
+[post-installation-webhook]
+url = "http://192.0.2.10:8000/installed"
+auth-token = "nas:s3cr3t"
+```
+
+```console
+$ rescriptum config set RESCRIPTUM_INSTALLED_TOKEN=nas:s3cr3t
+```
+
+That is the whole of it. The machine finishes, says so, and `98fa9b50d810.ipxe` becomes
+`installed-98fa9b50d810.ipxe` — which no longer matches it, because the prefix is part of
+the name that gets compared. It boots its own disk from then on, and re-arming it is
+renaming the file back.
+
+**No token, no endpoint** — absent rather than open. Without one, `/installed` is an
+ordinary answer request like any other path, which is what keeps a URL bakeable into an
+ISO.
+
+Three things it will not do, and each is deliberate:
+
+- **It never touches a group.** A group claims a whole rack, and one machine finishing its
+  install must not disarm its neighbours. The lookup does not consult groups at all rather
+  than filtering them out afterwards.
+- **It never touches anything but the `.ipxe`.** The machine's own `.toml` is what the
+  installer read to build it, and it stays as the record of how.
+- **It moves, it does not delete.** This is the one path where something arriving over the
+  network changes the answer set, so nothing it does is irreversible.
+
+Arriving twice is not an error — a webhook may be retried, and a machine installed from
+the menu was never claimed at all. A disarm that *fails* is logged as `still armed`,
+because the consequence is otherwise silent: the machine reinstalls on its next boot and
+nothing else would say so.
+
 ## How iPXE ends up talking to *us*
 
 The question nobody expects to have to answer. Whatever delivers the loader:

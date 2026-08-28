@@ -108,6 +108,9 @@ pub struct Config {
     pub media_addr: Option<String>,
     pub media_timeout: Duration,
     pub media_max_connections: usize,
+    /// Proxmox's `[post-installation-webhook]` token. **Unset is the whole off switch**:
+    /// no token, no endpoint — absent rather than open. See `installed`.
+    pub installed_token: Option<String>,
     /// A CIDR allowlist for boot traffic. Unset means anyone who can reach the port.
     pub boot_allow: Option<String>,
     /// Loaders and menus — what TFTP hands out. **Unset means no TFTP at all**, the
@@ -247,6 +250,7 @@ impl Config {
                 "RESCRIPTUM_MEDIA_MAX_CONNECTIONS",
                 DEFAULT_MEDIA_MAX_CONNECTIONS,
             ),
+            installed_token: optional("RESCRIPTUM_INSTALLED_TOKEN"),
             boot_allow: optional("RESCRIPTUM_BOOT_ALLOW"),
             boot_dir: optional("RESCRIPTUM_BOOT_DIR").map(PathBuf::from),
             tftp_addr: optional("RESCRIPTUM_TFTP_ADDR"),
@@ -661,7 +665,7 @@ pub struct Known {
 
 /// Every variable, in the order a person would want to meet them: what answers come
 /// from, where the server listens, how much it says, then the two credentials.
-pub const KNOWN: [Known; 27] = [
+pub const KNOWN: [Known; 28] = [
     Known {
         key: "RESCRIPTUM_STORE",
         default: Some("files"),
@@ -798,6 +802,12 @@ pub const KNOWN: [Known; 27] = [
         default: Some("15"),
         secret: false,
         help: "Seconds before the menu falls through to local disk. Rendered as milliseconds.",
+    },
+    Known {
+        key: "RESCRIPTUM_INSTALLED_TOKEN",
+        default: None,
+        secret: true,
+        help: "Proxmox's post-installation-webhook token. Set it and POST /installed exists, which drops a machine's install claim when it reports success. Unset, there is no endpoint.",
     },
     Known {
         key: "RESCRIPTUM_BOOT_UNCLAIMED",

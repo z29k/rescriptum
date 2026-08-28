@@ -387,10 +387,11 @@ async fn serve(cfg: Arc<Config>) -> ExitCode {
 
                 let cfg = Arc::clone(&cfg);
                 let answers = Arc::clone(&answers);
+                let store = Arc::clone(&store);
                 let capture = Arc::clone(&capture);
                 tokio::spawn(async move {
                     let _permit = permit; // released when the connection ends
-                    connection(stream, peer.to_string(), cfg, answers, capture).await;
+                    connection(stream, peer.to_string(), cfg, answers, store, capture).await;
                 });
             }
         }
@@ -457,6 +458,7 @@ async fn connection(
     peer: String,
     cfg: Arc<Config>,
     answers: Arc<Answers>,
+    store: Arc<dyn rescriptum::store::StoreWrite>,
     capture: Arc<Option<Capture>>,
 ) {
     let timeout = cfg.timeout;
@@ -465,9 +467,10 @@ async fn connection(
     let service = service_fn(move |req| {
         let cfg = Arc::clone(&cfg);
         let answers = Arc::clone(&answers);
+        let store = Arc::clone(&store);
         let capture = Arc::clone(&capture);
         let peer = peer.clone();
-        async move { Ok::<_, Infallible>(handle(req, cfg, answers, capture, peer).await) }
+        async move { Ok::<_, Infallible>(handle(req, cfg, answers, store, capture, peer).await) }
     });
 
     // `header_read_timeout` is the slowloris guard: a client that opens a socket and
@@ -494,10 +497,75 @@ async fn connection(
     }
 }
 
+/// `POST /installed` — a machine saying it finished, and its claim being dropped.
+///
+/// Answers `200` whether or not anything was claiming it: the webhook may arrive twice,
+/// and a machine installed from the menu was never claimed at all. Neither is a failure,
+/// and a `4xx` here would read to an operator as "the thing did not work".
+async fn installed(
+    req: Request<Incoming>,
+    expected: String,
+    answers: Arc<Answers>,
+    store: Arc<dyn rescriptum::store::StoreWrite>,
+    peer: String,
+) -> Response<Body> {
+    // Read the body before answering, always: closing on a peer that is still writing
+    // earns a connection reset instead of the response.
+    let body = match Limited::new(req.into_body(), MAX_BODY).collect().await {
+        Ok(collected) => collected.to_bytes(),
+        Err(_) => {
+            log::request(&peer, 400, "POST /installed 400 body");
+            return text(StatusCode::BAD_REQUEST, "400 Bad Request\n");
+        }
+    };
+
+    if !rescriptum::installed::token_matches(&body, &expected) {
+        // Logged and never rate-limited, for the reason the answer token is not: a rack
+        // sits behind one address, and shutting it out would turn a bad token into a
+        // fleet that reinstalls itself forever.
+        log::request(&peer, 401, "POST /installed 401 bad or missing token");
+        return text(StatusCode::UNAUTHORIZED, "401 Unauthorized\n");
+    }
+
+    let facts = Facts::new(None, &body);
+    // Blocking: the file store reads and renames. Doing that on an async worker stalls
+    // every other connection that thread is driving.
+    let result = tokio::task::spawn_blocking(move || {
+        rescriptum::installed::disarm(&answers, store.as_ref(), &facts)
+    })
+    .await;
+
+    match result {
+        Ok(Ok(done)) => {
+            let said = done.describe();
+            log::request(&peer, 200, &format!("POST /installed 200 {said}"));
+            text(StatusCode::OK, format!("{said}\n"))
+        }
+        // **Loud, because the consequence is otherwise silent.** A disarm that failed
+        // leaves the machine armed, so it installs again on its next boot — and this line
+        // is the only place that could be noticed.
+        Ok(Err(e)) => {
+            log::request(&peer, 500, &format!("POST /installed 500 still armed: {e}"));
+            text(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "500 Internal Server Error\n",
+            )
+        }
+        Err(e) => {
+            log::request(&peer, 500, &format!("POST /installed 500 {e}"));
+            text(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "500 Internal Server Error\n",
+            )
+        }
+    }
+}
+
 async fn handle(
     req: Request<Incoming>,
     cfg: Arc<Config>,
     answers: Arc<Answers>,
+    store: Arc<dyn rescriptum::store::StoreWrite>,
     capture: Arc<Option<Capture>>,
     peer: String,
 ) -> Response<Body> {
@@ -512,6 +580,22 @@ async fn handle(
     if method == Method::GET && path == "/health" {
         log::request(&peer, 200, "GET /health 200");
         return text(StatusCode::OK, "OK\n");
+    }
+
+    // **The install-finished webhook, checked before the bearer guard below on purpose.**
+    // Proxmox authenticates this callback with a token it puts *in the JSON body*, not in
+    // an Authorization header — a different credential, from a different caller, for a
+    // different purpose. Running it through the answer token's guard would reject every
+    // webhook the moment an operator set an answer token.
+    //
+    // The path is reserved **only when the feature is configured**, so a deployment that
+    // never sets the token keeps the "POST on any path is an answer request" contract
+    // whole. That contract is why a URL can be baked into an ISO.
+    if method == Method::POST
+        && path == "/installed"
+        && let Some(expected) = cfg.installed_token.clone()
+    {
+        return installed(req, expected, answers, store, peer).await;
     }
 
     // An installer that was given a token must present it. Proxmox does when its ISO

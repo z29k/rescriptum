@@ -39,6 +39,7 @@ pas de *format* de configuration à apprendre ni de ligne de commande à se trom
 | `RESCRIPTUM_TFTP_ADDR` | `0.0.0.0:69` | Le listener TFTP, ou **`off`** pour aucun. Le port 69 est privilégié ; voir `RESCRIPTUM_USER` |
 | `RESCRIPTUM_BOOT_TIMEOUT_SECS` | `15` | Secondes avant que le menu ne retombe sur le disque local |
 | `RESCRIPTUM_BOOT_UNCLAIMED` | `menu` | Ce que reçoit une machine qu'aucune réponse ne revendique. `local` la rend à son firmware, ce qui inverse le sens d'un fichier de réponse : présent veut dire *installe celle-ci* plutôt que *laisse celle-ci tranquille* |
+| `RESCRIPTUM_INSTALLED_TOKEN` | non défini | Le jeton du `[post-installation-webhook]` de Proxmox. Défini, `POST /installed` existe et retire la revendication d'installation d'une machine quand elle signale sa réussite. **Non défini, il n'y a pas d'endpoint** |
 | `RESCRIPTUM_BOOT_LOGO` | intégré | Un PNG à afficher derrière le menu |
 | `RESCRIPTUM_BOOT_TITLE` | intégré | La barre de titre du menu |
 | `RESCRIPTUM_USER` / `_GROUP` | non défini | Basculer dessus **après** avoir lié. L'ordre inverse échoue au déploiement |

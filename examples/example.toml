@@ -59,7 +59,10 @@ disk-list = ["sda", "sdb"]
 # url = "https://config.example.com/first-boot.sh"
 # cert-fingerprint = "AB:CD:..."
 
-# Tell something that the install finished.
+# **Tell this server the install finished, so the machine stops being claimed.**
+# Without it a machine claimed by an `.ipxe` answer reinstalls on every reboot. Proxmox
+# calls this after a successful install and before the reboot; rescriptum answers it when
+# RESCRIPTUM_INSTALLED_TOKEN is set, and renames the claim out of the way.
 # [post-installation-webhook]
-# url = "https://hooks.example.com/pve-installed"
-# auth-token = "REPLACE"
+# url = "http://192.168.1.10:8000/installed"
+# auth-token = "nas:REPLACE"
