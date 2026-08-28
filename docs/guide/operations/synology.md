@@ -307,6 +307,27 @@ the loader over; DSM has its own TFTP server under Control Panel → File Servic
 Advanced, pointed at the share's `boot` folder. Both are workarounds for a deployment that
 wants them, not what the package expects.
 
+### The Images tab
+
+The application has a fourth tab, and it is where installer images are managed without
+touching a terminal: what is held, a catalogue to pick from, and a URL field for anything
+the catalogue does not offer.
+
+**The catalogue is not a list this package ships.** Each entry names the checksum index the
+vendor already publishes beside its own images; picking one reads that index over the
+network, so the versions offered are whatever the vendor has today and the digest that gets
+verified is theirs. That also means the tab needs the NAS to reach the internet — the only
+part of this package that does.
+
+A download of a 1.5 GB image cannot be held open by a web request, so the tab starts it and
+follows it: `media add` writes into a `.part` file beside its destination and renames it
+only once the digest checks out, so the partial file's size *is* the progress and its
+disappearance *is* the completion. Closing the window does not stop the download.
+
+**Preparing a Proxmox image is a button there too.** Every other family takes its answer's
+URL on the kernel command line, so there is nothing to prepare and the tab says so rather
+than offering a step that would do nothing.
+
 ### One setting worth filling in
 
 ```

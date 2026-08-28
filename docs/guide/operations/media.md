@@ -40,7 +40,40 @@ it.
 
 ## Getting an image in
 
-Two ways, and the only difference is who does the download.
+Three ways, and the first is the one to reach for.
+
+### Pick one from a catalogue
+
+```console
+$ rescriptum media sources
+SOURCE       NAME              WHAT IT INSTALLS
+proxmox-ve   Proxmox VE        the founding case — answers come from a file injected into the image
+debian       Debian            netinst images; the answer is a preseed on the kernel command line
+ubuntu       Ubuntu LTS        autoinstall, via a cloud-init datasource on the kernel command line
+almalinux    AlmaLinux 9       kickstart, named on the kernel command line
+rocky        Rocky Linux 9     kickstart, named on the kernel command line
+
+$ rescriptum media sources proxmox-ve
+reading https://enterprise.proxmox.com/iso/SHA256SUMS …
+Proxmox VE — the founding case — answers come from a file injected into the image
+  proxmox-ve_9.2-1.iso
+  proxmox-ve_9.2-1-arm64.iso
+  proxmox-ve_9.1-1.iso
+
+$ rescriptum media add --from proxmox-ve proxmox-ve_9.2-1.iso
+```
+
+**Nothing about a specific image is stored in this server.** Each catalogue names the
+checksum index the vendor already publishes beside its own images, and the names and
+digests are read from it when you ask — so the list is whatever that vendor has today, and
+the digest is theirs. A table of URLs baked into a release would be offering last quarter's
+images, some of them since deleted.
+
+**What that is worth, said plainly.** Taking the digest from the same host that serves the
+image is *not* a signature check. Over HTTPS it authenticates the vendor's domain and it
+catches a truncated download, a corrupt mirror and a file that changed underneath — most of
+what actually goes wrong — and nothing beyond that. If you want more, use the next section
+with a digest you obtained yourself.
 
 ### Let the server fetch it
 

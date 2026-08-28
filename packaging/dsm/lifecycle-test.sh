@@ -395,6 +395,43 @@ out=$(cgi POST "action=save" "RESCRIPTUM_ADMIN_ADDR=127.0.0.1:8001" "1")
 [ "$(http_status "$out")" = "409" ] && ok "a write that would stop the server starting is refused" || bad "an unauthenticated admin API was accepted with $(http_status "$out")"
 [ "$(cat "$ENV_FILE")" = "$before" ] && ok "and the file is untouched" || bad "the refused write still changed the file"
 
+# ── the images tab ─────────────────────────────────────────────────────────────
+# **Everything here is a door, not a feature.** These actions start downloads and write
+# into the media directory, so each one has to refuse what it should refuse. The
+# catalogue itself is not exercised over the network — that would make this harness
+# depend on five vendors being up — but the local half is, and so is every guard.
+out=$(cgi GET "action=media" "" "")
+[ "$(http_status "$out")" = "200" ] && ok "the images tab can read what is held" || bad "action=media got $(http_status "$out")"
+
+out=$(cgi GET "action=sources" "" "")
+grep -q "proxmox-ve" <<<"$out" && ok "and the catalogues it can fetch from" || bad "action=sources listed nothing: $out"
+
+# A download writes to disk, so it is a write and needs the header a cross-origin page
+# cannot make a browser send.
+out=$(cgi GET "action=fetch&source=proxmox-ve&name=x.iso" "" "")
+[ "$(http_status "$out")" = "405" ] && ok "a download refuses to be a GET" || bad "action=fetch as GET got $(http_status "$out")"
+out=$(cgi POST "action=fetch&source=proxmox-ve&name=x.iso" "" "")
+[ "$(http_status "$out")" = "403" ] && ok "and refuses a POST without X-Rescriptum" || bad "action=fetch without intent got $(http_status "$out")"
+
+# **A URL without its digest is refused before anything is downloaded.** That rule is the
+# reason `media add` exists in the shape it does: this decides what every machine on the
+# network installs.
+out=$(cgi POST "action=fetch&url=https://example.invalid/x.iso" "" "1")
+[ "$(http_status "$out")" = "400" ] && ok "a URL with no SHA-256 is refused" || bad "a URL with no digest got $(http_status "$out")"
+out=$(cgi POST "action=fetch&url=https://example.invalid/x.iso&sha256=nothex" "" "1")
+[ "$(http_status "$out")" = "400" ] && ok "and so is one that is not a digest" || bad "a bad digest got $(http_status "$out")"
+out=$(cgi POST "action=fetch&url=ftp://example.invalid/x.iso&sha256=$(printf 'a%.0s' $(seq 64))" "" "1")
+[ "$(http_status "$out")" = "400" ] && ok "and a scheme nothing here can fetch" || bad "an ftp URL got $(http_status "$out")"
+# Names become part of a command line and of a path.
+out=$(cgi POST "action=fetch&source=proxmox-ve&name=../../etc/passwd" "" "1")
+[ "$(http_status "$out")" = "400" ] && ok "an image name that is a path is refused" || bad "a traversing name got $(http_status "$out")"
+
+out=$(cgi GET "action=progress" "" "")
+grep -qE "^state: (idle|running)$" <<<"$out" && ok "progress answers even when nothing is running" || bad "action=progress said: $out"
+
+out=$(cgi POST "action=prepare&id=../escape" "" "1")
+[ "$(http_status "$out")" = "400" ] && ok "prepare refuses an id that is a path" || bad "prepare took a traversing id: $(http_status "$out")"
+
 out=$(cgi GET "action=nonsense" "" "")
 [ "$(http_status "$out")" = "400" ] && ok "an unknown action is refused" || bad "an unknown action got $(http_status "$out")"
 

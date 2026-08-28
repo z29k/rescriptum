@@ -331,6 +331,28 @@ service de ce NAS livrer le chargeur ; DSM a son propre serveur TFTP sous Pannea
 configuration → Services de fichiers → Avancé, pointé sur le dossier `boot` du partage. Ce
 sont deux contournements pour un déploiement qui les veut, pas ce que le paquet attend.
 
+### L'onglet Images
+
+L'application a un quatrième onglet, et c'est là que les images d'installation se gèrent
+sans toucher à un terminal : ce qui est présent, un catalogue où piocher, et un champ URL
+pour ce que le catalogue ne propose pas.
+
+**Le catalogue n'est pas une liste livrée par ce paquet.** Chaque entrée nomme l'index de
+sommes que l'éditeur publie déjà à côté de ses propres images ; en choisir un lit cet index
+par le réseau, donc les versions proposées sont celles que l'éditeur a aujourd'hui et
+l'empreinte vérifiée est la sienne. Cela veut dire aussi que cet onglet a besoin que le NAS
+atteigne Internet — la seule partie de ce paquet qui en a besoin.
+
+Le téléchargement d'une image de 1,5 Go ne peut pas être tenu par une requête web : l'onglet
+le lance et le suit. `media add` écrit dans un fichier `.part` à côté de sa destination et
+ne le renomme qu'une fois l'empreinte vérifiée — la taille du fichier partiel *est* donc
+l'avancement, et sa disparition *est* la fin. Fermer la fenêtre n'arrête pas le
+téléchargement.
+
+**Préparer une image Proxmox est aussi un bouton.** Toutes les autres familles prennent
+l'URL de leur réponse sur la ligne de commande du noyau : il n'y a rien à préparer, et
+l'onglet le dit plutôt que de proposer une étape sans effet.
+
 ### Un réglage qui mérite d'être rempli
 
 ```

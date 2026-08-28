@@ -41,7 +41,40 @@ sont l'archive et lesquelles en dérivent.
 
 ## Faire entrer une image
 
-Deux façons, et la seule différence est qui fait le téléchargement.
+Trois façons, et la première est celle à privilégier.
+
+### Choisir dans un catalogue
+
+```console
+$ rescriptum media sources
+SOURCE       NAME              WHAT IT INSTALLS
+proxmox-ve   Proxmox VE        the founding case — answers come from a file injected into the image
+debian       Debian            netinst images; the answer is a preseed on the kernel command line
+ubuntu       Ubuntu LTS        autoinstall, via a cloud-init datasource on the kernel command line
+almalinux    AlmaLinux 9       kickstart, named on the kernel command line
+rocky        Rocky Linux 9     kickstart, named on the kernel command line
+
+$ rescriptum media sources proxmox-ve
+reading https://enterprise.proxmox.com/iso/SHA256SUMS …
+Proxmox VE — the founding case — answers come from a file injected into the image
+  proxmox-ve_9.2-1.iso
+  proxmox-ve_9.2-1-arm64.iso
+  proxmox-ve_9.1-1.iso
+
+$ rescriptum media add --from proxmox-ve proxmox-ve_9.2-1.iso
+```
+
+**Rien concernant une image précise n'est stocké dans ce serveur.** Chaque catalogue nomme
+l'index de sommes que l'éditeur publie déjà à côté de ses propres images, et les noms comme
+les empreintes en sont lus au moment où vous demandez — la liste est donc celle que cet
+éditeur a aujourd'hui, et l'empreinte est la sienne. Une table d'URL figée dans une version
+publiée proposerait les images du trimestre dernier, dont certaines supprimées depuis.
+
+**Ce que cela vaut, dit franchement.** Prendre l'empreinte sur le serveur qui sert l'image
+n'est *pas* une vérification de signature. En HTTPS cela authentifie le domaine de
+l'éditeur et cela attrape un téléchargement tronqué, un miroir corrompu et un fichier qui a
+changé en dessous — l'essentiel de ce qui arrive vraiment — et rien de plus. Si vous voulez
+davantage, utilisez la section suivante avec une empreinte que vous avez obtenue vous-même.
 
 ### Laisser le serveur la récupérer
 

@@ -211,6 +211,127 @@ status)
     esac
     ;;
 
+media)
+    # Everything the `media` tab reads, as the CLI's own text. Passing it through rather
+    # than reformatting means the panel and the command line can never disagree about
+    # what is held — the same reason `config` passes `--json` through.
+    reply 200 "text/plain; charset=utf-8"
+    "$CLI" media list 2>&1
+    ;;
+
+sources)
+    # With no `source` parameter this lists the catalogues, which is local and instant.
+    # With one it fetches that vendor's index over the network, which is not: the browser
+    # is told to expect a wait, and a failure here is the vendor's or the uplink's rather
+    # than ours.
+    which=$(param source)
+    reply 200 "text/plain; charset=utf-8"
+    if [ -n "$which" ]; then
+        "$CLI" media sources "$which" 2>&1
+    else
+        "$CLI" media sources 2>&1
+    fi
+    ;;
+
+fetch)
+    require_write_intent
+    # **A CGI cannot hold a request open for 1.5 GB**, so this starts the download and
+    # returns immediately; `progress` below is how the page follows it. Three details are
+    # each a trap already paid for elsewhere in this package:
+    #
+    #   * `</dev/null` — a background child that inherits the CGI's stdin keeps the
+    #     request open forever, which is exactly how `su` hung this script once.
+    #   * `setsid` — without a session of its own the download is killed when the web
+    #     server reaps the CGI, and a 1.5 GB transfer would die a second in.
+    #   * the name is passed as a single argument, so it is data and never a command.
+    #
+    # Two ways in, and the manual one is not a lesser path: `--from` reads the digest from
+    # the vendor's index, and a URL with a digest somebody obtained out of band is the
+    # stronger of the two. Both end in the same `media add`, which is where the rules
+    # about digests live.
+    #
+    # Every value below reaches the CLI as **one argument**, so a URL containing a
+    # semicolon or a quote is data and never a command. The whitelists are about giving a
+    # wrong value a clear answer here rather than a puzzle from curl later.
+    if [ -f "$VAR/fetch.pid" ] && kill -0 "$(cat "$VAR/fetch.pid" 2>/dev/null)" 2>/dev/null; then
+        fail 409 "A download is already running."
+    fi
+    src=$(param source)
+    name=$(param name)
+    url=$(param url)
+    digest=$(param sha256)
+    : >"$VAR/fetch.log"
+    if [ -n "$url" ]; then
+        case "$url" in
+        https://* | http://*) ;;
+        *) fail 400 "That is not an http or https URL." ;;
+        esac
+        # 64 hex characters, checked here so an obvious typo is answered now rather than
+        # after a gigabyte. The CLI checks it again, which is where it counts.
+        case "$digest" in
+        '') fail 400 "A URL needs its SHA-256 — that decides what every machine installs." ;;
+        *[!0-9a-fA-F]*) fail 400 "That is not a SHA-256." ;;
+        esac
+        [ "${#digest}" -eq 64 ] || fail 400 "A SHA-256 is 64 hexadecimal characters."
+        setsid "$CLI" media add "$url" --sha256 "$digest" >"$VAR/fetch.log" 2>&1 </dev/null &
+        echo $! >"$VAR/fetch.pid"
+        reply 200 "text/plain; charset=utf-8"
+        echo "started $url"
+    else
+        case "$src" in
+        '' | *[!a-zA-Z0-9._-]*) fail 400 "That is not a source." ;;
+        esac
+        case "$name" in
+        '' | *[!a-zA-Z0-9._-]*) fail 400 "That is not an image name." ;;
+        esac
+        setsid "$CLI" media add --from "$src" "$name" >"$VAR/fetch.log" 2>&1 </dev/null &
+        echo $! >"$VAR/fetch.pid"
+        reply 200 "text/plain; charset=utf-8"
+        echo "started $name"
+    fi
+    ;;
+
+progress)
+    # **Progress without a progress protocol.** `media add` writes into `<name>.part` and
+    # renames it atomically when the digest checks out, so the partial file's size *is*
+    # the progress and its disappearance *is* the completion. Nothing had to be invented
+    # for the browser, and nothing can disagree with what the CLI actually did.
+    reply 200 "text/plain; charset=utf-8"
+    pid=$(cat "$VAR/fetch.pid" 2>/dev/null)
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+        echo "state: running"
+    else
+        echo "state: idle"
+    fi
+    dir=$("$CLI" config --value RESCRIPTUM_MEDIA_DIR 2>/dev/null)
+    if [ -n "$dir" ]; then
+        for part in "$dir"/*.part; do
+            [ -f "$part" ] || continue
+            echo "partial: $(basename "$part" .part) $(wc -c <"$part" | tr -d " ")"
+        done
+    fi
+    # The tail rather than the whole thing: curl writes a progress bar, and the last of it
+    # is the part that says what went wrong.
+    echo "--- log"
+    tail -c 2000 "$VAR/fetch.log" 2>/dev/null | tr "\r" "\n" | grep -v "^ *$" | tail -6
+    ;;
+
+prepare)
+    require_write_intent
+    # Proxmox only, and the CLI is what refuses the rest — with the reason, which the
+    # panel shows verbatim. Duplicating that rule here would be a second implementation
+    # to keep honest.
+    id=$(param id)
+    case "$id" in
+    '' | *[!a-zA-Z0-9._:-]*) fail 400 "That is not an image id." ;;
+    esac
+    out=$("$CLI" media prepare "$id" 2>&1)
+    code=$?
+    reply 200 "text/plain; charset=utf-8"
+    echo "$out"
+    echo "--- exit $code"
+    ;;
+
 check)
     # The same command the documentation tells people to run, and the same exit code.
     reply 200 "text/plain; charset=utf-8"

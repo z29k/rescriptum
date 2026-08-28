@@ -289,6 +289,24 @@ else
     note "no /usr/bin/setcap on this machine — the only route to port 69 is closed here"
 fi
 
+# ── the image catalogue ────────────────────────────────────────────────────────
+section "the images tab, and whether this NAS can reach a vendor"
+# The catalogue is the one part of this package that talks to the internet, and it does it
+# by shelling out to curl because there is no TLS in the binary. Whether that works is a
+# property of the *machine* — its resolver, its uplink, its curl — so it cannot be settled
+# anywhere but here.
+if "$ROOT/target/bin/$PKG-cli" media sources 2>/dev/null | grep -q proxmox-ve; then
+    ok "the catalogues are listed"
+else
+    bad "media sources listed nothing"
+fi
+if out=$("$ROOT/target/bin/$PKG-cli" media sources proxmox-ve 2>&1) && echo "$out" | grep -q "proxmox-ve_"; then
+    ok "and this NAS can read a vendor's index over the network"
+    note "newest offered: $(echo "$out" | grep -m1 '^  proxmox-ve_')"
+else
+    bad "could not read the Proxmox index from this machine: $(echo "$out" | tail -2)"
+fi
+
 if [ -e /usr/local/bin/$PKG-cli ]; then
     ok "rescriptum-cli is on PATH"
 else

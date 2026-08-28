@@ -90,7 +90,10 @@ These are deliberate design decisions, not oversights. Do not "improve" them wit
 - `src/store/` — where documents come from. `mod.rs` defines the thin `Store` / `StoreWrite`
   traits, `file.rs` a flat directory of documents, `sqlite.rs` a bundled-SQLite database.
 - `src/boot/` — **boot media**: where the installer itself comes from, as opposed to what
-  it is told. `iso.rs` reads ISO9660 far enough to turn a path into an offset and a
+  it is told. `sources.rs` is the odd one out: it is where images can be fetched *from*,
+  and it stores **nothing about any specific image** — each entry names the checksum index
+  a vendor already publishes, so the list and the digests are read from them at the moment
+  somebody asks. A baked-in table of URLs would ship stale and serve 404s. `iso.rs` reads ISO9660 far enough to turn a path into an offset and a
   length (a file in an image is one contiguous extent, so serving a kernel is a *seek*,
   never an extraction); `probe.rs` places an image from a table of markers; `catalog.rs`
   discovers what is held, cached behind the directory mtime like the answer listing;
@@ -840,7 +843,7 @@ documented in the ExtJS reference Synology generated for DSM, mirrored at
 
 The design rule holds: nothing in `src/` knows any of this exists. What the server gained is
 a *generic* `config` subcommand, and the application's backend — `ui/api.cgi` — is a hundred
-lines of shell that authenticate and then shell out to `rescriptum-cli config`. The env-file
+lines of shell that authenticate and then shell out to `rescriptum-cli config` and `media`. **The panel never grows a rule of its own**: it starts a download by calling `media add`, which is where the digest rules are tested, and it follows one by watching the `.part` file that command already writes — a CGI cannot hold a request open for 1.5 GB, and nothing about progress had to be invented for the browser. The env-file
 semantics stay in Rust where they are tested rather than being written a second time in `sh`.
 
 **Four things were measured on the machine and every one of them is load-bearing. None is in
