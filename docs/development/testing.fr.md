@@ -8,7 +8,7 @@ sidebar:
 
 # Tests
 
-545 tests. `cargo test` les fait tous tourner en une vingtaine de secondes — dont
+571 tests. `cargo test` les fait tous tourner en une vingtaine de secondes — dont
 l'essentiel dans `tests/tftp.rs`, qui attend de vrais délais UDP parce que c'est
 précisément ce qu'il teste.
 
@@ -28,22 +28,23 @@ cargo test --all-features                 # ce que lance la CI
 
 | Suite | Cas | Pour |
 |---|---|---|
+| `tests/integration.rs` | 48 | le vrai binaire sur une vraie socket |
 | `tests/cli.rs` | 47 | `render`, `check`, `import`, `export`, `config` et le fichier d'environnement — contre le vrai binaire |
-| `tests/integration.rs` | 45 | le vrai binaire sur une vraie socket |
 | `tests/media.rs` | 45 | les médias de démarrage contre le vrai binaire, les deux listeners debout |
 | `src/config.rs` | 42 | l'environnement, ce qui refuse de démarrer, et qui l'emporte du fichier ou de l'environnement |
 | `tests/stores.rs` | 39 | **chaque comportement, contre les deux stores** |
+| `tests/tftp.rs` | 30 | le TFTP sur de l'UDP réel : les tours de parole, et ce qu'une liaison ratée ne doit pas coûter |
 | `src/select.rs` | 27 | normalisation, scoring, superposition, remplissage de templates |
 | `src/format/mod.rs` | 27 | parsing, fusion, clés de contrôle, alias d'endpoint |
 | `tests/admin.rs` | 26 | l'API d'administration de bout en bout, formats compris |
 | `src/envfile.rs` | 23 | le parseur et l'écrivain du fichier d'environnement, et ce que chacun refuse |
 | `src/facts.rs` | 22 | parsing de query, aplatissement JSON, globbing |
-| `tests/tftp.rs` | 21 | le TFTP sur de l'UDP réel, et ce qu'une liaison ratée ne doit pas coûter |
 | `src/format/xml.rs` | 18 | l'arbre XML — appariement, entités, fidélité |
 | `src/merge.rs` | 11 | la fusion profonde TOML |
 | `tests/guards.rs` | 7 | le jeton de réponse, et le verrouillage qui délibérément n'existe pas |
+| `src/installed.rs` | 6 | une machine qui signale son installation, et ce qu'il ne faut jamais désarmer |
 | `src/log.rs` | 4 | lecture des niveaux, et l'arithmétique d'horodatage |
-| `src/boot/*.rs` | 120 | le lecteur ISO, le repérage, le catalogue, les plans de patch, le menu, la table des chargeurs, les extraits DHCP, cpio et SHA-256 |
+| `src/boot/*.rs` | 128 | le lecteur ISO, le repérage, le catalogue, les sources d'images, les plans de patch, le menu, la table des chargeurs, les extraits DHCP, cpio et SHA-256 |
 | `src/admin.rs`, `src/capture.rs`, `src/store/mod.rs` | 21 | comportement unitaire |
 
 ## `tests/stores.rs` — la suite de conformité
@@ -184,7 +185,7 @@ harnais s'en chargent, et chacun prouve ce que les autres ne peuvent pas.
 |---|---|---|
 | [`packaging/dsm/check-spk.sh`](https://github.com/z29k/rescriptum/blob/main/packaging/dsm/check-spk.sh) | l'archive est structurellement ce que DSM attend — tar externe non compressé, les six champs d'`INFO`, une version tout en segments numériques, `os_min_ver` au moins 7.1, icônes 64×64 et 256×256, scripts exécutables sans CRLF, **le `--version` du binaire empaqueté**, et l'application de bureau : un `dsmappname` nommant une classe que son `ui/config` déclare vraiment, un nom de fichier JavaScript qui porte la version, et un backend qui vérifie toujours la session DSM et `administrators` | des secondes, **à chaque push** |
 | [`packaging/dsm/lifecycle-test.sh`](https://github.com/z29k/rescriptum/blob/main/packaging/dsm/lifecycle-test.sh) | tout ce que les *scripts* du paquet décident, contre un faux arbre `/var/packages` : le fichier d'environnement écrit une fois et une seule, les valeurs de l'assistant **et leur absence**, le service qui survit à son propre script de démarrage et répond à `/health`, les codes de sortie que lit Package Center, une mise à jour qui ne doit pas toucher une configuration éditée à la main, une désinstallation qui ne doit pas toucher aux réponses — **et le backend de l'application de bureau**, piloté avec un authentificateur bouchonné : refuser l'absence de session, refuser un non-administrateur, refuser une écriture sans en-tête d'intention, refuser celle qui empêcherait le serveur de démarrer, et ne jamais livrer un jeton au navigateur | des secondes, **à chaque push** |
-| [`packaging/dsm/vm/on-dsm.sh`](https://github.com/z29k/rescriptum/blob/main/packaging/dsm/vm/on-dsm.sh) | la machinerie propre à DSM — le worker `data-share` et son ACL, le worker `port-config`, l'unité systemd générée, logrotate contre un descripteur vivant, si Package Center accepte l'archive — **et qu'une machine qui demande sa configuration en reçoit une** : un POST avec le matériel dans le corps, auquel répond le fichier de cette machine fusionné par-dessus le groupe qui la revendique. Elle porte aussi **la seule route vers le port 69** : que `69/udp` survive dans l'entrée de pare-feu acquise, que le paquet réponde encore sans la capacité, et que `setcap cap_net_bind_service=+ep` puis un redémarrage lient `udp/69` sous le processus non privilégié du paquet | des minutes, sur une VM DSM 7 — puis sur le DS416j |
+| [`packaging/dsm/vm/on-dsm.sh`](https://github.com/z29k/rescriptum/blob/main/packaging/dsm/vm/on-dsm.sh) | la machinerie propre à DSM — le worker `data-share` et son ACL, le worker `port-config`, l'unité systemd générée, logrotate contre un descripteur vivant, si Package Center accepte l'archive — **et qu'une machine qui demande sa configuration en reçoit une** : un POST avec le matériel dans le corps, auquel répond le fichier de cette machine fusionné par-dessus le groupe qui la revendique. Elle porte aussi **la seule route vers le port 69** et la capacité de ce NAS à atteindre l'index d'un éditeur : que `69/udp` survive dans l'entrée de pare-feu acquise, que le paquet réponde encore sans la capacité, et que `setcap cap_net_bind_service=+ep` puis un redémarrage lient `udp/69` sous le processus non privilégié du paquet | des minutes, sur une VM DSM 7 — puis sur le DS416j |
 
 ```bash
 packaging/dsm/lifecycle-test.sh                     # le premier .spk de dist/ qui tourne ici
@@ -210,8 +211,8 @@ La même règle que partout ailleurs vaut pour eux : **cassez ce qu'ils gardent 
 regardez-les virer au rouge.** Annuler la garde de `postinst` à la mise à jour, faire
 supprimer le partage par `postuninst`, renvoyer `1` pour un paquet arrêté et refuser
 `prestart` transforme 33 vérifications vertes en 25 vertes et 8 rouges — c'est ainsi qu'on
-sait que le harnais teste quelque chose. Aujourd'hui c'est **58** vérifications dans
-`lifecycle-test.sh`, 26 dans `check-spk.sh` et **47** sur la machine ; les trois dernières
+sait que le harnais teste quelque chose. Aujourd'hui c'est **85** vérifications dans
+`lifecycle-test.sh`, **28** dans `check-spk.sh` et **52** sur la machine ; les trois dernières
 ajoutées ont chacune été vues rouges de la même façon — en remettant
 `RESCRIPTUM_TFTP_ADDR=off`, en supprimant le rapport du panneau sur l'état du TFTP, et en
 lui faisant prétendre qu'il livre alors que rien n'est lié.
