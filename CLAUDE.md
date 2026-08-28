@@ -537,6 +537,16 @@ could not check. Note it needs `Resolution::format_name` (the extension), not
   identical — a machine on a real network fetched a loader, nothing happened, and the log
   said success. It is reported at the end now, `sent` or `FAILED after N of M`, with 500
   so `RESCRIPTUM_LOG=problems` keeps it.
+- **In iPXE, naming an initrd turns it into a *file* rather than the initramfs.**
+  `initrd <uri> <name>` gets a cpio header and lands as `/name`; `initrd <uri>` is
+  appended raw and *is* the initramfs. Naming Proxmox's real initrd produced an initramfs
+  holding `/initrd.img` and `/proxmox.iso` and no `/init` — the kernel unpacked 1.7 GB
+  without a complaint, found nothing to run, and panicked with `VFS: Unable to mount root
+  fs on unknown-block(0,0)`. **The ISO does take a name**, because the installer opens it
+  by that name, so the two lines differ on purpose. `initrd=` on the command line is a
+  pxelinux directive, not something the kernel resolves against a filename.
+- **`Freeing initrd memory: NNNN K` means the unpacking worked.** It is the line that
+  rules out every compression theory, and three guesses were spent before reading it.
 - **Never acknowledge a TFTP option that is not implemented.** `windowsize` (RFC 7440) was
   echoed back in the OACK while the transfer loop sent one block and waited for its ACK. A
   client told `windowsize 4` waits for four blocks before acknowledging anything, so both

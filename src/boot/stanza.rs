@@ -82,13 +82,26 @@ pub fn ipxe(entry: &Entry, endpoints: &Endpoints) -> Result<String, String> {
                 "kernel {kernel} ramdisk_size=16777216 rw quiet initrd=initrd.img \\\n\
                  \x20   splash=silent proxmox-start-auto-installer\n"
             ));
-            // The second argument renames the downloaded file inside the initramfs, so
-            // it matches the `initrd=` above; without it the name would come from the
-            // URL and the kernel would not find it.
-            out.push_str(&format!("initrd {initrd} initrd.img\n"));
-            // The ISO travels as a second initrd, and the installer reads
-            // `/cdrom/auto-installer-mode.toml` from it. That file is what carries the
-            // answer URL — nothing on this command line does.
+            // **No second argument, and that is the whole of it.** In iPXE a name turns an
+            // initrd into a *file inside* the initramfs — it gets a cpio header — while one
+            // without a name is appended raw and therefore *is* the initramfs. Naming this
+            // one produced an initramfs containing `/initrd.img` and `/proxmox.iso` and no
+            // `/init`, so the kernel unpacked it happily, found nothing to run, fell
+            // through to mounting a root filesystem and panicked with
+            // `VFS: Unable to mount root fs on unknown-block(0,0)`.
+            //
+            // Measured on a real machine, and the line that gave it away was
+            // `Freeing initrd memory: 1720768K` — 1.7 GB unpacked without a single
+            // complaint, which ruled out the decompression the first three guesses were
+            // about. The comment that used to stand here said the name was needed "so it
+            // matches the `initrd=` above"; `initrd=` is a bootloader directive that
+            // pxelinux consumes, not something the kernel resolves against a filename, and
+            // upstream's own example passes the initrd with no name at all.
+            out.push_str(&format!("initrd {initrd}\n"));
+            // The ISO does take a name, and for the opposite reason: it has to *be* a
+            // file in the initramfs, because the installer opens it by that name. So the
+            // two lines differ deliberately — one raw, one named — and that asymmetry is
+            // the thing to preserve.
             out.push_str(&format!("initrd {image} proxmox.iso\n"));
         }
         Family::Debian => {
@@ -254,14 +267,26 @@ mod tests {
     }
 
     #[test]
-    fn the_proxmox_stanza_matches_what_the_assistant_itself_emits() {
-        // `--pxe-loader ipxe` is upstream's own statement of this stanza, and it is the
-        // reference this must not drift from: the kernel parameters, the initrd renamed
-        // to match `initrd=`, and the ISO carried as a second initrd named proxmox.iso.
+    fn the_real_initrd_is_unnamed_and_the_iso_is_named() {
+        // **The asymmetry is the whole thing, and getting it wrong cost a real machine.**
+        //
+        // In iPXE a name turns an initrd into a *file inside* the initramfs — it gets a
+        // cpio header — while one without a name is appended raw and therefore *is* the
+        // initramfs. Naming the real initrd produced an initramfs holding `/initrd.img`
+        // and `/proxmox.iso` and no `/init`: the kernel unpacked 1.7 GB without a
+        // complaint, found nothing to run, fell through to mounting a root filesystem and
+        // panicked with `VFS: Unable to mount root fs on unknown-block(0,0)`.
+        //
+        // The ISO takes a name for exactly the opposite reason: the installer opens it by
+        // that name, so it has to be a file.
         let script = render(Family::Proxmox);
         assert!(script.contains("ramdisk_size=16777216 rw quiet initrd=initrd.img"));
         assert!(script.contains("splash=silent proxmox-start-auto-installer"));
-        assert!(script.contains("initrd http://192.0.2.10:8001/img/initrd initrd.img"));
+        assert!(
+            script.contains("initrd http://192.0.2.10:8001/img/initrd\n"),
+            "the real initrd must carry no name, or it becomes a file and not the \
+             initramfs: {script}"
+        );
         assert!(script.contains("initrd http://192.0.2.10:8001/img/iso proxmox.iso"));
         // And nothing on the command line names the answer: it rides inside the image.
         assert!(!script.contains("8000"), "{script}");
