@@ -431,6 +431,11 @@ grep -qE "^state: (idle|running)$" <<<"$out" && ok "progress answers even when n
 
 out=$(cgi POST "action=prepare&id=../escape" "" "1")
 [ "$(http_status "$out")" = "400" ] && ok "prepare refuses an id that is a path" || bad "prepare took a traversing id: $(http_status "$out")"
+# A well-formed id for an image that is not here: the action has to reach the CLI and
+# report its refusal, rather than crashing or claiming success. That is the whole wiring.
+out=$(cgi POST "action=prepare&id=not-here" "" "1")
+[ "$(http_status "$out")" = "200" ] && grep -q -- "--- exit" <<<"$out" && ok "prepare reaches the CLI and reports what it said" || bad "prepare did not reach the CLI: $out"
+grep -q -- "--- exit 0" <<<"$out" && bad "prepare claimed success for an image that is not there" || ok "and does not claim success for an image that is not there"
 
 out=$(cgi GET "action=nonsense" "" "")
 [ "$(http_status "$out")" = "400" ] && ok "an unknown action is refused" || bad "an unknown action got $(http_status "$out")"

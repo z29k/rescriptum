@@ -518,6 +518,37 @@ Ext.ns('SYNO.SDS.App.Rescriptum');
                     panel.removeAll(true);
                     panel.add(self.section(self.t('held'), text));
 
+                    /* **Preparing is what turns an image into an unattended install**, and
+                     * it is the step nobody guesses at — so it sits directly under the list
+                     * it acts on rather than behind a menu. The ids come from that same
+                     * listing, parsed here for the same reason the source list is: the
+                     * panel and the command line must not disagree about what is held. */
+                    var ids = [];
+                    Ext.each(String(text).split('\n'), function (line) {
+                        var m = /^([A-Za-z0-9][A-Za-z0-9._:-]*)\s\s+\S/.exec(line);
+                        if (m && m[1] !== 'ID') { ids.push([m[1]]); }
+                    });
+                    self.prepareCombo = new SYNO.ux.ComboBox({
+                        fieldLabel: self.t('image'),
+                        width: 420,
+                        editable: false,
+                        triggerAction: 'all',
+                        mode: 'local',
+                        valueField: 'id',
+                        displayField: 'id',
+                        store: new Ext.data.ArrayStore({ fields: ['id'], data: ids })
+                    });
+                    panel.add(new SYNO.ux.FormPanel({
+                        border: false, labelWidth: 120, bodyStyle: 'padding: 4px 0 12px 0',
+                        items: [
+                            new Ext.Panel({ border: false, html: '<b>' + Ext.util.Format.htmlEncode(self.t('prepare')) + '</b><div style="margin:2px 0 8px 0">' + Ext.util.Format.htmlEncode(self.t('prepare_hint')) + '</div>' }),
+                            self.prepareCombo,
+                            new SYNO.ux.Button({ text: self.t('prepare_do'), handler: function () { self.prepareImage(); } })
+                        ]
+                    }));
+                    self.prepareResult = new Ext.Panel({ border: false, html: '' });
+                    panel.add(self.prepareResult);
+
                     /* The catalogue picker. The source list is local and instant; asking
                      * one what it offers goes over the network to the vendor, so it is a
                      * second click rather than something done for every source on open. */
@@ -636,6 +667,29 @@ Ext.ns('SYNO.SDS.App.Rescriptum');
                 query: '&source=' + encodeURIComponent(src) + '&name=' + encodeURIComponent(name),
                 body: '',
                 success: function () { self.banner(''); self.pollProgress(); }
+            });
+        },
+
+        /* Proxmox only, and **the CLI is what refuses the rest** — with the sentence that
+         * says why, shown here verbatim. Every other family takes its answer's URL on the
+         * kernel command line, where `media ipxe` already puts it, so injecting a file
+         * they never read would be a no-op that looks like a step. Deciding that here as
+         * well would be a second implementation to keep honest. */
+        prepareImage: function () {
+            var self = this;
+            var id = this.prepareCombo && this.prepareCombo.getValue();
+            if (!id) { this.banner(this.t('pick_image')); return; }
+            this.prepareResult.update('<pre class="rescriptum-pre">' + Ext.util.Format.htmlEncode(this.t('loading')) + '</pre>');
+            this.call('prepare', {
+                query: '&id=' + encodeURIComponent(id),
+                body: '',
+                success: function (text) {
+                    self.prepareResult.update('<pre class="rescriptum-pre">' + Ext.util.Format.htmlEncode(text) + '</pre>');
+                    /* A prepared entry is a new row in the listing above, so re-read it —
+                     * leaving a stale table in front of somebody who just changed it is
+                     * how a working step looks like it did nothing. */
+                    if (/--- exit 0\s*$/.test(text)) { self.loadMedia(); }
+                }
             });
         },
 
