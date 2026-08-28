@@ -192,6 +192,43 @@ $ packaging/ipxe/build.sh --out /srv/boot
 A loader from elsewhere works too, provided it chains to *this* server rather than to the
 internet — see below for why a stock one does not.
 
+## What happens on the *second* boot
+
+The first question anybody asks after a successful install, and it has a real answer.
+
+A machine that was just installed reboots, and if network boot is still first in its BIOS
+order it arrives back here. What happens next is decided by one setting:
+
+| `RESCRIPTUM_BOOT_UNCLAIMED` | A machine no answer claims |
+|---|---|
+| `menu` (default) | gets the menu, whose first entry is the local disk and whose timeout falls through to it — fifteen seconds, then the disk |
+| `local` | is handed straight back to its firmware, which moves to the next boot device |
+
+**These are opposite readings of what an answer file means**, and the choice belongs to the
+deployment.
+
+With the menu, a file claiming a machine is how you say *leave this one alone* — because
+without one it lands in a menu somebody could click. That is right while machines are being
+provisioned, and it is the project's thesis: a machine nobody has decided anything about
+should end up where a human can decide.
+
+With `local`, an answer file means *install this one*, and its absence is the safe state.
+Nothing happens to a machine you have not written a file for — it boots its own disk, every
+time, with no menu to click by accident. That is the reading a fleet in production needs,
+and it is the one that scales: the number of machines you want to reinstall is always
+smaller than the number you do not.
+
+**The payoff is that netboot can stay first in the BIOS order forever.** Reinstalling a
+machine becomes *add a file, reboot* — no console, no boot menu, no hands on the hardware.
+Removing the file is what stops it happening twice.
+
+```console
+$ rescriptum config set RESCRIPTUM_BOOT_UNCLAIMED=local
+```
+
+Either way the machine's identity still goes up first. The setting decides only what
+happens when nothing claimed it — not whether to ask.
+
 ## How iPXE ends up talking to *us*
 
 The question nobody expects to have to answer. Whatever delivers the loader:

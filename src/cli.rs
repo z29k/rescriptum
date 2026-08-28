@@ -1239,7 +1239,10 @@ pub fn boot(cfg: &Config, args: &[String]) -> ExitCode {
         Some((cmd, rest)) if cmd == "dhcp-snippet" => boot_snippet(cfg, rest),
         Some((cmd, rest)) if cmd == "check" && rest.is_empty() => boot_check(cfg),
         Some((cmd, rest)) if cmd == "bootstrap" && rest.is_empty() => {
-            print!("{}", crate::boot::menu::bootstrap(&cfg.endpoints()));
+            print!(
+                "{}",
+                crate::boot::menu::bootstrap(&cfg.endpoints(), cfg.unclaimed_boots_local())
+            );
             ExitCode::SUCCESS
         }
         Some((cmd, rest)) if cmd == "menu" && rest.is_empty() => boot_menu(cfg),

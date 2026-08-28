@@ -205,6 +205,45 @@ $ packaging/ipxe/build.sh --out /srv/boot
 Un chargeur venu d'ailleurs convient aussi, à condition qu'il enchaîne vers *ce* serveur
 plutôt que vers Internet — voir ci-dessous pourquoi un chargeur d'origine ne le fait pas.
 
+## Ce qui se passe au *deuxième* démarrage
+
+La première question que tout le monde se pose après une installation réussie, et elle a
+une vraie réponse.
+
+Une machine qui vient d'être installée redémarre, et si le démarrage réseau est encore
+premier dans son BIOS, elle revient ici. Ce qui suit est décidé par un seul réglage :
+
+| `RESCRIPTUM_BOOT_UNCLAIMED` | Une machine qu'aucune réponse ne revendique |
+|---|---|
+| `menu` (défaut) | reçoit le menu, dont la première entrée est le disque local et dont le délai y retombe — quinze secondes, puis le disque |
+| `local` | est rendue directement à son firmware, qui passe au périphérique suivant |
+
+**Ce sont deux lectures opposées de ce que signifie un fichier de réponse**, et le choix
+appartient au déploiement.
+
+Avec le menu, un fichier qui revendique une machine est la façon de dire *laisse celle-ci
+tranquille* — car sans lui elle atterrit dans un menu que quelqu'un pourrait cliquer. C'est
+juste pendant qu'on provisionne, et c'est la thèse du projet : une machine dont personne
+n'a rien décidé doit finir là où un humain peut décider.
+
+Avec `local`, un fichier de réponse veut dire *installe celle-ci*, et son absence est
+l'état sûr. Il n'arrive rien à une machine pour laquelle vous n'avez pas écrit de fichier —
+elle démarre sur son disque, à chaque fois, sans menu à cliquer par accident. C'est la
+lecture dont un parc en production a besoin, et c'est celle qui passe à l'échelle : le
+nombre de machines qu'on veut réinstaller est toujours plus petit que celui des autres.
+
+**Le bénéfice, c'est que le démarrage réseau peut rester premier dans le BIOS pour
+toujours.** Réinstaller une machine devient *ajouter un fichier, redémarrer* — sans
+console, sans menu de démarrage, sans toucher au matériel. Retirer le fichier est ce qui
+empêche que cela se reproduise.
+
+```console
+$ rescriptum config set RESCRIPTUM_BOOT_UNCLAIMED=local
+```
+
+Dans les deux cas l'identité de la machine part d'abord. Le réglage décide seulement de ce
+qui arrive quand rien ne l'a revendiquée — pas s'il faut demander.
+
 ## Comment iPXE finit par parler à *nous*
 
 La question qu'on ne s'attend pas à devoir trancher. Quel que soit le livreur du

@@ -118,6 +118,8 @@ pub struct Config {
     pub tftp_addr: Option<String>,
     /// Seconds before the built-in menu falls through to booting from local disk.
     pub boot_timeout: Duration,
+    /// What a machine no answer claims is offered. See `unclaimed_boots_local`.
+    pub boot_unclaimed: Option<String>,
     /// Replace the embedded logo and the menu's title, for a site that wants its own.
     pub boot_logo: Option<PathBuf>,
     pub boot_title: Option<String>,
@@ -252,6 +254,7 @@ impl Config {
                 "RESCRIPTUM_BOOT_TIMEOUT_SECS",
                 DEFAULT_BOOT_TIMEOUT_SECS as usize,
             ) as u64),
+            boot_unclaimed: optional("RESCRIPTUM_BOOT_UNCLAIMED"),
             boot_logo: optional("RESCRIPTUM_BOOT_LOGO").map(PathBuf::from),
             boot_title: optional("RESCRIPTUM_BOOT_TITLE"),
             user: optional("RESCRIPTUM_USER"),
@@ -408,6 +411,28 @@ impl Config {
     /// loader over instead.
     pub fn tftp_is_off(&self) -> bool {
         self.tftp_addr.as_deref().is_some_and(is_off)
+    }
+
+    /// Whether a machine that no answer claims is sent straight to its own disk instead
+    /// of being offered the menu.
+    ///
+    /// **The default is the menu, and that is the project's thesis rather than an
+    /// oversight**: a machine nobody has decided anything about should end up somewhere a
+    /// human can decide, not silently do nothing. That is right for a machine being
+    /// provisioned, and wrong for a fleet already in production — where most machines are
+    /// installed, and showing every one of them a menu for fifteen seconds on every
+    /// reboot is noise at best and an accidental reinstall at worst.
+    ///
+    /// So `local` inverts what an answer file *means*. With the menu, a file claiming a
+    /// machine is how you say "leave this one alone"; with `local`, a file is how you say
+    /// "install this one", and its absence is the safe state. The second reading is the
+    /// one that scales, because the number of machines you want to reinstall is always
+    /// smaller than the number you do not.
+    pub fn unclaimed_boots_local(&self) -> bool {
+        self.boot_unclaimed
+            .as_deref()
+            .map(str::trim)
+            .is_some_and(|v| v.eq_ignore_ascii_case("local"))
     }
 
     /// The menu timeout **in milliseconds**, which is the unit `choose` counts. The
@@ -636,7 +661,7 @@ pub struct Known {
 
 /// Every variable, in the order a person would want to meet them: what answers come
 /// from, where the server listens, how much it says, then the two credentials.
-pub const KNOWN: [Known; 26] = [
+pub const KNOWN: [Known; 27] = [
     Known {
         key: "RESCRIPTUM_STORE",
         default: Some("files"),
@@ -773,6 +798,12 @@ pub const KNOWN: [Known; 26] = [
         default: Some("15"),
         secret: false,
         help: "Seconds before the menu falls through to local disk. Rendered as milliseconds.",
+    },
+    Known {
+        key: "RESCRIPTUM_BOOT_UNCLAIMED",
+        default: Some("menu"),
+        secret: false,
+        help: "What a machine no answer claims gets: `menu`, or `local` to send it straight to its own disk.",
     },
     Known {
         key: "RESCRIPTUM_BOOT_LOGO",

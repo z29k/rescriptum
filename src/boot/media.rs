@@ -129,7 +129,8 @@ async fn handle(req: Request<Incoming>, media: Arc<Media>, peer: SocketAddr) -> 
     // **they have to work when the answer set is empty**, which is the state every new
     // install starts in.
     if path == "/ipxe/bootstrap" {
-        let script = super::menu::bootstrap(&media.cfg.endpoints());
+        let script =
+            super::menu::bootstrap(&media.cfg.endpoints(), media.cfg.unclaimed_boots_local());
         log::request(&peer_label, 200, "media: GET /ipxe/bootstrap 200");
         return script_response(script);
     }

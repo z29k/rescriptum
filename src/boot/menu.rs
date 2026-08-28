@@ -43,9 +43,21 @@ use super::stanza::{self, Endpoints};
 /// And **`:uristring` on every SMBIOS string**: `${manufacturer}` expands to
 /// `Dell Inc.`, space included, and iPXE percent-encodes nothing on plain expansion, so
 /// a space in a request line is a broken fetch.
-pub fn bootstrap(endpoints: &Endpoints) -> String {
+pub fn bootstrap(endpoints: &Endpoints, unclaimed_boots_local: bool) -> String {
     let answer = endpoints.answer.trim_end_matches('/');
     let media = endpoints.media.trim_end_matches('/');
+    // **What happens when nothing claims this machine is the whole policy**, and it is
+    // one line. The menu is the default and the project's thesis: a machine nobody has
+    // decided anything about ends up where a human can decide. `exit 0` is for a fleet
+    // that is already installed — it hands control back to the firmware, which moves to
+    // the next boot device, so netboot can stay first in the BIOS order without every
+    // reboot passing through a menu. It is the one that works on BIOS *and* UEFI;
+    // `sanboot --drive 0x80` is BIOS-only.
+    let fallback = if unclaimed_boots_local {
+        "|| exit 0\n".to_string()
+    } else {
+        format!("|| chain {media}/ipxe/menu\n")
+    };
     format!(
         "#!ipxe\n\
          # Stage two. DHCP cannot carry a MAC, so this is what puts one in the query\n\
@@ -54,7 +66,7 @@ pub fn bootstrap(endpoints: &Endpoints) -> String {
          &serial=${{serial:uristring}}&asset=${{asset:uristring}}\\\n\
          &manufacturer=${{manufacturer:uristring}}&product=${{product:uristring}}\\\n\
          &platform=${{platform}}&arch=${{buildarch}} \\\n\
-         || chain {media}/ipxe/menu\n"
+         {fallback}"
     )
 }
 
@@ -343,7 +355,7 @@ mod tests {
     fn the_bootstrap_puts_the_machines_identity_in_the_query_string() {
         // Without this the haystack is empty for every GET and the selection engine
         // goes dark at exactly the moment it matters.
-        let script = bootstrap(&endpoints());
+        let script = bootstrap(&endpoints(), false);
         assert!(script.starts_with("#!ipxe\n"));
         assert!(script.contains("mac=${netX/mac}"), "{script}");
         assert!(script.contains("uuid=${uuid}"), "{script}");
@@ -354,16 +366,50 @@ mod tests {
     fn the_bootstrap_names_the_booting_nic_rather_than_the_first_one() {
         // `net0` is merely the first interface. A server that PXE-boots from its second
         // port would identify as its unused first, and install the wrong machine.
-        let script = bootstrap(&endpoints());
+        let script = bootstrap(&endpoints(), false);
         assert!(script.contains("${netX/mac}"), "{script}");
         assert!(!script.contains("${net0/"), "{script}");
+    }
+
+    #[test]
+    fn what_an_unclaimed_machine_gets_is_the_whole_policy() {
+        // **These two are opposite readings of what an answer file means**, and the
+        // choice belongs to the deployment rather than to us.
+        //
+        // With the menu — the default, and the project's thesis — a machine nobody has
+        // decided anything about ends up where a human can decide. An answer file then
+        // means "leave this one alone".
+        //
+        // With `local` the machine is handed straight back to its firmware, so an answer
+        // file means "install this one" and its absence is the safe state. That is the
+        // reading a fleet already in production needs: netboot can stay first in the BIOS
+        // order — which is what makes reinstalling a machine "add a file and reboot" —
+        // without every routine reboot passing through a menu that could be clicked.
+        let menu = bootstrap(&endpoints(), false);
+        assert!(
+            menu.contains("|| chain http://192.0.2.10:8001/ipxe/menu"),
+            "{menu}"
+        );
+        assert!(!menu.contains("exit 0"), "{menu}");
+
+        let local = bootstrap(&endpoints(), true);
+        // `exit 0` and not `sanboot --drive 0x80`: the latter is BIOS-only and fails on
+        // UEFI, and this script is served to both.
+        assert!(local.contains("|| exit 0"), "{local}");
+        assert!(!local.contains("/ipxe/menu"), "{local}");
+
+        // Whichever it is, the identity still goes up first — the fallback is what
+        // happens when nothing claimed the machine, not instead of asking.
+        for script in [&menu, &local] {
+            assert!(script.contains("mac=${netX/mac}"), "{script}");
+        }
     }
 
     #[test]
     fn every_smbios_string_is_percent_encoded_at_expansion() {
         // `${manufacturer}` is `Dell Inc.` — space included — and iPXE encodes nothing
         // on plain expansion, so a space in the request line is a broken fetch.
-        let script = bootstrap(&endpoints());
+        let script = bootstrap(&endpoints(), false);
         for field in ["serial", "asset", "manufacturer", "product"] {
             assert!(
                 script.contains(&format!("{field}=${{{field}:uristring}}")),
@@ -379,7 +425,7 @@ mod tests {
         // **A menu is what a machine gets when nobody has decided anything about it
         // yet** — `default.toml`'s job description, applied to a different format, and
         // implemented as one `||` rather than as a new concept in select.rs.
-        let script = bootstrap(&endpoints());
+        let script = bootstrap(&endpoints(), false);
         assert!(
             script.contains("|| chain http://192.0.2.10:8001/ipxe/menu"),
             "{script}"

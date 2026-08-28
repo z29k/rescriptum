@@ -668,6 +668,7 @@ Environment variables only — plus an optional file to read some of them from:
 | `RESCRIPTUM_MEDIA_MAX_CONNECTIONS` | `16` | Concurrent transfers; low on purpose |
 | `RESCRIPTUM_PUBLIC_HOST` | the routing table's answer, else a sole interface | The host generated URLs name. **A host, never a URL**. Warns and names the alternatives when the host has several |
 | `RESCRIPTUM_BOOT_ALLOW` | unset | Client CIDRs allowed to fetch boot media |
+| `RESCRIPTUM_BOOT_UNCLAIMED` | `menu` | Or `local`. **Inverts what an answer file means**: with `local`, present is *install this one* and absent is the safe state |
 | `RESCRIPTUM_BOOT_DIR` | unset | Loaders and menus. **Unset means no TFTP at all** |
 | `RESCRIPTUM_TFTP_ADDR` | `0.0.0.0:69` when `RESCRIPTUM_BOOT_DIR` is set | Or `off`, a deployment workaround, never a packaged default. A failed bind here warns rather than killing the server |
 
