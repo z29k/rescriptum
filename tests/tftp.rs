@@ -860,3 +860,46 @@ fn the_block_size_can_be_capped_below_what_a_client_asks_for() {
     );
     assert!(!text.contains("1468"), "the cap was ignored: {text:?}");
 }
+
+/// **`boot check` must not write alarms into the log it exists to help you read.**
+///
+/// Its probe wants one block and no more, and a client that simply stops answering is
+/// indistinguishable from one whose network broke — so the server retried for four
+/// seconds and logged a failed transfer. Running the health check produced a scary
+/// `FAILED` line about a transfer nobody wanted finished, in the one file an operator
+/// reads to find a real one. The probe says goodbye with an ERROR packet now.
+#[test]
+fn the_health_probe_leaves_no_failure_in_the_log() {
+    let files: Vec<(&str, Vec<u8>)> = rescriptum::boot::loaders::loaders()
+        .iter()
+        .map(|name| (*name, loader(64 * 1024)))
+        .collect();
+    let s = Server::start(&files);
+
+    let out = Command::new(env!("CARGO_BIN_EXE_rescriptum"))
+        .arg("boot")
+        .arg("check")
+        .env("RESCRIPTUM_BOOT_DIR", &s.boot_dir)
+        .env("RESCRIPTUM_TFTP_ADDR", &s.tftp_addr)
+        .output()
+        .expect("run boot check");
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("handed over"),
+        "the probe has to still work: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+
+    // Long enough that a transfer left hanging would have given up and logged by now.
+    std::thread::sleep(Duration::from_secs(6));
+    let log = s.log();
+    assert!(
+        !log.contains("FAILED"),
+        "the health check logged a failure of its own: {log}"
+    );
+    // It is still recorded, because a transfer that happened and stopped is worth one
+    // line — just not an alarm.
+    assert!(
+        log.contains("cancelled by the client"),
+        "the cancel left no trace at all: {log}"
+    );
+}

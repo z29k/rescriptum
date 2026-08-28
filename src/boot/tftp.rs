@@ -299,7 +299,7 @@ async fn transfer(request: &[u8], peer: SocketAddr, tftp: &Tftp) {
             return;
         }
         // The client acknowledges the option set with block 0 before data starts.
-        if !wait_for_ack(&socket, 0, &oack).await {
+        if !matches!(wait_for_ack(&socket, 0, &oack).await, Ack::Ok) {
             return;
         }
     }
@@ -313,7 +313,7 @@ async fn transfer(request: &[u8], peer: SocketAddr, tftp: &Tftp) {
     let total = contents.len();
     let mut block: u16 = 1;
     let mut sent = 0usize;
-    let outcome = loop {
+    let outcome: Option<(&str, bool)> = loop {
         let end = (sent + block_size).min(total);
         let chunk = &contents[sent..end];
         // **A short block is what ends a transfer**, and "short" includes empty. A file
@@ -328,13 +328,17 @@ async fn transfer(request: &[u8], peer: SocketAddr, tftp: &Tftp) {
         packet.extend_from_slice(chunk);
 
         if socket.send(&packet).await.is_err() {
-            break Some("the socket went away");
+            break Some(("the socket went away", true));
         }
-        if !wait_for_ack(&socket, block, &packet).await {
-            // Either the client said ERROR or it stopped acknowledging. From here the
-            // two are indistinguishable, and both mean the same thing to whoever is
-            // watching a machine fail to boot: it did not get the file.
-            break Some("the client stopped acknowledging");
+        match wait_for_ack(&socket, block, &packet).await {
+            Ack::Ok => {}
+            // **A client that says ERROR meant to stop.** `boot check`'s own probe does
+            // exactly this after one block, and so does a loader the firmware cancelled.
+            // Calling that a failure fills the log with alarms about transfers nobody
+            // wanted finished — which is worse than useless in the one file an operator
+            // reads to find a real failure.
+            Ack::Cancelled => break Some(("cancelled by the client", false)),
+            Ack::Silent => break Some(("the client stopped acknowledging", true)),
         }
 
         sent = end;
@@ -356,19 +360,33 @@ async fn transfer(request: &[u8], peer: SocketAddr, tftp: &Tftp) {
                 parsed.filename
             ),
         ),
-        // Status 500 rather than 0, so `RESCRIPTUM_LOG=problems` keeps it: a machine
-        // that did not get its loader is the definition of a problem worth keeping.
-        Some(why) => log::request(
+        // A cancel is ordinary and gets 200; a client that vanished gets 500, so
+        // `RESCRIPTUM_LOG=problems` keeps the one that means a machine did not boot.
+        Some((why, is_failure)) => log::request(
             &peer.to_string(),
-            500,
+            if is_failure { 500 } else { 200 },
             &format!(
-                "tftp: {} FAILED after {sent} of {total} bytes at blksize={block_size} \
-                 — {why}. If it stalls at the first block, the block size is too large \
-                 for this path: RESCRIPTUM_TFTP_BLKSIZE caps it",
-                parsed.filename
+                "tftp: {} {} after {sent} of {total} bytes at blksize={block_size} — {why}{}",
+                parsed.filename,
+                if is_failure { "FAILED" } else { "stopped" },
+                if is_failure {
+                    ". If it stalls at the first block, the block size is too large for \
+                     this path: RESCRIPTUM_TFTP_BLKSIZE caps it"
+                } else {
+                    ""
+                }
             ),
         ),
     }
+}
+
+/// What ended the wait for an acknowledgement.
+enum Ack {
+    Ok,
+    /// The client sent an ERROR: it meant to stop, and that is not a failure.
+    Cancelled,
+    /// It stopped answering, which is what a path that cannot carry the block looks like.
+    Silent,
 }
 
 /// Wait for the acknowledgement of `block`, resending on silence.
@@ -377,7 +395,7 @@ async fn transfer(request: &[u8], peer: SocketAddr, tftp: &Tftp) {
 /// never answered.** That is the Sorcerer's Apprentice bug: answering a duplicate with
 /// a duplicate makes both sides echo each other and doubles the traffic for the rest of
 /// the transfer.
-async fn wait_for_ack(socket: &UdpSocket, block: u16, resend: &[u8]) -> bool {
+async fn wait_for_ack(socket: &UdpSocket, block: u16, resend: &[u8]) -> Ack {
     let mut buffer = [0u8; 64];
     for _ in 0..MAX_RETRIES {
         match tokio::time::timeout(RETRY, socket.recv(&mut buffer)).await {
@@ -385,11 +403,11 @@ async fn wait_for_ack(socket: &UdpSocket, block: u16, resend: &[u8]) -> bool {
                 let opcode = u16::from_be_bytes([buffer[0], buffer[1]]);
                 let acked = u16::from_be_bytes([buffer[2], buffer[3]]);
                 if opcode == OP_ERROR {
-                    return false;
+                    return Ack::Cancelled;
                 }
                 if opcode == OP_ACK {
                     if acked == block {
-                        return true;
+                        return Ack::Ok;
                     }
                     // An older block: a duplicate. Say nothing and keep waiting.
                     continue;
@@ -398,16 +416,16 @@ async fn wait_for_ack(socket: &UdpSocket, block: u16, resend: &[u8]) -> bool {
                 continue;
             }
             Ok(Ok(_)) => continue,
-            Ok(Err(_)) => return false,
+            Ok(Err(_)) => return Ack::Silent,
             // Silence: the block was lost, or the acknowledgement was. Send it again.
             Err(_) => {
                 if socket.send(resend).await.is_err() {
-                    return false;
+                    return Ack::Silent;
                 }
             }
         }
     }
-    false
+    Ack::Silent
 }
 
 struct Request {
@@ -555,13 +573,25 @@ pub fn probe(addr: &str, filename: &str, wait: Duration) -> ProbeResult {
     }
 
     let mut buffer = [0u8; 1024];
-    let Ok((n, _)) = socket.recv_from(&mut buffer) else {
+    let Ok((n, from)) = socket.recv_from(&mut buffer) else {
         return ProbeResult::Silent;
     };
     if n < 2 {
         return ProbeResult::Silent;
     }
-    match u16::from_be_bytes([buffer[0], buffer[1]]) {
+    let opcode = u16::from_be_bytes([buffer[0], buffer[1]]);
+
+    // **Say goodbye rather than walking away.** One block is all this needs, but a client
+    // that simply stops answering is indistinguishable from one whose network broke — so
+    // the server retried for four seconds and then logged a failed transfer. Which meant
+    // running `boot check` wrote a scary FAILED line into the very log an operator was
+    // reading to find a real one. An ERROR packet is how TFTP says "stop", and RFC 1350
+    // code 0 is the one that carries a message rather than a claim about what went wrong.
+    if matches!(opcode, OP_DATA | OP_OACK) {
+        let _ = socket.send_to(&error_packet(0, "probe complete"), from);
+    }
+
+    match opcode {
         OP_DATA | OP_OACK => ProbeResult::Served,
         OP_ERROR => ProbeResult::Refused,
         _ => ProbeResult::Silent,
