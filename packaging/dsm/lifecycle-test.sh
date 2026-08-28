@@ -128,6 +128,15 @@ grep -q "^RESCRIPTUM_BOOT_DIR=$SHARE/boot\$" "$ENV_FILE" && ok "and the boot fol
 # product's first principle for a packaging constraint; port 69 is reachable on DSM with
 # one `setcap`, measured on a 7.2.2 machine. Left unset, the default is 0.0.0.0:69 —
 # which is what the generated DHCP snippet and every loader we ship expect.
+# **A secret nobody has to invent.** The webhook only works when the token in a machine's
+# answer and the one the server checks are the same string; two blank fields that must
+# agree is a thing people get wrong once and then debug as "the machine reinstalls
+# itself". Generated here so the server half is already right.
+tok=$(value_of RESCRIPTUM_INSTALLED_TOKEN)
+[ -n "$tok" ] && ok "an install-finished token was generated" || bad "RESCRIPTUM_INSTALLED_TOKEN is empty — the webhook would need one invented by hand"
+[ "${#tok}" -ge 32 ] && ok "and it is long enough to be worth having" || bad "the generated token is only ${#tok} characters"
+case "$tok" in *[!0-9a-f]*) bad "the token is not the hex it should be: $tok" ;; *) ok "and is hex, so it survives being pasted into TOML" ;; esac
+
 grep -q "^RESCRIPTUM_TFTP_ADDR=" "$ENV_FILE" && bad "RESCRIPTUM_TFTP_ADDR is live in the file — the default 0.0.0.0:69 is what the snippet and the loaders expect" || ok "TFTP is left at its default, so the package is the TFTP server"
 grep -q "setcap cap_net_bind_service" "$ENV_FILE" && ok "and the file says what one root command makes it bind" || bad "nothing in the file explains how port 69 gets bound"
 grep -q "Task Scheduler" "$ENV_FILE" && ok "and how to survive an upgrade, which drops the capability" || bad "nothing says the capability does not survive an upgrade"
@@ -153,6 +162,10 @@ before=$(cat "$ENV_FILE")
 SYNOPKG_PKG_STATUS=UPGRADE SYNOPKG_PKGVER=9.9.9-9 sh "$ROOT/scripts/postinst" >/dev/null 2>&1
 
 grep -q "^RESCRIPTUM_BOOT_DIR=$SHARE/boot\$" "$ENV_FILE" && ok "a setting the file had never heard of was added" || bad "RESCRIPTUM_BOOT_DIR never reached the upgraded file — the feature would be invisible"
+# **And a token already in the file is never replaced.** Regenerating it on upgrade would
+# silently orphan every answer document carrying the old one, and the symptom would be a
+# fleet quietly reinstalling itself.
+grep -q "^RESCRIPTUM_ANSWER_TOKEN=keep-me-untouched-0123456789\$" "$ENV_FILE" && ok "and a secret already present is left alone" || bad "the top-up replaced a token that was already there"
 grep -q "^RESCRIPTUM_ANSWER_TOKEN=keep-me-untouched-0123456789\$" "$ENV_FILE" && ok "and everything already there is untouched" || bad "the top-up changed a setting that was already present"
 # The safety property: commenting a key out is how an operator says no, and it has to hold.
 [ "$(grep -c "^RESCRIPTUM_MEDIA_DIR=" "$ENV_FILE")" = 0 ] && ok "a commented-out setting is respected rather than re-enabled" || bad "the top-up re-enabled a setting the operator had commented out"

@@ -50,6 +50,24 @@ TFTP_PORT=69
 
 say() { echo "$PKG: $*"; }
 
+# **A secret nobody has to invent.** The install-finished webhook only works when the
+# token in the answer document and the one this server checks are the same string — and
+# two places that must agree, both left blank, is a configuration people get wrong once
+# and then debug as "the machine reinstalls itself". Generating one here means the server
+# half is already right, and the answer half is a copy rather than a decision.
+#
+# `od` rather than `openssl rand` or `base64 /dev/urandom`: all three exist on DSM 7.2.2,
+# but od is POSIX and is the one most likely to exist on the oldest thing this package is
+# allowed to install on. 128 bits of hex, which is not guessable and survives being
+# pasted into a TOML string without quoting questions.
+#
+# Empty output is possible in principle (no /dev/urandom, a stripped od), and an empty
+# token would be a webhook endpoint anybody could call. So the caller checks, and writes
+# the setting commented out rather than live if there is nothing to write.
+generate_token() {
+    od -An -tx1 -N16 /dev/urandom 2>/dev/null | tr -d ' \n'
+}
+
 # Wizard values arrive as environment variables named after the component keys — and every
 # one of them has to be read as "possibly absent, with a default". silent_install exists,
 # and a reinstall may present no wizard at all; a package that only works when someone
@@ -74,6 +92,20 @@ fi
 # The file, in full, for both the live copy and the example. Every path is explicit:
 # RESCRIPTUM_ANSWERS_DIR defaults to /srv/answers and RESCRIPTUM_DB_PATH to
 # /srv/answers.db, neither of which exists on DSM nor could be created by this user.
+# One per run of this script, so the example file and the live file say the same thing.
+# It only ever *reaches* the live file when that file is being created, or when the
+# top-up finds the key absent — an existing token is never replaced.
+INSTALLED_TOKEN=$(generate_token)
+# **An empty token would be an endpoint anybody can call**, so nothing is better than
+# something here: the setting goes in commented out, the feature stays off, and the
+# comment above it still explains what to do. Only reachable if /dev/urandom or od is
+# missing, which is not a thing this package should decide to ship a hole over.
+if [ -n "$INSTALLED_TOKEN" ]; then
+    INSTALLED_LINE="RESCRIPTUM_INSTALLED_TOKEN=$INSTALLED_TOKEN"
+else
+    INSTALLED_LINE="# RESCRIPTUM_INSTALLED_TOKEN=   # could not generate one here; pick your own"
+fi
+
 env_body() {
     cat <<BODY
 # rescriptum — configuration for the packaged install on DSM.
@@ -191,6 +223,29 @@ RESCRIPTUM_MEDIA_DIR=$SHARE_MEDIA
 # folder. If you manage loaders yourself, point this somewhere else and nothing will ever
 # write to it.
 RESCRIPTUM_BOOT_DIR=$SHARE_BOOT
+
+# ---------------------------------------------------------------------------
+# Installing a machine once, and only once.
+#
+# A machine claimed by a '<mac>.ipxe' answer boots the installer every time it starts —
+# including the reboot right after it finished installing, which wipes the disk and does
+# it again. Forever.
+#
+# The machine is what knows it is done. Proxmox calls a webhook after a successful
+# install and *before* that reboot; put this in the machine's answer document:
+#
+#     [post-installation-webhook]
+#     url = "http://<this-nas>:$port/installed"
+#     auth-token = "$INSTALLED_TOKEN"
+#
+# and rescriptum renames the claim out of the way, so the machine boots its own disk from
+# then on. Re-arming it later is renaming that file back. Every other family reports the
+# same thing from its own post-install script with one curl — see the guide.
+#
+# **The token below was generated when this file was written**, so the server half is
+# already right and the answer document only has to copy it. Both must be the same string.
+# Change it if you like; change it in both places.
+$INSTALLED_LINE
 BODY
 }
 
