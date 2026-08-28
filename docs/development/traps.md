@@ -257,6 +257,14 @@ of not being signed by Synology, and no packaging change removes it.** If the pa
 ever signed, the manual step and the boot-up task are both replaced by three lines in
 `conf/privilege`.
 
+**`setcap` works on a DS416j too, and that was not a given.** The four routes to port 69
+were measured on a 7.2.2 VM, which is x86_64 with `/volume1` on btrfs mounted `nodev` but
+not `nosuid` — and a volume mounted `nosuid` makes the kernel ignore file capabilities
+entirely, which would have closed the last open route on the one machine this project
+exists for. Measured on the DS416j (ARMv7, `armada38x`): the capability holds, the package
+binds `udp/69` as its unprivileged user, and `boot check` reports
+`0.0.0.0:69 handed over ipxe-arm64.efi` — a real read request answered with real data.
+
 **The capability belongs to the file, so an upgrade drops it.** A new version replaces the
 binary and the capability goes with the old one — which is why the package documents a
 Task Scheduler boot-up task rather than a one-off command, and why a failed TFTP bind is

@@ -277,6 +277,15 @@ signé par Synology, et aucun changement d'empaquetage ne l'enlève.** Si le paq
 jour signé, l'étape manuelle et la tâche au démarrage sont remplacées par trois lignes dans
 `conf/privilege`.
 
+**`setcap` fonctionne aussi sur un DS416j, et ce n'était pas acquis.** Les quatre routes
+vers le port 69 ont été mesurées sur une VM 7.2.2, qui est en x86_64 avec `/volume1` en
+btrfs monté `nodev` mais pas `nosuid` — or un volume monté `nosuid` fait ignorer les
+capacités de fichier par le noyau, ce qui aurait fermé la dernière route ouverte sur la
+seule machine pour laquelle ce projet existe. Mesuré sur le DS416j (ARMv7, `armada38x`) :
+la capacité tient, le paquet ouvre `udp/69` sous son utilisateur non privilégié, et
+`boot check` rapporte `0.0.0.0:69 handed over ipxe-arm64.efi` — une vraie requête de
+lecture à laquelle on a répondu avec de vraies données.
+
 **La capacité appartient au fichier, donc une mise à jour la perd.** Une nouvelle version
 remplace le binaire et la capacité part avec l'ancien — d'où la tâche au démarrage du
 Planificateur de tâches documentée par le paquet plutôt qu'une commande unique, et d'où le

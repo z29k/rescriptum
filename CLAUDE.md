@@ -564,6 +564,12 @@ could not check. Note it needs `Resolution::format_name` (the extension), not
   *development token*, is valid only on the NAS that generated its `debug.dat`, so it is
   not a distribution path. **The manual `setcap` is settled, not provisional**; no
   packaging change removes it.
+- **`setcap` holds on the DS416j's volume, measured there.** The four routes to port 69
+  were measured on an x86_64 VM whose `/volume1` is btrfs, `nodev` but not `nosuid`; a
+  `nosuid` mount makes the kernel ignore file capabilities outright, which would have
+  closed the last open route on the one machine this exists for. On the DS416j (ARMv7,
+  `armada38x`) the package binds `udp/69` and `boot check` says
+  `0.0.0.0:69 handed over ipxe-arm64.efi`.
 - **A file capability does not survive an upgrade** — the new binary is a different file.
   That is why a failed TFTP bind is the **one** listener failure here that is not fatal:
   when it was, an upgrade took the answer endpoint down with it, failing every install in
