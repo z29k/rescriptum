@@ -230,6 +230,52 @@ else
     say "wrote $ENV_FILE"
 fi
 
+# **A setting this version introduced has to reach an installation that already exists.**
+# The live file is written only when absent, which is right — an upgrade must never
+# replace somebody's port and tokens with defaults. But taken alone it means a new feature
+# is *invisible* to every installation that predates it: boot media shipped with the folders
+# created, the loaders seeded and the firewall port registered, and RESCRIPTUM_BOOT_DIR
+# never arriving, so `boot check` said "boot assets are off" on a NAS that had everything
+# else in place. Found on a real DS416j upgrading from a version without boot media, and
+# the .env.example was no help because nothing makes anybody read it.
+#
+# So: keys the live file has **never heard of** are appended. Nothing present is touched,
+# in any way, ever.
+#
+# **A commented-out key counts as present**, and that is the whole safety property: it is
+# how an operator says "I know about this one and I do not want it". Deleting a line means
+# "never heard of it" and gets it back; commenting it out means "no" and is respected.
+if [ -f "$ENV_FILE" ]; then
+    added=""
+    # Only live keys. The commented ones in the template are documentation, and appending
+    # a wall of them to somebody's working file would be noise rather than help.
+    env_body "$SHARE_ANSWERS" "$DEFAULT_PORT" | grep -E '^[A-Z_]+=' | while IFS= read -r line; do
+        key=${line%%=*}
+        # `#\?` so a deliberately commented setting is left alone.
+        if ! grep -qE "^[[:space:]]*#?[[:space:]]*$key=" "$ENV_FILE"; then
+            echo "$line"
+        fi
+    done >"$ENV_FILE.new" 2>/dev/null
+    if [ -s "$ENV_FILE.new" ]; then
+        added=$(cut -d= -f1 <"$ENV_FILE.new" | tr '\n' ' ')
+        {
+            echo
+            echo "# Added by the $PKG ${SYNOPKG_PKGVER:-upgrade} upgrade: settings this file had"
+            echo "# never heard of. Nothing above was touched. Comment one out to turn it off —"
+            echo "# a commented key is respected, a deleted one comes back."
+            cat "$ENV_FILE.new"
+        } >>"$ENV_FILE"
+        # **We just wrote to a file holding an admin token, so restate the mode.** The
+        # append itself preserves it, but a file that arrived from an older version — or
+        # from a hand-edit — may never have been 0600, and the moment to fix that is the
+        # moment we are already touching it. The harness asserts the outcome, not the
+        # append, precisely so this cannot regress unnoticed.
+        chmod 600 "$ENV_FILE"
+        say "added new settings to $ENV_FILE: $added"
+    fi
+    rm -f "$ENV_FILE.new"
+fi
+
 # The .sc file is static and the port is not, so write the chosen one in. Whether the
 # port-config worker acquires this before or after this script runs decides whether it
 # reaches the firewall entry on a fresh install; either way, changing the port later means

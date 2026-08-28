@@ -270,6 +270,21 @@ request and reports what a machine would get. The first version of it reported "
 use — that is this server, if it is running" and a test with a squatter on the port
 immediately showed that to be a guess.
 
+**A new setting never reaches an installation that already exists**, unless something
+puts it there. The live env file is written only when absent — correct, because an upgrade
+must never replace somebody's port and tokens with defaults — but on its own that makes a
+new feature invisible to every install that predates it. Boot media shipped with the
+folders created, the loaders seeded and 69/udp registered with the firewall, and
+`RESCRIPTUM_BOOT_DIR` never arriving, so `boot check` answered *"boot assets are off"* on a
+DS416j that had everything else in place. `etc/` surviving an uninstall means even removing
+and reinstalling does not fix it. The `.env.example` was no help, because nothing makes
+anybody read it.
+
+`postinst` now appends keys the live file has **never heard of**, touching nothing that is
+present. **A commented-out key counts as present**, and that is the safety property: it is
+how an operator says "I know about this one and I do not want it". Deleting a line means
+"never heard of it" and gets it back; commenting it out means no, and is respected.
+
 ## The DSM desktop application
 
 Eight things, measured on a DSM 7.2.2 virtual machine and on a DS416j running 7.1.1, and

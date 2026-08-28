@@ -885,6 +885,13 @@ machine's answer (hence hidden entries being skipped).
 
 Load-bearing, and each one is a trap somebody has paid for:
 
+- **A new setting never reaches an existing installation on its own.** The live env file
+  is written only when absent, so boot media arrived on a DS416j with the folders made,
+  the loaders seeded and 69/udp registered — and `RESCRIPTUM_BOOT_DIR` missing, which
+  `boot check` reported as "boot assets are off". `etc/` surviving an uninstall means a
+  reinstall does not fix it either. `postinst` appends keys the file has **never heard
+  of** and touches nothing present; **a commented-out key counts as present**, which is
+  how an operator says no.
 - **`postinst` runs on an upgrade too.** It writes the env file **only when absent** —
   guarding on the file, not only on `SYNOPKG_PKG_STATUS` — and `preupgrade`/`postupgrade`
   carry it through `$SYNOPKG_TEMP_UPGRADE_FOLDER` as well. Unguarded, the obvious

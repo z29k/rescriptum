@@ -291,6 +291,23 @@ vraie requête de lecture et rapporte ce qu'obtiendrait une machine. Sa premièr
 annonçait « already in use — that is this server, if it is running » et un test avec un
 squatteur sur le port a montré tout de suite que c'était une supposition.
 
+**Un nouveau réglage n'atteint jamais une installation qui existe déjà**, sauf si quelque
+chose l'y met. Le fichier d'environnement vivant n'est écrit que s'il est absent — ce qui
+est correct, une mise à jour ne doit jamais remplacer le port et les jetons de quelqu'un
+par des valeurs par défaut — mais à lui seul cela rend une nouvelle fonctionnalité
+invisible pour toute installation antérieure. Le boot media est arrivé avec les dossiers
+créés, les chargeurs déposés et 69/udp enregistré au pare-feu, et `RESCRIPTUM_BOOT_DIR`
+jamais posé : `boot check` répondait *« boot assets are off »* sur un DS416j où tout le
+reste était en place. Comme `etc/` survit à une désinstallation, même désinstaller et
+réinstaller n'y change rien. Le `.env.example` n'aide pas : rien n'oblige personne à le
+lire.
+
+`postinst` ajoute désormais les clés dont le fichier vivant **n'a jamais entendu parler**,
+sans toucher à ce qui est présent. **Une clé commentée compte comme présente**, et c'est là
+la propriété de sûreté : c'est ainsi qu'un exploitant dit « celle-là je la connais et je
+n'en veux pas ». Supprimer une ligne veut dire « jamais entendu parler » et la fait
+revenir ; la commenter veut dire non, et c'est respecté.
+
 ## L'application de bureau DSM
 
 Huit choses, mesurées sur une machine virtuelle DSM 7.2.2 et sur un DS416j en 7.1.1, et

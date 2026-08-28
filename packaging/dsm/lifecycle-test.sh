@@ -132,6 +132,46 @@ grep -q "^RESCRIPTUM_TFTP_ADDR=" "$ENV_FILE" && bad "RESCRIPTUM_TFTP_ADDR is liv
 grep -q "setcap cap_net_bind_service" "$ENV_FILE" && ok "and the file says what one root command makes it bind" || bad "nothing in the file explains how port 69 gets bound"
 grep -q "Task Scheduler" "$ENV_FILE" && ok "and how to survive an upgrade, which drops the capability" || bad "nothing says the capability does not survive an upgrade"
 
+section "a setting this version introduced must reach a file that predates it"
+# **The trap this closes, found on a real DS416j.** The live env file is written only when
+# absent — right, because an upgrade must never replace somebody's port and tokens with
+# defaults — but taken alone it means a new feature is invisible to every installation that
+# predates it. Boot media shipped with the folders created, the loaders seeded and the
+# firewall port registered, and RESCRIPTUM_BOOT_DIR never arriving: `boot check` answered
+# "boot assets are off" on a NAS that had everything else in place.
+saved=$(cat "$ENV_FILE")
+
+# A file from before boot media existed: the four settings that version wrote, and no more.
+grep -E '^(RESCRIPTUM_LISTEN_ADDR|RESCRIPTUM_ANSWERS_DIR|RESCRIPTUM_DB_PATH|RESCRIPTUM_LOG_FILE)=' "$ENV_FILE" >"$ENV_FILE.old"
+echo "RESCRIPTUM_ANSWER_TOKEN=keep-me-untouched-0123456789" >>"$ENV_FILE.old"
+# And one the operator turned off on purpose. Commented is a decision, not an absence.
+echo "# RESCRIPTUM_MEDIA_DIR=$SHARE/media" >>"$ENV_FILE.old"
+mv "$ENV_FILE.old" "$ENV_FILE"
+chmod 600 "$ENV_FILE"
+before=$(cat "$ENV_FILE")
+
+SYNOPKG_PKG_STATUS=UPGRADE SYNOPKG_PKGVER=9.9.9-9 sh "$ROOT/scripts/postinst" >/dev/null 2>&1
+
+grep -q "^RESCRIPTUM_BOOT_DIR=$SHARE/boot\$" "$ENV_FILE" && ok "a setting the file had never heard of was added" || bad "RESCRIPTUM_BOOT_DIR never reached the upgraded file — the feature would be invisible"
+grep -q "^RESCRIPTUM_ANSWER_TOKEN=keep-me-untouched-0123456789\$" "$ENV_FILE" && ok "and everything already there is untouched" || bad "the top-up changed a setting that was already present"
+# The safety property: commenting a key out is how an operator says no, and it has to hold.
+[ "$(grep -c "^RESCRIPTUM_MEDIA_DIR=" "$ENV_FILE")" = 0 ] && ok "a commented-out setting is respected rather than re-enabled" || bad "the top-up re-enabled a setting the operator had commented out"
+# Every line the file had before must still be there, in order, at the top. The top-up
+# only ever appends, so anything else means it rewrote somebody's configuration.
+printf '%s\n' "$before" >"$WORK/before.txt"
+head -n "$(wc -l <"$WORK/before.txt")" "$ENV_FILE" >"$WORK/after-head.txt"
+cmp -s "$WORK/before.txt" "$WORK/after-head.txt" && ok "the original lines survive verbatim, in order" || bad "the top-up rewrote the existing content: $(diff "$WORK/before.txt" "$WORK/after-head.txt" | head -3)"
+mode=$(stat -c '%a' "$ENV_FILE" 2>/dev/null || stat -f '%Lp' "$ENV_FILE")
+[ "$mode" = "600" ] && ok "and it is still mode 600 afterwards" || bad "the top-up left it mode $mode"
+
+# Running it twice must not append a second copy — postinst runs on every upgrade.
+SYNOPKG_PKG_STATUS=UPGRADE sh "$ROOT/scripts/postinst" >/dev/null 2>&1
+n=$(grep -c "^RESCRIPTUM_BOOT_DIR=" "$ENV_FILE")
+[ "$n" = 1 ] && ok "and a second upgrade does not append it again" || bad "RESCRIPTUM_BOOT_DIR appears $n times after two upgrades, not once"
+
+printf '%s\n' "$saved" >"$ENV_FILE"
+chmod 600 "$ENV_FILE"
+
 section "install without a wizard (silent_install, or a reinstall that shows none)"
 saved=$(cat "$ENV_FILE")
 rm -f "$ENV_FILE"
