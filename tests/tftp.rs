@@ -1001,6 +1001,13 @@ fn a_handshake_failure_blames_the_cap_only_when_the_cap_did_something() {
         log.contains("fresh port"),
         "and it has to point at what this actually looks like: {log}"
     );
+    // **Which options were offered is the whole diagnosis.** A ROM that refuses one
+    // refuses the whole reply and retries without it; without this line that is only
+    // visible in a packet capture, which is where it was actually found.
+    assert!(
+        log.contains("The reply offered: blksize=1468"),
+        "the line has to name what was offered: {log}"
+    );
 }
 
 /// **A client that answers from a different port must still be served.**

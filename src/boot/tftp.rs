@@ -381,13 +381,26 @@ async fn transfer(request: &[u8], peer: SocketAddr, tftp: &Tftp) {
                              it to agree to what the client wants"
                         )
                     } else {
+                        // **Name the options that were in the reply.** A ROM that refuses
+                        // one of them refuses the whole OACK, and which one it was is
+                        // otherwise only visible in a packet capture — the difference
+                        // between a fifteen-second stumble somebody can read and one they
+                        // have to tcpdump. Seen on a Lenovo that rejects a reply carrying
+                        // `tsize` and then retries without asking for it.
                         format!(
-                            "it never acknowledged the options it asked for itself \
-                             (blksize={asked_block}). **The reply comes from a fresh port** \
-                             — that is how TFTP works — so this is what a firewall or a NAT \
-                             between the two looks like: the request arrives, the answer \
-                             goes out, and the acknowledgement never comes back. On a NAS, \
-                             check the firewall; in a container, host networking"
+                            "it never acknowledged the options it asked for itself. The \
+                             reply offered: {}. A client that refuses one option refuses \
+                             the whole reply and usually retries without it — if a second \
+                             attempt succeeds, that is what happened. Otherwise: **the \
+                             reply comes from a fresh port**, which is how TFTP works, so \
+                             this is also what a firewall or a NAT between the two looks \
+                             like — the request arrives, the answer goes out, and the \
+                             acknowledgement never comes back",
+                            accepted
+                                .iter()
+                                .map(|(k, v)| format!("{k}={v}"))
+                                .collect::<Vec<_>>()
+                                .join(" ")
                         )
                     }
                 ),
