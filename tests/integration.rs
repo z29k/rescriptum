@@ -1251,3 +1251,52 @@ fn without_a_token_installed_is_just_another_answer_path() {
         "it answered as an endpoint rather than serving the default: {response}"
     );
 }
+
+/// **Every other family reports back from a shell script, not from a webhook.** A
+/// kickstart `%post`, a preseed `late_command`, an autoinstall `late-commands`, an
+/// AutoYaST chroot script — all of them can run one `curl`, and none of them will compose
+/// Proxmox's JSON body. So the endpoint takes the machine's identity from the query string
+/// and its credential from an ordinary bearer header, which is what that one line can send.
+#[test]
+fn a_kickstart_or_a_preseed_can_report_installed_with_one_curl() {
+    let s = Server::start_env(
+        &[
+            ("98-fa-9b-50-d8-10.ipxe", "#!ipxe\nchain installer\n"),
+            ("98-fa-9b-50-d8-10.ks", "%post\n"),
+        ],
+        "5",
+        &[("RESCRIPTUM_INSTALLED_TOKEN", "nas:s3cr3t")],
+    );
+
+    // Exactly what a `%post` writes:
+    //   curl -X POST -H "Authorization: Bearer nas:s3cr3t" \
+    //        "http://server:8000/installed?mac=$(cat /sys/class/net/eth0/address)"
+    // No body at all — there is nothing it needs to say beyond who it is.
+    let response = s.raw(
+        concat!(
+            "POST /installed?mac=98:fa:9b:50:d8:10 HTTP/1.1\r\nHost: nas\r\n",
+            "Authorization: Bearer nas:s3cr3t\r\n",
+            "Content-Length: 0\r\n\r\n",
+        )
+        .as_bytes(),
+    );
+    assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+    assert!(
+        response.contains("installed-98-fa-9b-50-d8-10"),
+        "{response}"
+    );
+    assert!(!s.dir().join("98-fa-9b-50-d8-10.ipxe").exists());
+    // The kickstart itself is not an `.ipxe` and is left exactly where it was.
+    assert!(s.dir().join("98-fa-9b-50-d8-10.ks").exists());
+
+    // And a wrong bearer is refused, with nothing left to disarm anyway.
+    let response = s.raw(
+        concat!(
+            "POST /installed?mac=aa:bb:cc:dd:ee:ff HTTP/1.1\r\nHost: nas\r\n",
+            "Authorization: Bearer nas:wrong\r\n",
+            "Content-Length: 0\r\n\r\n",
+        )
+        .as_bytes(),
+    );
+    assert!(response.starts_with("HTTP/1.1 401"), "{response}");
+}

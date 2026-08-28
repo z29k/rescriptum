@@ -140,7 +140,11 @@ These are deliberate design decisions, not oversights. Do not "improve" them wit
   machine finishing must not disarm a rack), format `ipxe` only (the `.toml` is the record
   of how it was built), and moved under an `installed-` prefix rather than deleted. The
   token is Proxmox's, and it arrives **in the JSON body**, not as a bearer — so the route
-  runs before the answer token's guard, which would otherwise reject every webhook.
+  runs before the answer token's guard, which would otherwise reject every webhook. It
+  also takes a bearer header and the identity from the query, because **Proxmox is the
+  only family with a webhook**: every other one reports from a `%post`, a
+  `late_command` or a chroot script, where one `curl` is writable and composing
+  Proxmox's JSON is not.
 - `src/config.rs` — environment configuration. `Config::from_lookup` takes a lookup closure so
   tests never touch the process environment.
 - `src/envfile.rs` — the optional file of defaults `RESCRIPTUM_ENV_FILE` names, and the

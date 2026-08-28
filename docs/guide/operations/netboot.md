@@ -272,6 +272,38 @@ the menu was never claimed at all. A disarm that *fails* is logged as `still arm
 because the consequence is otherwise silent: the machine reinstalls on its next boot and
 nothing else would say so.
 
+### Every other family reports back too
+
+Proxmox is the only one with a webhook of its own. **The claim is not Proxmox-specific** —
+it is an `.ipxe` document, which is about the loader rather than the operating system — so
+every family needs the same disarm, and every family has somewhere to run one line at the
+end of its install:
+
+```bash
+curl -fsS -X POST -H "Authorization: Bearer nas:s3cr3t" \
+  "http://192.0.2.10:8000/installed?mac=$(cat /sys/class/net/*/address | head -1)"
+```
+
+No body, no JSON: the query says which machine, the header says it is allowed. Where that
+line goes:
+
+| Family | Where |
+|---|---|
+| Proxmox | `[post-installation-webhook]` — native, nothing to write |
+| Debian | `d-i preseed/late_command string in-target sh -c '…'` |
+| Ubuntu | `late-commands:` in the autoinstall document |
+| RHEL, AlmaLinux, Rocky | the `%post` section of the kickstart |
+| SUSE | `<scripts><chroot-scripts>` in the AutoYaST profile |
+
+**Pick the booting interface's MAC, not the first one alphabetically.** The example above
+takes whichever `/sys/class/net` entry comes first, which is fine on a machine with one
+NIC and wrong on a machine with four — and the wrong MAC disarms the wrong machine, or
+nothing at all. On a machine with several, name the interface.
+
+The endpoint takes the credential either way — Proxmox's `auth-token` arrives inside the
+JSON body because that is what Proxmox sends, and a bearer header because that is what a
+shell script sends. Same secret, same constant-time comparison.
+
 ## How iPXE ends up talking to *us*
 
 The question nobody expects to have to answer. Whatever delivers the loader:

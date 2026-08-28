@@ -505,6 +505,8 @@ async fn connection(
 async fn installed(
     req: Request<Incoming>,
     expected: String,
+    bearer: bool,
+    query: Option<String>,
     answers: Arc<Answers>,
     store: Arc<dyn rescriptum::store::StoreWrite>,
     peer: String,
@@ -519,7 +521,11 @@ async fn installed(
         }
     };
 
-    if !rescriptum::installed::token_matches(&body, &expected) {
+    // **Either credential, because the callers differ.** Proxmox puts its `auth-token` in
+    // the JSON body and cannot be told to send a header; a `curl` in a `%post` sends a
+    // header and would have to be talked into composing JSON. Both are the same secret,
+    // and both are compared without an early return.
+    if !bearer && !rescriptum::installed::token_matches(&body, &expected) {
         // Logged and never rate-limited, for the reason the answer token is not: a rack
         // sits behind one address, and shutting it out would turn a bad token into a
         // fleet that reinstalls itself forever.
@@ -527,7 +533,7 @@ async fn installed(
         return text(StatusCode::UNAUTHORIZED, "401 Unauthorized\n");
     }
 
-    let facts = Facts::new(None, &body);
+    let facts = Facts::from_request(None, query.as_deref(), &body);
     // Blocking: the file store reads and renames. Doing that on an async worker stalls
     // every other connection that thread is driving.
     let result = tokio::task::spawn_blocking(move || {
@@ -595,7 +601,15 @@ async fn handle(
         && path == "/installed"
         && let Some(expected) = cfg.installed_token.clone()
     {
-        return installed(req, expected, answers, store, peer).await;
+        // The query goes in as identity too, not only the body. Proxmox puts the machine's
+        // interfaces in its webhook body and needs nothing else; **every other family
+        // reports back from a shell script** — a kickstart `%post`, a preseed
+        // `late_command`, an autoinstall `late-commands`, an AutoYaST chroot script — and
+        // there `?mac=…` is a line somebody can write, where composing the same JSON is a
+        // line they will get wrong.
+        let query = req.uri().query().map(str::to_string);
+        let bearer = bearer_matches(&req, &expected);
+        return installed(req, expected, bearer, query, answers, store, peer).await;
     }
 
     // An installer that was given a token must present it. Proxmox does when its ISO

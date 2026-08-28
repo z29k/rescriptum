@@ -288,6 +288,38 @@ installée depuis le menu n'a jamais été revendiquée. Un désarmement qui *é
 journalisé en `still armed`, parce que sa conséquence est autrement silencieuse : la
 machine se réinstalle au démarrage suivant et rien d'autre ne le dirait.
 
+### Toutes les autres familles rapportent aussi
+
+Proxmox est le seul à avoir son propre webhook. **La revendication n'est pas propre à
+Proxmox** — c'est un document `.ipxe`, qui concerne le chargeur et non le système
+d'exploitation — donc toutes les familles ont besoin du même désarmement, et toutes ont un
+endroit où lancer une ligne à la fin de leur installation :
+
+```bash
+curl -fsS -X POST -H "Authorization: Bearer nas:s3cr3t" \
+  "http://192.0.2.10:8000/installed?mac=$(cat /sys/class/net/*/address | head -1)"
+```
+
+Pas de corps, pas de JSON : la query dit quelle machine, l'en-tête dit qu'elle en a le
+droit. Où mettre cette ligne :
+
+| Famille | Où |
+|---|---|
+| Proxmox | `[post-installation-webhook]` — natif, rien à écrire |
+| Debian | `d-i preseed/late_command string in-target sh -c '…'` |
+| Ubuntu | `late-commands:` dans le document autoinstall |
+| RHEL, AlmaLinux, Rocky | la section `%post` du kickstart |
+| SUSE | `<scripts><chroot-scripts>` du profil AutoYaST |
+
+**Prenez la MAC de l'interface qui a démarré, pas la première par ordre alphabétique.**
+L'exemple ci-dessus prend la première entrée de `/sys/class/net`, ce qui va sur une machine
+à une carte et se trompe sur une machine à quatre — et une mauvaise MAC désarme la mauvaise
+machine, ou personne. Sur une machine à plusieurs cartes, nommez l'interface.
+
+L'endpoint accepte les deux formes du justificatif : l'`auth-token` de Proxmox arrive dans
+le corps JSON parce que c'est ce que Proxmox envoie, et un en-tête bearer parce que c'est
+ce qu'envoie un script shell. Même secret, même comparaison en temps constant.
+
 ## Comment iPXE finit par parler à *nous*
 
 La question qu'on ne s'attend pas à devoir trancher. Quel que soit le livreur du
