@@ -138,10 +138,28 @@ packaging/dsm/make-spk.sh armv7              # wrap a build that already exists
 packaging/dsm/check-spk.sh                   # structural check over dist/*.spk
 ```
 
+**The package carries the loaders, so build them first or it will not pass its own
+check.** `make-spk.sh` takes them from `packaging/ipxe/out` (override with
+`RESCRIPTUM_LOADERS`), and `check-spk.sh` fails a package that has none — a TFTP server
+with nothing to hand out boots nothing. Building iPXE needs a Linux C toolchain, which on
+a Mac means a container:
+
+```bash
+docker run --rm --platform linux/amd64 -v "$PWD:/w" -w /w debian:bookworm-slim sh -c '
+  apt-get update -qq &&
+  apt-get install -y --no-install-recommends build-essential liblzma-dev mtools \
+    xorriso isolinux gcc-aarch64-linux-gnu git ca-certificates perl &&
+  packaging/ipxe/build.sh --out /w/packaging/ipxe/out'
+```
+
+Once, not per package: the loaders are the same bytes in every ABI's `.spk`, because they
+run on the machines being *booted*, not on the NAS. `packaging/ipxe/out` is gitignored —
+**no binaries in git, ever**.
+
 | ABI | `arch` in `INFO` | From |
 |---|---|---|
 | `x86_64` | `x86_64` — the *family* name, so it covers every Intel platform | `x86_64-unknown-linux-musl` |
-| `armv7` | `armada38x` — the family shorthand does not reach the Marvell platforms | `armv7-unknown-linux-musleabihf` |
+| `armv7` | `armada38x` — the family shorthand does not reach the Marvell platforms | `armv7-unknown-linux-gnueabihf` |
 | `aarch64` | `armv8` | `aarch64-unknown-linux-musl`, once the binary has been run on one |
 
 The rule for widening that: **claim an ABI once the binary has run on the oldest-kernel
@@ -185,6 +203,6 @@ under a temporary name, restarts, and confirms `/health`. See
 
 | Environment | Default |
 |---|---|
-| `TARGET` | `armv7-unknown-linux-musleabihf` |
+| `TARGET` | `armv7-unknown-linux-gnueabihf` |
 | `ANSWERS` | `<remote-dir>/answers` |
 | `PORT` | `8000` |

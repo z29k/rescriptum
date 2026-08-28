@@ -141,6 +141,24 @@ packaging/dsm/make-spk.sh armv7              # emballer un build qui existe déj
 packaging/dsm/check-spk.sh                   # contrôle structurel sur dist/*.spk
 ```
 
+**Le paquet embarque les chargeurs : construisez-les d'abord, sinon il ne passe pas son
+propre contrôle.** `make-spk.sh` les prend dans `packaging/ipxe/out` (remplaçable par
+`RESCRIPTUM_LOADERS`), et `check-spk.sh` refuse un paquet qui n'en a pas — un serveur TFTP
+sans rien à distribuer ne démarre personne. Construire iPXE demande une chaîne C Linux, ce
+qui sur un Mac veut dire un conteneur :
+
+```bash
+docker run --rm --platform linux/amd64 -v "$PWD:/w" -w /w debian:bookworm-slim sh -c '
+  apt-get update -qq &&
+  apt-get install -y --no-install-recommends build-essential liblzma-dev mtools \
+    xorriso isolinux gcc-aarch64-linux-gnu git ca-certificates perl &&
+  packaging/ipxe/build.sh --out /w/packaging/ipxe/out'
+```
+
+Une fois, pas par paquet : les chargeurs sont les mêmes octets dans le `.spk` de chaque
+ABI, puisqu'ils tournent sur les machines *démarrées*, pas sur le NAS. `packaging/ipxe/out`
+est gitignoré — **jamais de binaires dans git**.
+
 | ABI | `arch` dans `INFO` | Depuis |
 |---|---|---|
 | `x86_64` | `x86_64` — le nom de *famille*, donc toutes les plateformes Intel | `x86_64-unknown-linux-musl` |
