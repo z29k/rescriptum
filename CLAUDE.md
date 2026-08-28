@@ -537,6 +537,14 @@ could not check. Note it needs `Resolution::format_name` (the extension), not
   identical — a machine on a real network fetched a loader, nothing happened, and the log
   said success. It is reported at the end now, `sent` or `FAILED after N of M`, with 500
   so `RESCRIPTUM_LOG=problems` keeps it.
+- **A TFTP transfer leaves port 69 immediately, and that is what a firewall does not
+  expect.** The server answers from a fresh port and the client acknowledges to *that*, so
+  a rule allowing only 69 lets the request in, lets the answer out, and drops the
+  acknowledgement — the machine then looks like it lost interest, which is as hard to read
+  as this protocol gets. `RESCRIPTUM_TFTP_PORT_RANGE` pins it so it can be opened. The DSM
+  package pins **30000-30063** and registers it: chosen on the machine, below the kernel's
+  ephemeral range (32768–60999, so nothing there can be handed away), clear of every UDP
+  port a stock DSM uses, claimed by no Synology `.sc`, and all 64 verified bindable.
 - **`blksize=1468` fills a 1500-byte path exactly** — 1468 payload, 4 TFTP, 8 UDP, 20 IP —
   which is what iPXE asks for and what leaves no room at all. One VLAN tag makes the frame
   1504, and a PXE ROM meeting that usually stops without a message. `RESCRIPTUM_TFTP_BLKSIZE`

@@ -37,6 +37,7 @@ no configuration *format* to learn and no command line to get wrong.
 | `RESCRIPTUM_BOOT_ALLOW` | unset | Client CIDRs allowed to fetch boot media. Unset means anyone who can reach the port |
 | `RESCRIPTUM_BOOT_DIR` | unset | Loaders and menus, handed out over TFTP. **Unset means no TFTP at all** |
 | `RESCRIPTUM_TFTP_ADDR` | `0.0.0.0:69` | The TFTP listener, or **`off`** for none. Port 69 is privileged; see `RESCRIPTUM_USER` |
+| `RESCRIPTUM_TFTP_PORT_RANGE` | unset | The ports transfers answer from, as `first-last`. **A TFTP transfer leaves port 69 immediately** — the server replies from a fresh port and the client acknowledges to that — so a firewall allowing only 69 drops the acknowledgement and the machine looks like it lost interest. Pin the range so it can be opened. Unset, the kernel picks |
 | `RESCRIPTUM_TFTP_BLKSIZE` | `1468` | The largest TFTP block to agree to. 1468 fills a 1500-byte path **exactly** — 1468 payload, 4 TFTP, 8 UDP, 20 IP — so a VLAN tag or a tunnel makes the frame too big and a PXE ROM usually just stops. Lower it (1400, or 512) when a boot stalls at the first block |
 | `RESCRIPTUM_BOOT_TIMEOUT_SECS` | `15` | Seconds before the menu falls through to local boot |
 | `RESCRIPTUM_BOOT_UNCLAIMED` | `menu` | What a machine no answer claims gets. `local` hands it back to its firmware instead, which inverts what an answer file means: present is *install this one* rather than *leave this one alone* |

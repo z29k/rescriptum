@@ -113,7 +113,11 @@ grep -q "^RESCRIPTUM_DB_PATH=$SHARE/answers.db\$" "$ENV_FILE" && ok "the databas
 # and then cannot find rescriptum in the firewall list. **69/udp is the one that matters
 # most** — a PXE ROM asks over UDP, and a firewall that drops it produces a client which
 # retries and times out with nothing in any log on this side.
-grep -q "dst.ports=\"$PORT/tcp 8001/tcp 69/udp\"" "$ROOT/target/port_conf/rescriptum.sc" && ok "the .sc file carries the answer port, the media one and TFTP" || bad ".sc file: $(tail -1 "$ROOT/target/port_conf/rescriptum.sc")"
+grep -q "dst.ports=\"$PORT/tcp 8001/tcp 69/udp 30000:30063/udp\"" "$ROOT/target/port_conf/rescriptum.sc" && ok "the .sc file carries the answer port, the media one, TFTP and its data range" || bad ".sc file: $(tail -1 "$ROOT/target/port_conf/rescriptum.sc")"
+# **The data range is not decoration.** A TFTP transfer leaves port 69 at once and answers
+# from a fresh port; a firewall that allows only 69 drops the acknowledgement, and the
+# machine looks like it lost interest. Pinned so it can be opened, and opened above.
+grep -q "^RESCRIPTUM_TFTP_PORT_RANGE=30000-30063\$" "$ENV_FILE" && ok "and the server is pinned to that same range" || bad "RESCRIPTUM_TFTP_PORT_RANGE is $(value_of RESCRIPTUM_TFTP_PORT_RANGE), which the firewall entry does not cover"
 
 # **The package must not ship a configuration that refuses to start.** Naming a media
 # address with no media directory is a startup error, and the first version of this

@@ -47,6 +47,19 @@ MEDIA_PORT=8001
 # TFTP's, and not a preference either: a PXE ROM has 69 burned into it, so this is the
 # one port in the design that cannot move without changing the client.
 TFTP_PORT=69
+# **The ports transfers answer from, and they have to be pinned here.** A TFTP transfer
+# leaves port 69 immediately — the server replies from a fresh port and the client
+# acknowledges to *that* — so a firewall that allows only 69 lets the request in, lets the
+# answer out, and drops the acknowledgement. The symptom is a machine that says
+# "Downloading NBP file" and then nothing, which is as hard to read as this protocol gets.
+#
+# Chosen against a real DSM rather than picked: below the kernel's own ephemeral range
+# (32768–60999, so nothing here can be handed to something else), clear of every UDP port
+# in use on a stock install (68, 123, 137, 138, 161, 323, 1900, 3702, 5353, 9997–9999),
+# claimed by no Synology .sc, and all 64 verified bindable. Sixty-four is MAX_TRANSFERS,
+# so the range cannot be the thing that runs out first.
+TFTP_DATA_FIRST=30000
+TFTP_DATA_LAST=30063
 
 say() { echo "$PKG: $*"; }
 
@@ -211,6 +224,11 @@ RESCRIPTUM_MEDIA_DIR=$SHARE_MEDIA
 # boot folder below is a working alternative rather than the intended one.
 # RESCRIPTUM_TFTP_ADDR=0.0.0.0:69
 
+# The ports a transfer answers from. **Set, not commented, and the firewall entry above
+# covers them** — left to the kernel they would land somewhere no rule allows, and every
+# transfer would die at the handshake with the client looking like it lost interest.
+RESCRIPTUM_TFTP_PORT_RANGE=$TFTP_DATA_FIRST-$TFTP_DATA_LAST
+
 # Where the loaders live — **and this package ships them**, so the folder is already
 # filled in when you first start it. They are iPXE, GPLv2, separate files never linked
 # into our binary; the NOTICE beside them names the exact upstream commit they were built
@@ -345,7 +363,7 @@ if [ -f "$SC_FILE" ]; then
     # times out with nothing in any log on this side.
     # The protocol rides on the port, which is the shape the tcp entries already use —
     # not a second dst.udp.ports key, which would be a guess.
-    sed "s|^dst.ports=.*|dst.ports=\"$port/tcp $MEDIA_PORT/tcp $TFTP_PORT/udp\"|" "$SC_FILE" >"$SC_FILE.new" &&
+    sed "s|^dst.ports=.*|dst.ports=\"$port/tcp $MEDIA_PORT/tcp $TFTP_PORT/udp $TFTP_DATA_FIRST:$TFTP_DATA_LAST/udp\"|" "$SC_FILE" >"$SC_FILE.new" &&
         mv "$SC_FILE.new" "$SC_FILE"
 fi
 

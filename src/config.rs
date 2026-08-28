@@ -119,6 +119,8 @@ pub struct Config {
     /// The TFTP listener, as the operator set it. `None` means nobody did; see
     /// `tftp_addr()`.
     pub tftp_addr: Option<String>,
+    /// The ports TFTP answers transfers from, as `first-last`. See `tftp_port_range`.
+    pub tftp_port_range: Option<String>,
     /// The largest TFTP block this server will agree to. See `tftp_blksize`.
     pub tftp_blksize: Option<usize>,
     /// Seconds before the built-in menu falls through to booting from local disk.
@@ -260,6 +262,7 @@ impl Config {
                 "RESCRIPTUM_BOOT_TIMEOUT_SECS",
                 DEFAULT_BOOT_TIMEOUT_SECS as usize,
             ) as u64),
+            tftp_port_range: optional("RESCRIPTUM_TFTP_PORT_RANGE"),
             tftp_blksize: optional("RESCRIPTUM_TFTP_BLKSIZE")
                 .and_then(|v| v.trim().parse::<usize>().ok())
                 .filter(|n| *n > 0),
@@ -442,6 +445,30 @@ impl Config {
             .as_deref()
             .map(str::trim)
             .is_some_and(|v| v.eq_ignore_ascii_case("local"))
+    }
+
+    /// The ports a TFTP transfer may answer from, parsed from `first-last`.
+    ///
+    /// **This exists because of firewalls, and it is not a preference.** A TFTP transfer
+    /// does not continue on port 69: the server answers from a fresh port and the client
+    /// acknowledges to *that*. A firewall told to allow 69 lets the request in, lets the
+    /// answer out, and then drops the acknowledgement — which looks exactly like a client
+    /// that stopped caring, and is the single hardest failure in this protocol to read.
+    ///
+    /// Unset, the kernel picks and nothing needs opening on a host with no firewall.
+    /// Set, the range is what an operator opens, and it need only be as large as the
+    /// transfers that can overlap — `MAX_TRANSFERS` bounds those at 64.
+    ///
+    /// Anything unparseable is `None` rather than an error: a wrong value here must not
+    /// stop a server from booting a fleet, and the startup line says which it took.
+    pub fn tftp_port_range(&self) -> Option<(u16, u16)> {
+        let raw = self.tftp_port_range.as_deref()?.trim();
+        let (a, b) = raw.split_once('-')?;
+        let first: u16 = a.trim().parse().ok()?;
+        let last: u16 = b.trim().parse().ok()?;
+        // Backwards is a typo, not an empty range, and 0 would ask the kernel to choose
+        // — which is what leaving this unset already means.
+        (first > 0 && last >= first).then_some((first, last))
     }
 
     /// The largest TFTP block to agree to, when a client asks for a bigger one.
@@ -692,7 +719,7 @@ pub struct Known {
 
 /// Every variable, in the order a person would want to meet them: what answers come
 /// from, where the server listens, how much it says, then the two credentials.
-pub const KNOWN: [Known; 29] = [
+pub const KNOWN: [Known; 30] = [
     Known {
         key: "RESCRIPTUM_STORE",
         default: Some("files"),
@@ -835,6 +862,12 @@ pub const KNOWN: [Known; 29] = [
         default: None,
         secret: true,
         help: "Proxmox's post-installation-webhook token. Set it and POST /installed exists, which drops a machine's install claim when it reports success. Unset, there is no endpoint.",
+    },
+    Known {
+        key: "RESCRIPTUM_TFTP_PORT_RANGE",
+        default: None,
+        secret: false,
+        help: "The ports transfers answer from, as `first-last` (e.g. 30000-30063). A TFTP transfer leaves port 69 immediately, so this is what a firewall has to allow besides 69/udp. Unset, the kernel picks.",
     },
     Known {
         key: "RESCRIPTUM_TFTP_BLKSIZE",

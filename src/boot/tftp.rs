@@ -199,14 +199,23 @@ pub async fn serve(socket: UdpSocket, tftp: Arc<Tftp>) {
 }
 
 async fn transfer(request: &[u8], peer: SocketAddr, tftp: &Tftp) {
-    // The reply socket is ephemeral and *connected*: RFC 1350 wants the data to come
-    // from a fresh port, and connecting means this transfer only ever hears its peer.
-    let bind = if peer.is_ipv4() {
-        "0.0.0.0:0"
-    } else {
-        "[::]:0"
-    };
-    let Ok(socket) = UdpSocket::bind(bind).await else {
+    // The reply socket is *connected*, and on a port of its own: RFC 1350 wants the data
+    // to come from a fresh TID, and connecting means this transfer only ever hears its
+    // peer.
+    //
+    // **A fresh port is what a firewall does not expect.** The request arrives on 69, the
+    // answer leaves from somewhere else, and the acknowledgement comes back to *that* —
+    // which no rule allows, so it is dropped and the transfer dies at the handshake with
+    // the client looking like it lost interest. Every serious TFTP server therefore lets
+    // the range be pinned so it can be opened; ours did not, and a NAS firewall is
+    // exactly where that bites.
+    let Some(socket) = data_socket(peer, tftp).await else {
+        log::request(
+            &peer.to_string(),
+            500,
+            "tftp: no data port free — RESCRIPTUM_TFTP_PORT_RANGE is too small for the \
+             transfers in flight",
+        );
         return;
     };
     if socket.connect(peer).await.is_err() {
@@ -452,6 +461,27 @@ enum Ack {
     Cancelled,
     /// It stopped answering, which is what a path that cannot carry the block looks like.
     Silent,
+}
+
+/// The socket a transfer answers from.
+///
+/// Unpinned it is whatever the kernel hands out, which is right on a host with no
+/// firewall in the way and unusable behind one. A configured range is tried in order and
+/// the first free port wins; the range only has to be as large as the transfers that can
+/// overlap, which `MAX_TRANSFERS` already bounds at 64.
+async fn data_socket(peer: SocketAddr, tftp: &Tftp) -> Option<UdpSocket> {
+    let host = if peer.is_ipv4() { "0.0.0.0" } else { "[::]" };
+    match tftp.cfg.tftp_port_range() {
+        None => UdpSocket::bind(format!("{host}:0")).await.ok(),
+        Some((first, last)) => {
+            for port in first..=last {
+                if let Ok(socket) = UdpSocket::bind(format!("{host}:{port}")).await {
+                    return Some(socket);
+                }
+            }
+            None
+        }
+    }
 }
 
 /// Wait for the acknowledgement of `block`, resending on silence.
