@@ -467,10 +467,15 @@ pub fn media(cfg: &Config, args: &[String]) -> ExitCode {
         Some((cmd, rest)) if cmd == "export" && rest.len() == 2 => {
             media_export(&catalog, &rest[0], &rest[1])
         }
+        Some((cmd, rest)) if cmd == "sources" && rest.len() < 2 => {
+            media_sources(rest.first().map(String::as_str))
+        }
         _ => {
             eprintln!(
                 "usage: rescriptum media list\n\
+                 \x20      rescriptum media sources [SOURCE]\n\
                  \x20      rescriptum media add FILE|URL [--sha256 D] [--as NAME]\n\
+                 \x20      rescriptum media add --from SOURCE NAME\n\
                  \x20      rescriptum media check\n\
                  \x20      rescriptum media ipxe ID\n\
                  \x20      rescriptum media prepare ID [--as NAME] [--url URL]\n\
@@ -479,6 +484,64 @@ pub fn media(cfg: &Config, args: &[String]) -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+#[cfg(feature = "boot")]
+fn media_sources(which: Option<&str>) -> ExitCode {
+    use crate::boot::{fetch, sources};
+
+    let Some(id) = which else {
+        println!("{:<12} {:<16}  WHAT IT INSTALLS", "SOURCE", "NAME");
+        for s in sources::SOURCES {
+            println!("{:<12} {:<16}  {}", s.id, s.label, s.about);
+        }
+        println!();
+        println!("`media sources <SOURCE>` lists what one offers, reading the vendor's own");
+        println!("checksum index — so the list is current and the digests are theirs.");
+        println!("`media add --from <SOURCE> <NAME>` fetches one.");
+        return ExitCode::SUCCESS;
+    };
+
+    let Some(source) = sources::source(id) else {
+        eprintln!(
+            "no source called {id:?}. There are: {}",
+            sources::SOURCES
+                .iter()
+                .map(|s| s.id)
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        return ExitCode::FAILURE;
+    };
+
+    // Said before the wait, not after: on a NAS with a slow uplink this is several
+    // seconds of apparent nothing, and silence there reads as a hang.
+    eprintln!("reading {} …", source.index);
+    let text = match fetch::fetch_text(source.index) {
+        Ok(text) => text,
+        Err(e) => {
+            eprintln!("{e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let offers = source.offers(&text);
+    if offers.is_empty() {
+        eprintln!(
+            "{} answered, but nothing in it looks like an installer image. The index may \
+             have moved or changed format.",
+            source.index
+        );
+        return ExitCode::FAILURE;
+    }
+
+    println!("{} — {}", source.label, source.about);
+    for offer in &offers {
+        println!("  {}", offer.name);
+    }
+    println!();
+    println!("  rescriptum media add --from {id} {}", offers[0].name);
+    ExitCode::SUCCESS
 }
 
 #[cfg(feature = "boot")]
@@ -548,6 +611,7 @@ fn media_add(catalog: &crate::boot::catalog::Catalog, args: &[String]) -> ExitCo
     let mut expected: Option<&String> = None;
     let mut name: Option<String> = None;
     let mut unverified = false;
+    let mut from: Option<String> = None;
     let mut rest = args.iter();
     while let Some(arg) = rest.next() {
         match arg.as_str() {
@@ -566,6 +630,13 @@ fn media_add(catalog: &crate::boot::catalog::Catalog, args: &[String]) -> ExitCo
                 }
             },
             "--unverified" => unverified = true,
+            "--from" => match rest.next() {
+                Some(value) => from = Some(value.clone()),
+                None => {
+                    eprintln!("--from wants a source; `media sources` lists them");
+                    return ExitCode::FAILURE;
+                }
+            },
             _ if source.is_none() => source = Some(arg),
             other => {
                 eprintln!("unexpected argument {other:?}");
@@ -573,12 +644,65 @@ fn media_add(catalog: &crate::boot::catalog::Catalog, args: &[String]) -> ExitCo
             }
         }
     }
-    let Some(source) = source else {
-        eprintln!(
-            "usage: rescriptum media add FILE [--sha256 DIGEST]\n\
-             \x20      rescriptum media add URL --sha256 DIGEST [--as NAME.iso]"
-        );
-        return ExitCode::FAILURE;
+    // **`--from` turns a name into a URL and a digest, both read from the vendor.** It is
+    // not a shortcut around the digest rule — it is the strictest way to satisfy it that
+    // does not involve a human copying 64 characters correctly. What it is *not* is a
+    // signature check: the digest comes from the same host as the image, so it proves the
+    // download matches what that vendor is publishing right now, and nothing about
+    // whether the vendor is who you think. Somebody who needs that pastes a digest they
+    // obtained out of band, which is why --sha256 stays.
+    let resolved;
+    let source = if let Some(id) = &from {
+        let Some(wanted) = source else {
+            eprintln!("--from {id} wants an image name too; `media sources {id}` lists them");
+            return ExitCode::FAILURE;
+        };
+        let Some(src) = crate::boot::sources::source(id) else {
+            eprintln!(
+                "no source called {id:?}. There are: {}",
+                crate::boot::sources::SOURCES
+                    .iter()
+                    .map(|s| s.id)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+            return ExitCode::FAILURE;
+        };
+        if expected.is_some() {
+            eprintln!("--from and --sha256 disagree about where the digest comes from; pick one");
+            return ExitCode::FAILURE;
+        }
+        eprintln!("reading {} …", src.index);
+        let text = match crate::boot::fetch::fetch_text(src.index) {
+            Ok(text) => text,
+            Err(e) => {
+                eprintln!("{e}");
+                return ExitCode::FAILURE;
+            }
+        };
+        let offers = src.offers(&text);
+        let Some(offer) = offers.iter().find(|o| o.name == *wanted) else {
+            eprintln!("{} does not offer {wanted:?}.", src.label);
+            if let Some(newest) = offers.first() {
+                eprintln!("The newest it has is {}.", newest.name);
+            }
+            eprintln!("`media sources {id}` lists them all.");
+            return ExitCode::FAILURE;
+        };
+        resolved = (offer.url.clone(), offer.digest.clone());
+        eprintln!("{} publishes it as {}", src.label, &resolved.1[..16]);
+        expected = Some(&resolved.1);
+        &resolved.0
+    } else {
+        let Some(source) = source else {
+            eprintln!(
+                "usage: rescriptum media add FILE [--sha256 DIGEST]\n\
+                 \x20      rescriptum media add URL --sha256 DIGEST [--as NAME.iso]\n\
+                 \x20      rescriptum media add --from SOURCE NAME"
+            );
+            return ExitCode::FAILURE;
+        };
+        source
     };
 
     if let Some(digest) = expected

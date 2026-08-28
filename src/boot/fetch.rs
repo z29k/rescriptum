@@ -152,6 +152,88 @@ pub fn fetch(
 /// The tool to use, and how to ask it. Both are told to resume, to follow redirects and
 /// to fail on an HTTP error rather than writing the error page to disk under a name
 /// ending in `.iso`.
+/// Fetch a small text document and return it, rather than writing it to disk.
+///
+/// This exists for checksum indexes — a few kilobytes that are read once and never kept.
+/// Writing them into the media directory would put files there that are not images, and
+/// the whole design of that directory is that everything in it is an image somebody can
+/// serve.
+///
+/// **Capped, because nothing checked what the URL points at.** A redirect to a DVD image
+/// would otherwise be read into memory on a NAS with 512 MB of it. The cap is far above
+/// any real index — Proxmox's is a few kilobytes, Debian's a few hundred lines — and far
+/// below anything that could hurt.
+pub fn fetch_text(url: &str) -> Result<String, String> {
+    const CAP: usize = 4 * 1024 * 1024;
+
+    if !looks_like_a_url(url) {
+        return Err(format!("{url:?} is not a URL"));
+    }
+    let (program, args) = text_downloader(url).ok_or_else(|| {
+        "neither curl nor wget is installed, and there is no TLS in this binary — \
+         install one, or fetch the index yourself and pass --sha256 by hand"
+            .to_string()
+    })?;
+
+    let out = std::process::Command::new(program)
+        .args(&args)
+        .output()
+        .map_err(|e| format!("cannot run {program}: {e}"))?;
+    if !out.status.success() {
+        // The downloader's own words: its 404 and its TLS failure read better than
+        // anything this could invent, and they are what a person searches for.
+        let said = String::from_utf8_lossy(&out.stderr);
+        let said = said.trim();
+        return Err(format!(
+            "{program} could not fetch {url}{}",
+            if said.is_empty() {
+                String::new()
+            } else {
+                format!(": {said}")
+            }
+        ));
+    }
+    if out.stdout.len() > CAP {
+        return Err(format!(
+            "{url} returned more than {} — that is not a checksum index",
+            human(CAP as u64)
+        ));
+    }
+    String::from_utf8(out.stdout)
+        .map_err(|_| format!("{url} is not text, so it is not a checksum index"))
+}
+
+fn text_downloader(url: &str) -> Option<(&'static str, Vec<String>)> {
+    if on_path("curl") {
+        return Some((
+            "curl",
+            vec![
+                "--fail".into(),
+                "--location".into(),
+                "--silent".into(),
+                "--show-error".into(),
+                // An index that takes a minute is a mirror that is down.
+                "--max-time".into(),
+                "60".into(),
+                url.into(),
+            ],
+        ));
+    }
+    if on_path("wget") {
+        return Some((
+            "wget",
+            vec![
+                "--quiet".into(),
+                "--timeout=60".into(),
+                "--output-document".into(),
+                "-".into(),
+                url.into(),
+            ],
+        ));
+    }
+    None
+}
+
 fn downloader(into: &Path, url: &str) -> Option<(&'static str, Vec<String>)> {
     let into = into.to_string_lossy().into_owned();
     if on_path("curl") {

@@ -377,12 +377,12 @@ spend into an apparent 293% overrun.**
 
 | Build | Bytes |
 |---|---|
-| `sqlite` + `boot` (default) | 2,709,840 |
+| `sqlite` + `boot` (default) | 2,741,360 |
 | `sqlite` only | 2,482,000 |
 | neither | 1,316,648 |
 
-**`boot` costs 227,840 bytes, against a ≤170 KB budget the plan set before any of it was
-written.** That is recorded in `plans/boot-media.md` with a per-phase breakdown rather
+**`boot` costs 259,360 bytes, against a ≤170 KB budget the plan set before any of it was
+written** — the image-source catalogue added 31,520 of that. That is recorded in `plans/boot-media.md` with a per-phase breakdown rather
 than quietly exceeded; the figure needs re-deciding against the measurement.
 
 ## The admin API

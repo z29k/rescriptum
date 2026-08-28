@@ -22,5 +22,7 @@ pub mod patch;
 pub mod privileges;
 pub mod probe;
 pub mod sha256;
+/// Where images can be fetched *from*, as opposed to what is held.
+pub mod sources;
 pub mod stanza;
 pub mod tftp;
