@@ -537,6 +537,12 @@ could not check. Note it needs `Resolution::format_name` (the extension), not
   identical — a machine on a real network fetched a loader, nothing happened, and the log
   said success. It is reported at the end now, `sent` or `FAILED after N of M`, with 500
   so `RESCRIPTUM_LOG=problems` keeps it.
+- **A `connect`ed data socket makes the kernel drop what you most need to see.** It
+  filters on the peer's address *and port*, so a client that acknowledges from a different
+  source port has its packets discarded before any code runs — and the transfer dies
+  looking exactly like a firewall eating them, with nothing to log. RFC 1350 says a client
+  keeps its TID; the ones that do not are UEFI ROMs, which is the population being served.
+  The socket accepts from the same *address* now and says when the port moves.
 - **A TFTP transfer leaves port 69 immediately, and that is what a firewall does not
   expect.** The server answers from a fresh port and the client acknowledges to *that*, so
   a rule allowing only 69 lets the request in, lets the answer out, and drops the

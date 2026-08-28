@@ -1002,3 +1002,69 @@ fn a_handshake_failure_blames_the_cap_only_when_the_cap_did_something() {
         "and it has to point at what this actually looks like: {log}"
     );
 }
+
+/// **A client that answers from a different port must still be served.**
+///
+/// The data socket used to be `connect`ed to the address the request came from, so the
+/// kernel dropped anything from another port *before* this code could see it — and a
+/// transfer with a client like that died looking exactly like a firewall eating the
+/// acknowledgements. RFC 1350 says a client keeps its TID and most do; the ones that do
+/// not are UEFI ROMs, which is the population being served here.
+#[test]
+fn a_client_that_acknowledges_from_another_port_is_still_served() {
+    let s = Server::start(&[("ipxe.kpxe", loader(3000))]);
+
+    // The request comes from one socket…
+    let asker = UdpSocket::bind("127.0.0.1:0").expect("bind");
+    asker
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    let mut packet = vec![0, 1];
+    packet.extend_from_slice(b"ipxe.kpxe\0octet\0");
+    asker.send_to(&packet, &s.tftp_addr).expect("send");
+
+    let mut buffer = vec![0u8; 2048];
+    let (n, server) = asker.recv_from(&mut buffer).expect("first block");
+    assert_eq!(u16::from_be_bytes([buffer[0], buffer[1]]), OP_DATA);
+    let mut got = buffer[4..n].to_vec();
+
+    // …and every acknowledgement from a *different* one, which is what the fix is for.
+    let other = UdpSocket::bind("127.0.0.1:0").expect("bind");
+    other
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    let mut block = 1u16;
+    loop {
+        let mut ack = vec![0, 4];
+        ack.extend_from_slice(&block.to_be_bytes());
+        other.send_to(&ack, server).expect("ack");
+        if got.len() % 512 != 0 || got.is_empty() {
+            break;
+        }
+        let (n, _) = other.recv_from(&mut buffer).expect("next block");
+        block = u16::from_be_bytes([buffer[2], buffer[3]]);
+        got.extend_from_slice(&buffer[4..n]);
+        if n - 4 < 512 {
+            let mut ack = vec![0, 4];
+            ack.extend_from_slice(&block.to_be_bytes());
+            other.send_to(&ack, server).expect("final ack");
+            break;
+        }
+    }
+
+    assert_eq!(got.len(), 3000, "the whole file has to arrive");
+    assert_eq!(got, loader(3000));
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(3);
+    let mut log = String::new();
+    while std::time::Instant::now() < deadline {
+        log = s.log();
+        if log.contains("sent ipxe.kpxe") {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert!(log.contains("sent ipxe.kpxe 3000 bytes"), "{log}");
+    // And it says the client moved, because that is worth knowing about a ROM.
+    assert!(log.contains("the client moved to port"), "{log}");
+}

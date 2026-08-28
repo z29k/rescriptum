@@ -218,15 +218,23 @@ async fn transfer(request: &[u8], peer: SocketAddr, tftp: &Tftp) {
         );
         return;
     };
-    if socket.connect(peer).await.is_err() {
-        return;
-    }
+    // **Not `connect`ed, and that is a fix rather than a relaxation.** Connecting makes
+    // the kernel accept datagrams only from the exact address *and port* the request came
+    // from — so a client that acknowledges from a different source port has its packets
+    // dropped before this code can see them, and the transfer dies looking precisely like
+    // a firewall ate them. RFC 1350 says a client keeps its TID and most do; the ones
+    // that do not are UEFI ROMs, which is exactly the population being served here.
+    //
+    // So: answer whoever asked, accept from the same *address*, and say so when the port
+    // moves. A blind spot that cannot be told apart from a network fault is worse than a
+    // rule that bends.
+    let mut reply_to = peer;
 
     let parsed = match parse_request(request) {
         Ok(parsed) => parsed,
         Err(refusal) => {
             let _ = socket
-                .send(&error_packet(refusal.code, &refusal.message))
+                .send_to(&error_packet(refusal.code, &refusal.message), reply_to)
                 .await;
             log::request(&peer.to_string(), 0, &format!("tftp: {}", refusal.message));
             return;
@@ -237,7 +245,7 @@ async fn transfer(request: &[u8], peer: SocketAddr, tftp: &Tftp) {
         Some(path) => path,
         None => {
             let _ = socket
-                .send(&error_packet(ERR_NOT_FOUND, "no such file"))
+                .send_to(&error_packet(ERR_NOT_FOUND, "no such file"), reply_to)
                 .await;
             log::request(
                 &peer.to_string(),
@@ -252,7 +260,7 @@ async fn transfer(request: &[u8], peer: SocketAddr, tftp: &Tftp) {
         Ok(bytes) => bytes,
         Err(e) => {
             let _ = socket
-                .send(&error_packet(ERR_NOT_FOUND, "cannot read"))
+                .send_to(&error_packet(ERR_NOT_FOUND, "cannot read"), reply_to)
                 .await;
             log::request(
                 &peer.to_string(),
@@ -325,7 +333,7 @@ async fn transfer(request: &[u8], peer: SocketAddr, tftp: &Tftp) {
             oack.extend_from_slice(value.as_bytes());
             oack.push(0);
         }
-        if socket.send(&oack).await.is_err() {
+        if socket.send_to(&oack, reply_to).await.is_err() {
             log::request(
                 &peer.to_string(),
                 500,
@@ -343,7 +351,10 @@ async fn transfer(request: &[u8], peer: SocketAddr, tftp: &Tftp) {
         // it — but a PXE ROM that wanted 1468 and is offered 512 often just stops, and
         // this used to `return` without a word. Which is how capping the block size to
         // help one network broke a machine that had been booting fine, invisibly.
-        if !matches!(wait_for_ack(&socket, 0, &oack).await, Ack::Ok) {
+        if !matches!(
+            wait_for_ack(&socket, 0, &oack, &mut reply_to, &peer).await,
+            Ack::Ok
+        ) {
             log::request(
                 &peer.to_string(),
                 500,
@@ -401,10 +412,10 @@ async fn transfer(request: &[u8], peer: SocketAddr, tftp: &Tftp) {
         packet.extend_from_slice(&block.to_be_bytes());
         packet.extend_from_slice(chunk);
 
-        if socket.send(&packet).await.is_err() {
+        if socket.send_to(&packet, reply_to).await.is_err() {
             break Some(("the socket went away", true));
         }
-        match wait_for_ack(&socket, block, &packet).await {
+        match wait_for_ack(&socket, block, &packet, &mut reply_to, &peer).await {
             Ack::Ok => {}
             // **A client that says ERROR meant to stop.** `boot check`'s own probe does
             // exactly this after one block, and so does a loader the firmware cancelled.
@@ -490,11 +501,36 @@ async fn data_socket(peer: SocketAddr, tftp: &Tftp) -> Option<UdpSocket> {
 /// never answered.** That is the Sorcerer's Apprentice bug: answering a duplicate with
 /// a duplicate makes both sides echo each other and doubles the traffic for the rest of
 /// the transfer.
-async fn wait_for_ack(socket: &UdpSocket, block: u16, resend: &[u8]) -> Ack {
+async fn wait_for_ack(
+    socket: &UdpSocket,
+    block: u16,
+    resend: &[u8],
+    reply_to: &mut SocketAddr,
+    peer: &SocketAddr,
+) -> Ack {
     let mut buffer = [0u8; 64];
     for _ in 0..MAX_RETRIES {
-        match tokio::time::timeout(RETRY, socket.recv(&mut buffer)).await {
-            Ok(Ok(n)) if n >= 4 => {
+        match tokio::time::timeout(RETRY, socket.recv_from(&mut buffer)).await {
+            Ok(Ok((n, from))) if n >= 4 => {
+                // Same machine, whatever port it chose to answer from. A different
+                // address is somebody else's traffic and is ignored without comment —
+                // this socket is reachable from anywhere the request was.
+                if from.ip() != peer.ip() {
+                    continue;
+                }
+                if from != *reply_to {
+                    log::request(
+                        &peer.to_string(),
+                        200,
+                        &format!(
+                            "tftp: the client moved to port {} — answering there \
+                             (RFC 1350 says it should keep {}; some UEFI ROMs do not)",
+                            from.port(),
+                            reply_to.port()
+                        ),
+                    );
+                    *reply_to = from;
+                }
                 let opcode = u16::from_be_bytes([buffer[0], buffer[1]]);
                 let acked = u16::from_be_bytes([buffer[2], buffer[3]]);
                 if opcode == OP_ERROR {
@@ -514,7 +550,7 @@ async fn wait_for_ack(socket: &UdpSocket, block: u16, resend: &[u8]) -> Ack {
             Ok(Err(_)) => return Ack::Silent,
             // Silence: the block was lost, or the acknowledgement was. Send it again.
             Err(_) => {
-                if socket.send(resend).await.is_err() {
+                if socket.send_to(resend, *reply_to).await.is_err() {
                     return Ack::Silent;
                 }
             }
