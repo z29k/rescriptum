@@ -44,6 +44,18 @@ closed immediately, so the installer it was trying to tell *"retry"* got a conne
 reset instead. It now drains briefly first, the way the admin API's `put()` already did.
 A test at the connection cap pins it.
 
+- **macOS lets an unprivileged process bind UDP port 69; Linux does not.** So a test that
+  reaches the *default* TFTP address takes a different branch on each platform — `boot
+  check` calls an obtainable-but-silent port a note and an unbindable one a problem, which
+  is the right rule and exactly what makes the test platform-dependent. It passed locally
+  and failed in CI for a reason that had nothing to do with the change. Any test that sets
+  `RESCRIPTUM_BOOT_DIR` must also set `RESCRIPTUM_TFTP_ADDR=off` unless the probe *is* the
+  subject; `tests/tftp.rs` covers the unbindable port on a high one.
+- **A branch developed entirely offline has never met the CI.** This one accumulated 57
+  commits before its first push, and the first run failed on two things no local run could
+  see: a clippy five versions newer than the pinned local toolchain, and a Linux-only port
+  permission. Push early enough to find out, or expect to.
+
 ## Selection and formats
 
 **A Mac editing the answers directory over SMB can hijack a machine's answer.** macOS writes

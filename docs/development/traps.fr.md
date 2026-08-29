@@ -47,6 +47,20 @@ fermait aussitôt, si bien que l'installateur à qui il essayait de dire *« ré
 recevait un reset. Il draine maintenant brièvement d'abord, comme le faisait déjà le
 `put()` de l'API d'administration. Un test au plafond de connexions l'épingle.
 
+- **macOS autorise un processus non privilégié à lier le port UDP 69 ; Linux non.** Un test
+  qui atteint l'adresse TFTP *par défaut* prend donc une branche différente sur chaque
+  plateforme — `boot check` traite un port libre mais silencieux comme une note, et un port
+  non liable comme un problème, ce qui est la bonne règle et exactement ce qui rend le test
+  dépendant de la plateforme. Il passait en local et échouait en CI pour une raison sans
+  rapport avec le changement. Tout test qui définit `RESCRIPTUM_BOOT_DIR` doit aussi définir
+  `RESCRIPTUM_TFTP_ADDR=off`, sauf si la sonde *est* le sujet ; `tests/tftp.rs` couvre le
+  port non liable sur un port haut.
+- **Une branche développée entièrement hors ligne n'a jamais rencontré la CI.** Celle-ci a
+  accumulé 57 commits avant son premier push, et le premier run a échoué sur deux choses
+  qu'aucune exécution locale ne pouvait voir : un clippy cinq versions plus récent que la
+  toolchain locale épinglée, et une permission de port propre à Linux. Poussez assez tôt
+  pour le découvrir, ou attendez-vous à le découvrir tard.
+
 ## Sélection et formats
 
 **Un Mac qui édite le répertoire de réponses en SMB peut détourner la réponse d'une

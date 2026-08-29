@@ -1085,6 +1085,12 @@ fn an_unknown_dhcp_format_lists_the_ones_that_exist() {
 #[cfg(feature = "boot")]
 fn boot_check_fails_when_a_snippet_names_a_loader_that_is_not_there() {
     // The exit code is a contract, like `check`'s: `deploy.sh` keys on it.
+    //
+    // **TFTP off, deliberately.** This test is about the loaders, and `boot check` also
+    // probes the TFTP address — which defaults to the privileged port 69. macOS lets an
+    // unprivileged process bind UDP 69 and Linux does not, so leaving it on makes the
+    // verdict depend on the platform and on who is running the suite. Turning it off
+    // isolates what is being measured; `tests/tftp.rs` covers the unbindable port.
     let case = Case::new(&[]);
     let boot_dir = case.dir.join("boot");
     fs::create_dir_all(&boot_dir).expect("boot dir");
@@ -1093,6 +1099,7 @@ fn boot_check_fails_when_a_snippet_names_a_loader_that_is_not_there() {
         &[
             ("RESCRIPTUM_ANSWERS_DIR", case.dir.as_path()),
             ("RESCRIPTUM_BOOT_DIR", boot_dir.as_path()),
+            ("RESCRIPTUM_TFTP_ADDR", Path::new("off")),
         ],
         &["boot", "check"],
     );
@@ -1111,6 +1118,7 @@ fn boot_check_fails_when_a_snippet_names_a_loader_that_is_not_there() {
         &[
             ("RESCRIPTUM_ANSWERS_DIR", case.dir.as_path()),
             ("RESCRIPTUM_BOOT_DIR", boot_dir.as_path()),
+            ("RESCRIPTUM_TFTP_ADDR", Path::new("off")),
         ],
         &["boot", "check"],
     );
@@ -1152,6 +1160,10 @@ fn boot_check_warns_when_the_media_port_is_not_the_one_loaders_embed() {
             ("RESCRIPTUM_BOOT_DIR", boot_dir.as_path()),
             ("RESCRIPTUM_MEDIA_DIR", media_dir.as_path()),
             ("RESCRIPTUM_MEDIA_ADDR", Path::new("0.0.0.0:9999")),
+            // Off for the same reason as above: this asserts on the media port, and a
+            // TFTP probe that fails only on Linux would make it pass for two reasons on
+            // one platform and one on the other.
+            ("RESCRIPTUM_TFTP_ADDR", Path::new("off")),
         ],
         &["boot", "check"],
     );

@@ -637,6 +637,17 @@ could not check. Note it needs `Resolution::format_name` (the extension), not
   this server from another daemon squatting the port, since both are `AddrInUse`. So
   `boot check` sends a real read request (`boot::tftp::probe`) and reports what a machine
   would get. The first version guessed, and a test with a squatter said so at once.
+- **macOS lets an unprivileged process bind UDP port 69; Linux does not.** So a test that
+  reaches the *default* TFTP address takes a different branch on each platform — `boot
+  check` calls an obtainable-but-silent port a note and an unbindable one a problem, which
+  is the right rule and exactly what makes the test platform-dependent. It passed locally
+  and failed in CI for a reason that had nothing to do with the change. Any test that sets
+  `RESCRIPTUM_BOOT_DIR` must also set `RESCRIPTUM_TFTP_ADDR=off` unless the probe *is* the
+  subject; `tests/tftp.rs` covers the unbindable port on a high one.
+- **A branch developed entirely offline has never met the CI.** This one accumulated 57
+  commits before its first push, and the first run failed on two things no local run could
+  see: a clippy five versions newer than the pinned local toolchain, and a Linux-only port
+  permission. Push early enough to find out, or expect to.
 - **The size figures in this file go stale.** They moved ~375 KB when armv7 changed from
   musl to glibc. Re-measure before concluding anything from them; a stale baseline once
   turned a 71% budget spend into an apparent 293% overrun.
