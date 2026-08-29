@@ -264,10 +264,14 @@ auth-token = "nas:s3cr3t"
 $ rescriptum config set RESCRIPTUM_INSTALLED_TOKEN=nas:s3cr3t
 ```
 
-C'est tout. La machine termine, elle le dit, et `98fa9b50d810.ipxe` devient
-`installed-98fa9b50d810.ipxe` — qui ne lui correspond plus, le préfixe faisant partie du
-nom comparé. Elle démarre sur son disque désormais, et la réarmer consiste à renommer le
-fichier dans l'autre sens.
+C'est tout. La machine termine, elle le dit, et son `.ipxe` passe de `98fa9b50d810/` à
+`installed-98fa9b50d810/` — un nom de répertoire qui ne lui correspond plus, le préfixe
+faisant partie du nom comparé. Elle démarre sur son disque désormais, et la réarmer consiste
+à remettre le document en place.
+
+Le document désarmé va dans un répertoire **frère** plutôt que de rester dans celui de la
+machine, pour que `98fa9b50d810/` continue de vouloir dire « la configuration de cette
+machine » et que rien de ce qu'il contient n'ait à se lire comme désactivé.
 
 **Pas de jeton, pas d'endpoint** — absent plutôt qu'ouvert. Sans lui, `/installed` est une
 demande de réponse ordinaire comme n'importe quel chemin, ce qui permet à une URL de rester
@@ -278,8 +282,9 @@ Trois choses qu'il ne fait pas, et chacune est délibérée :
 - **Il ne touche jamais un groupe.** Un groupe revendique un rack entier, et une machine
   qui finit son installation ne doit pas désarmer ses voisines. La recherche ne consulte
   pas les groupes du tout, plutôt que de les écarter après coup.
-- **Il ne touche rien d'autre que le `.ipxe`.** Le `.toml` de la machine est ce que
-  l'installateur a lu pour la construire, et il reste comme trace de la manière.
+- **Il ne touche rien d'autre que le `.ipxe`.** Le `.toml` de la machine, à côté dans le
+  même répertoire, est ce que l'installateur a lu pour la construire, et il reste comme
+  trace de la manière.
 - **Il déplace, il ne supprime pas.** C'est le seul chemin où quelque chose venu du réseau
   modifie le jeu de réponses : rien de ce qu'il fait n'est irréversible.
 
@@ -394,7 +399,7 @@ s'étend en `Dell Inc.` avec l'espace et qu'iPXE n'encode rien de lui-même.
 
 Ce `||` final, c'est tout « un menu est la réponse par défaut » : une machine que quelque
 chose réclame reçoit sa propre réponse sans surveillance, et une machine que rien ne
-réclame retombe sur le menu. C'est la description de poste de `default.toml`, mot pour
+réclame retombe sur le menu. C'est la description de poste de `default/`, mot pour
 mot, appliquée à un autre format.
 
 ## Le menu

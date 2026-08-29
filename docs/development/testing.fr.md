@@ -8,7 +8,7 @@ sidebar:
 
 # Tests
 
-571 tests. `cargo test` les fait tous tourner en une vingtaine de secondes — dont
+582 tests. `cargo test` les fait tous tourner en une vingtaine de secondes — dont
 l'essentiel dans `tests/tftp.rs`, qui attend de vrais délais UDP parce que c'est
 précisément ce qu'il teste.
 
@@ -29,13 +29,13 @@ cargo test --all-features                 # ce que lance la CI
 | Suite | Cas | Pour |
 |---|---|---|
 | `tests/integration.rs` | 48 | le vrai binaire sur une vraie socket |
-| `tests/cli.rs` | 47 | `render`, `check`, `import`, `export`, `config` et le fichier d'environnement — contre le vrai binaire |
+| `tests/cli.rs` | 50 | `render`, `check`, `import`, `export`, `config` et le fichier d'environnement — contre le vrai binaire |
 | `tests/media.rs` | 45 | les médias de démarrage contre le vrai binaire, les deux listeners debout |
 | `src/config.rs` | 42 | l'environnement, ce qui refuse de démarrer, et qui l'emporte du fichier ou de l'environnement |
-| `tests/stores.rs` | 39 | **chaque comportement, contre les deux stores** |
+| `tests/stores.rs` | 45 | **chaque comportement, contre les deux stores** |
 | `tests/tftp.rs` | 30 | le TFTP sur de l'UDP réel : les tours de parole, et ce qu'une liaison ratée ne doit pas coûter |
-| `src/select.rs` | 27 | normalisation, scoring, superposition, remplissage de templates |
-| `src/format/mod.rs` | 27 | parsing, fusion, clés de contrôle, alias d'endpoint |
+| `src/select.rs` | 28 | normalisation, scoring, superposition, remplissage de templates |
+| `src/format/mod.rs` | 28 | parsing, fusion, clés de contrôle, alias d'endpoint |
 | `tests/admin.rs` | 26 | l'API d'administration de bout en bout, formats compris |
 | `src/envfile.rs` | 23 | le parseur et l'écrivain du fichier d'environnement, et ce que chacun refuse |
 | `src/facts.rs` | 22 | parsing de query, aplatissement JSON, globbing |
@@ -46,6 +46,21 @@ cargo test --all-features                 # ce que lance la CI
 | `src/log.rs` | 4 | lecture des niveaux, et l'arithmétique d'horodatage |
 | `src/boot/*.rs` | 128 | le lecteur ISO, le repérage, le catalogue, les sources d'images, les plans de patch, le menu, la table des chargeurs, les extraits DHCP, cpio et SHA-256 |
 | `src/admin.rs`, `src/capture.rs`, `src/store/mod.rs` | 21 | comportement unitaire |
+
+## `tests/common/mod.rs` — les fixtures que toutes les suites partagent
+
+Les réponses sont stockées à raison d'**un répertoire par identité**, donc une fixture ne
+peut plus être un simple nom de fichier. `seed()` prend le nom dans lequel un test pense —
+`98fa9b50d810.toml`, `groups/rack-a.toml`, `default.toml` — et l'écrit **via `StoreWrite`**,
+si bien qu'elle atterrit exactement là où une écriture de l'API d'administration la mettrait
+et ne peut pas diverger de l'agencement. Un nom que le store refuserait (une extension que
+personne ne sert) est écrit littéralement, parce que ces fixtures existent justement pour
+prouver qu'un fichier égaré ne répond à rien.
+
+Une seule copie, pas une par suite — le même raisonnement qui fait de `loaders.rs` une table
+unique lue par TFTP *et* par l'extrait DHCP. Quatre copies d'une correspondance sont quatre
+occasions qu'une fixture atterrisse là où le serveur ne regarde pas, et un test qui ne sème
+rien passe pour la mauvaise raison.
 
 ## `tests/stores.rs` — la suite de conformité
 

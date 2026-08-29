@@ -11,6 +11,8 @@
 
 #![cfg(feature = "boot")]
 
+mod common;
+
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::net::UdpSocket;
@@ -662,7 +664,7 @@ fn a_tftp_port_that_cannot_be_bound_does_not_take_the_answers_down() {
     for name in rescriptum::boot::loaders::loaders() {
         fs::write(boot_dir.join(name), loader(100)).expect("loader");
     }
-    fs::write(answers_dir.join("default.toml"), "keyboard = \"fr\"\n").expect("answer");
+    common::seed(&answers_dir, "default.toml", "keyboard = \"fr\"\n");
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_rescriptum"))
         .env("RESCRIPTUM_LISTEN_ADDR", "127.0.0.1:0")

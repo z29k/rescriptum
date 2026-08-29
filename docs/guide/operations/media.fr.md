@@ -218,7 +218,7 @@ réponses et c'est un document de réponse ordinaire — sélectionné, superpos
 gabarisé comme n'importe quel autre :
 
 ```console
-$ rescriptum media ipxe pve-8.4 > /srv/answers/groups/rack-a.ipxe
+$ rescriptum media ipxe pve-8.4 > /srv/answers/groups/rack-a/boot.ipxe
 ```
 
 C'est bien le point. Le serveur ne devient pas malin sur le démarrage ; il gagne un

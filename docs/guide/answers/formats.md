@@ -13,7 +13,7 @@ kickstart and would choke on TOML. That is the protocol, not a convention anyone
 So:
 
 - **the endpoint declares the format** — `/rhel/ks` asks for kickstart;
-- **the document carries it as its extension** — `rhel-compute.ks`;
+- **the document carries it as its extension** — `groups/rhel-compute/rhel.ks`;
 - **only documents of that format may answer.**
 
 ## The consequence that makes it click
@@ -23,8 +23,9 @@ machine and two files:
 
 ```
 answers/
-├── 98fa9b50d810.toml       "that machine, as Proxmox"
-└── 98fa9b50d810.preseed    "that machine, as Debian"
+└── 98fa9b50d810/
+    ├── proxmox.toml        "that machine, as Proxmox"
+    └── debian.preseed      "that machine, as Debian"
 ```
 
 It is one piece of hardware with two answers, and both can exist at once. Which one a
@@ -32,15 +33,19 @@ request receives depends on the URL it arrived on — `/proxmox/answer` gets the
 `/debian/preseed` gets the preseed. Neither is more "the" answer than the other.
 
 Internally this is why a document is keyed by **(identifier, format)** rather than by
-identifier alone.
+identifier alone — and why one directory holds one document per format and no more.
 
 ## Storage is not the URL
 
-Everything lives in one flat directory, and that is deliberate. **Directories and
-database rows are a lookup space** — they must stay free to be reorganised. **A URL is a
-public contract baked into an ISO** — it must not move because someone renamed a folder.
+Documents are grouped by *identity*, never by format, and that is deliberate. **Directories
+and database rows are a lookup space** — they must stay free to be reorganised. **A URL is
+a public contract baked into an ISO** — it must not move because someone renamed a folder.
 An earlier design made the directory name *be* the URL segment and was discarded for
 exactly that reason.
+
+The same rule is why the filename inside a machine's directory carries no meaning:
+`proxmox.toml` reads well and matches the `/proxmox/` endpoint, but only the `.toml` is
+load-bearing. Rename it `answer.toml` and nothing changes.
 
 Which alias serves which extension is in the
 [format reference](../reference/formats.md); how to pick one for your media is in
@@ -166,5 +171,5 @@ same reason — layering a preseed onto a TOML base is meaningless.
 Grouping is otherwise untouched by any of this: a rack shares one group *per format*, and
 a machine that exists as two operating systems joins two of them.
 
-`default` follows the same rule — `default.toml` answers a request that asked for TOML,
-and never one that asked for kickstart.
+`default` follows the same rule — a `.toml` in `default/` answers a request that asked for
+TOML, and never one that asked for kickstart.

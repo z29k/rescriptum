@@ -1,6 +1,7 @@
 # One machine, as Proxmox VE.
 #
-# Its sibling `98fa9b50d810.preseed` is the SAME hardware as Debian. A machine's answer
+# Its sibling `debian.preseed`, in this same directory, is the SAME hardware as Debian.
+# A machine's answer
 # is specific to the operating system it is for, so the two are different answers to
 # different questions and both may exist at once — the extension is what tells them
 # apart, and the endpoint is what chooses between them:

@@ -68,7 +68,8 @@ esac
 # anything else from the share. Without it a stale canary or test answer makes the next
 # run fail for a reason that has nothing to do with the package.
 rm -rf /volume1/*/answers/canary.txt /volume1/*/answers/canary.toml \
-       /volume1/*/answers/default.toml /volume1/*/answers/98-fa-9b-50-d8-10.toml \
+       /volume1/*/answers/canary \
+       /volume1/*/answers/default /volume1/*/answers/98-fa-9b-50-d8-10 \
        /volume1/*/answers/groups 2>/dev/null
 
 # **etc/ and var/ survive an uninstall.** /var/packages/<pkg>/etc and /var/packages/<pkg>/var
@@ -319,18 +320,20 @@ section "answering a machine, which is what the package exists to do"
 # configuration gets one — selection, group membership, merging and the format/endpoint
 # binding all sit between the two, and all of them read files from the share as the package
 # user. This is the assertion that covers the actual product on the actual machine.
-mkdir -p "$SHARE/answers/groups"
-cat >"$SHARE/answers/groups/rack.toml" <<'GROUP'
+# One directory per identity: the directory names the machine or the group, and the
+# extension inside it names the format.
+mkdir -p "$SHARE/answers/groups/rack" "$SHARE/answers/98-fa-9b-50-d8-10" "$SHARE/answers/default"
+cat >"$SHARE/answers/groups/rack/proxmox.toml" <<'GROUP'
 members = ["98:fa:9b:50:d8:10"]
 
 [global]
 keyboard = "fr"
 GROUP
-cat >"$SHARE/answers/98-fa-9b-50-d8-10.toml" <<'MACHINE'
+cat >"$SHARE/answers/98-fa-9b-50-d8-10/proxmox.toml" <<'MACHINE'
 [global]
 fqdn = "rig-machine.example.com"
 MACHINE
-cat >"$SHARE/answers/default.toml" <<'DEFAULT'
+cat >"$SHARE/answers/default/proxmox.toml" <<'DEFAULT'
 [global]
 fqdn = "should-not-be-served.example.com"
 DEFAULT
@@ -346,7 +349,7 @@ if [ -z "$ANSWER" ]; then
 else
     echo "$ANSWER" | sed 's/^/    | /'
     case "$ANSWER" in
-    *rig-machine.example.com*) ok "the machine's own file was chosen over default.toml" ;;
+    *rig-machine.example.com*) ok "the machine's own document was chosen over the default" ;;
     *) bad "the answer is not this machine's — selection did not work" ;;
     esac
     case "$ANSWER" in
@@ -354,7 +357,7 @@ else
     *) bad "the group's value is missing — members/merge did not work" ;;
     esac
     case "$ANSWER" in
-    *should-not-be-served*) bad "default.toml leaked into a machine's answer" ;;
+    *should-not-be-served*) bad "the default leaked into a machine's answer" ;;
     *members*) bad "the control key 'members' was served to the installer" ;;
     *) ok "no default fallback and no control keys in what the installer receives" ;;
     esac
@@ -368,10 +371,10 @@ case "$GET" in
 *) bad "the query-string route did not resolve the machine" ;;
 esac
 
-# An identity nobody claims must fall back to default.toml, not to nothing.
+# An identity nobody claims must fall back to the default, not to nothing.
 UNKNOWN=$(curl -fsS -m 20 "http://127.0.0.1:$PORT/answer?mac=00-00-00-00-00-01" 2>/dev/null)
 case "$UNKNOWN" in
-*should-not-be-served*) ok "an unknown machine falls back to default.toml" ;;
+*should-not-be-served*) ok "an unknown machine falls back to the default" ;;
 *) bad "an unknown machine got no default" ;;
 esac
 
@@ -429,8 +432,9 @@ fi
 
 # ── 4. the CLI, as the package user ────────────────────────────────────────────
 section "the CLI on PATH"
-echo 'global.keyboard = "fr"' >"$SHARE/answers/default.toml"
-chown "$PKG" "$SHARE/answers/default.toml" 2>/dev/null
+mkdir -p "$SHARE/answers/default"
+echo 'global.keyboard = "fr"' >"$SHARE/answers/default/proxmox.toml"
+chown -R "$PKG" "$SHARE/answers/default" 2>/dev/null
 run sudo -u "$PKG" /usr/local/bin/$PKG-cli check
 # Run as root it succeeds whatever the ACL says, which is what makes the sudo -u form the
 # real test.

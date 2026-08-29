@@ -13,26 +13,31 @@ ordered by how narrowly they target one machine.
 
 ## 1. By name
 
-Name a document after the machine's MAC address:
+Name a **directory** after the machine's MAC address, and put its documents in it:
 
 ```
 answers/
-├── 98-fa-9b-50-d8-10.toml
-├── aabbccddeeff.toml
-└── default.toml
+├── 98-fa-9b-50-d8-10/
+│   └── proxmox.toml
+├── aabbccddeeff/
+│   └── proxmox.toml
+└── default/
+    └── proxmox.toml
 ```
 
 When a request arrives, the server lowercases everything it carries and drops every
-non-alphanumeric character, does the same to each document's name, and serves the first
-whose name appears **inside** the request. So `98-fa-9b-50-d8-10.toml`,
-`98:fa:9b:50:d8:10.toml` and `98fa9b50d810.toml` all match the same machine — you never
-have to care which separator style Proxmox happens to use this version, or how it
-structures its JSON.
+non-alphanumeric character, does the same to each directory's name, and serves the first
+whose name appears **inside** the request. So `98-fa-9b-50-d8-10`, `98:fa:9b:50:d8:10` and
+`98fa9b50d810` all name the same machine — you never have to care which separator style
+Proxmox happens to use this version, or how it structures its JSON.
+
+The identity is the **directory** name; the filenames inside it choose nothing, they only
+carry the format in their extension.
 
 That normalization is the whole trick, and it is why this survives Proxmox changing its
 body format between releases: it is a substring test over the bytes, not a schema.
 
-Nothing prevents naming a document after a serial number, an asset tag or a hostname
+Nothing prevents naming a directory after a serial number, an asset tag or a hostname
 instead. Any string that appears in what the machine sends will do.
 
 ## 2. By member list
@@ -40,20 +45,20 @@ instead. Any string that appears in what the machine sends will do.
 A group claims a set of machines by listing them:
 
 ```toml
-# answers/groups/rack-a.toml
+# answers/groups/rack-a/proxmox.toml
 members = ["98:fa:9b:50:d8:10", "98:fa:9b:50:d8:11", "98:fa:9b:50:d8:12"]
 ```
 
-Member strings are normalized exactly like file names, so separator style does not matter
-here either. A listed machine needs no document of its own unless it has something to
-override — see [grouping](./grouping.md).
+Member strings are normalized exactly like directory names, so separator style does not
+matter here either. A listed machine needs no directory of its own unless it has something
+to override — see [grouping](./grouping.md).
 
 ## 3. By what the machine is
 
 A `match` block claims a machine by its properties rather than its identity:
 
 ```toml
-# answers/groups/dell-r620.toml
+# answers/groups/dell-r620/proxmox.toml
 [match]
 manufacturer = "Dell Inc."
 product      = "PowerEdge R620"
@@ -107,7 +112,7 @@ A body that is not JSON is not an error — it simply contributes nothing but th
 ### The raw body
 
 Normalized to lowercase alphanumerics: the substring haystack that makes matching by name
-work. Query values and path segments are appended to it too, so a document named after a
+work. Query values and path segments are appended to it too, so a directory named after a
 MAC resolves whether that MAC arrived in a POST body or a query string. Without that, a
 `GET` — which has no body at all — could never match by name.
 

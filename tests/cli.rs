@@ -6,6 +6,8 @@
 //! answer before a rack does; the stdout/stderr split is what makes `render … > answer`
 //! usable, so that is a contract too.
 
+mod common;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -36,11 +38,17 @@ impl Case {
 
     fn write(&self, files: &[(&str, &str)]) {
         for (name, contents) in files {
+            common::seed(&self.dir, name, contents);
+        }
+    }
+
+    /// Write a document exactly where the name says, without the layout's opinion —
+    /// which is how an answers directory from before the layout actually looks.
+    fn write_flat(&self, files: &[(&str, &str)]) {
+        for (name, contents) in files {
             let path = self.dir.join(name);
-            if let Some(parent) = path.parent() {
-                fs::create_dir_all(parent).expect("subdirectory");
-            }
-            fs::write(&path, contents).expect("fixture");
+            fs::create_dir_all(path.parent().expect("a parent")).expect("subdirectory");
+            fs::write(&path, contents).expect("flat fixture");
         }
     }
 
@@ -252,7 +260,10 @@ fn check_succeeds_on_a_healthy_set() {
     assert!(r.ok, "{r}");
     assert!(r.stdout.contains("ok — everything renders"), "{r}");
     // The count is of documents that name a machine; `default` is a fallback, not one.
-    assert!(r.stdout.contains("1 group(s), 1 machine file(s)"), "{r}");
+    assert!(
+        r.stdout.contains("1 group(s), 1 machine document(s)"),
+        "{r}"
+    );
 }
 
 #[test]
@@ -263,7 +274,8 @@ fn check_catches_a_broken_default_even_though_it_names_no_machine() {
         let c = Case::new(&[("default.toml", broken)]);
         let r = c.run(&["check"]);
         assert!(!r.ok, "{broken:?}: {r}");
-        assert!(r.stdout.contains("default.toml"), "{broken:?}: {r}");
+        // Named by its path, which is where the operator has to go and fix it.
+        assert!(r.stdout.contains("default/proxmox.toml"), "{broken:?}: {r}");
     }
 }
 
@@ -385,8 +397,13 @@ fn a_directory_survives_a_round_trip_through_the_database_byte_for_byte() {
         "98fa9b50d810.preseed",
         "default.toml",
     ] {
-        let before = fs::read(c.dir.join(name)).unwrap_or_else(|e| panic!("{name}: {e}"));
-        let after = fs::read(out.join(name)).unwrap_or_else(|e| panic!("{name} exported: {e}"));
+        // Same path on both sides as well as the same bytes: `export` writing a
+        // document somewhere `import` would not look for it is the failure that makes
+        // the database unsafe to leave.
+        let before =
+            fs::read(common::document_path(&c.dir, name)).unwrap_or_else(|e| panic!("{name}: {e}"));
+        let after = fs::read(common::document_path(&out, name))
+            .unwrap_or_else(|e| panic!("{name} exported: {e}"));
         assert_eq!(before, after, "{name} changed crossing the database");
     }
 }
@@ -1173,4 +1190,119 @@ fn the_bootstrap_and_the_menu_can_be_printed_for_review() {
     assert!(r.ok, "{r}");
     assert!(r.stdout.contains("item local"), "{r}");
     assert!(r.stdout.is_ascii(), "a BIOS text console is not UTF-8: {r}");
+}
+
+// ---------------------------------------------------------------------------
+// migrate — the way out of the layout that came before
+// ---------------------------------------------------------------------------
+
+/// A directory from before the layout: named, unchanged, and told what to type.
+#[test]
+fn migrate_shows_the_moves_and_changes_nothing_until_told_to() {
+    let c = Case::new(&[]);
+    c.write_flat(&[
+        ("98fa9b50d810.toml", "marker = \"machine\"\n"),
+        ("98fa9b50d810.ipxe", "#!ipxe\n"),
+        ("groups/rack-a.toml", "members = [\"98:fa:9b:50:d8:10\"]\n"),
+        ("default.toml", "[global]\nkeyboard = \"us\"\n"),
+        ("README.md", "notes\n"),
+    ]);
+
+    let r = c.run(&["migrate"]);
+    assert!(r.ok, "{r}");
+    for line in [
+        "98fa9b50d810.toml -> 98fa9b50d810/proxmox.toml",
+        "98fa9b50d810.ipxe -> 98fa9b50d810/boot.ipxe",
+        "groups/rack-a.toml -> groups/rack-a/proxmox.toml",
+        "default.toml -> default/proxmox.toml",
+    ] {
+        assert!(r.stdout.contains(line), "missing {line:?}: {r}");
+    }
+    assert!(
+        !r.stdout.contains("README"),
+        "an unservable file is not ours: {r}"
+    );
+    assert!(
+        r.stdout.contains("nothing has been changed"),
+        "a dry run has to say so: {r}"
+    );
+    // **And it really did nothing.** The dry run is the default, so this is the
+    // assertion that matters most in the whole command.
+    assert!(
+        c.dir.join("98fa9b50d810.toml").is_file(),
+        "the dry run moved a file"
+    );
+    assert!(
+        !c.dir.join("98fa9b50d810").exists(),
+        "the dry run created a directory"
+    );
+}
+
+#[test]
+fn migrate_apply_moves_them_and_the_answers_work_afterwards() {
+    let c = Case::new(&[]);
+    c.write_flat(&[
+        ("98fa9b50d810.toml", "marker = \"machine\"\n"),
+        (
+            "groups/rack-a.toml",
+            "members = [\"98:fa:9b:50:d8:10\"]\n[global]\nx = 1\n",
+        ),
+        ("default.toml", "[global]\nkeyboard = \"us\"\n"),
+    ]);
+
+    // Before: the documents are there, and none of them is being served.
+    let before = c.run(&["check"]);
+    assert!(before.stdout.contains("rescriptum migrate"), "{before}");
+
+    let r = c.run(&["migrate", "--apply"]);
+    assert!(r.ok, "{r}");
+    assert!(r.stdout.contains("moved 3 document(s)"), "{r}");
+    assert!(c.dir.join("98fa9b50d810/proxmox.toml").is_file());
+    assert!(c.dir.join("groups/rack-a/proxmox.toml").is_file());
+    assert!(c.dir.join("default/proxmox.toml").is_file());
+    assert!(
+        !c.dir.join("98fa9b50d810.toml").exists(),
+        "the original was left behind"
+    );
+
+    // After: clean, and composing exactly as it did before the move.
+    let after = c.run(&["check"]);
+    assert!(after.ok, "{after}");
+    let rendered = c.run(&["render", "98:fa:9b:50:d8:10"]);
+    assert!(rendered.ok, "{rendered}");
+    assert!(rendered.stdout.contains("machine"), "{rendered}");
+    assert!(
+        rendered.stdout.contains("x = 1"),
+        "the group stopped applying: {rendered}"
+    );
+
+    // Running it again is a no-op that says so, not an error.
+    let again = c.run(&["migrate", "--apply"]);
+    assert!(again.ok, "{again}");
+    assert!(again.stdout.contains("nothing to move"), "{again}");
+}
+
+/// A flat document whose destination is taken. Nothing moves, including the ones that
+/// could have — a half-migrated directory is the state nobody can reason about.
+#[test]
+fn migrate_refuses_the_whole_run_when_a_destination_is_taken() {
+    let c = Case::new(&[("98fa9b50d810.toml", "marker = \"already here\"\n")]);
+    c.write_flat(&[
+        ("98fa9b50d810.toml", "marker = \"flat\"\n"),
+        ("aabbccddeeff.toml", "marker = \"could have moved\"\n"),
+    ]);
+
+    let r = c.run(&["migrate", "--apply"]);
+    assert!(!r.ok, "a blocked migration has to fail: {r}");
+    assert!(r.stdout.contains("BLOCKED"), "{r}");
+    assert!(r.stdout.contains("nothing has been changed"), "{r}");
+    assert_eq!(
+        fs::read_to_string(c.dir.join("98fa9b50d810/proxmox.toml")).unwrap(),
+        "marker = \"already here\"\n",
+        "the existing document was overwritten"
+    );
+    assert!(
+        c.dir.join("aabbccddeeff.toml").is_file(),
+        "an unrelated document moved during a run that failed"
+    );
 }

@@ -294,7 +294,8 @@ cp "$WORK/env.good" "$ENV_FILE"
 section "an upgrade must not touch a hand-edited configuration"
 printf 'RESCRIPTUM_LOG=problems\nRESCRIPTUM_ANSWER_TOKEN=a-token-nobody-should-lose\n' >>"$ENV_FILE"
 cp "$ENV_FILE" "$WORK/env.handedited"
-echo "do not delete me" >"$SHARE/answers/canary.toml"
+mkdir -p "$SHARE/answers/canary"
+echo "do not delete me" >"$SHARE/answers/canary/proxmox.toml"
 UPG="$WORK/upgrade"
 export SYNOPKG_TEMP_UPGRADE_FOLDER="$UPG"
 
@@ -314,7 +315,7 @@ upgrade() { # <wipe-etc yes|no>
 
 upgrade no
 diff -q "$WORK/env.handedited" "$ENV_FILE" >/dev/null && ok "etc/ survives: the file is untouched, wizard values and all" || bad "the upgrade rewrote the user's env file"
-[ -f "$SHARE/answers/canary.toml" ] && ok "the canary in the share survived" || bad "the upgrade destroyed a file in the share"
+[ -f "$SHARE/answers/canary/proxmox.toml" ] && ok "the canary in the share survived" || bad "the upgrade destroyed a file in the share"
 
 upgrade yes
 diff -q "$WORK/env.handedited" "$ENV_FILE" >/dev/null && ok "etc/ wiped: postinst restored it from the upgrade folder rather than writing defaults" || bad "the user's configuration was replaced by defaults — postinst runs BEFORE postupgrade"
@@ -475,7 +476,7 @@ section "uninstall must leave the answers alone"
 unset SYNOPKG_TEMP_UPGRADE_FOLDER
 SYNOPKG_PKG_STATUS=UNINSTALL sh "$ROOT/scripts/preuninst" >/dev/null 2>&1
 SYNOPKG_PKG_STATUS=UNINSTALL sh "$ROOT/scripts/postuninst" >/dev/null 2>&1
-[ -f "$SHARE/answers/canary.toml" ] && ok "the share and everything in it survived the uninstall" || bad "the uninstall took the user's answers with it"
+[ -f "$SHARE/answers/canary/proxmox.toml" ] && ok "the share and everything in it survived the uninstall" || bad "the uninstall took the user's answers with it"
 [ -d "$SHARE" ] && ok "the shared folder itself is still there" || bad "the shared folder was removed"
 
 echo

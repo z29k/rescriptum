@@ -19,6 +19,8 @@ With no arguments, `rescriptum` runs the server. Everything else is a subcommand
 | `rescriptum check` | render everything in the configured store and report what breaks |
 | `rescriptum import <dir>` | copy a directory of documents into the configured store |
 | `rescriptum export <dir>` | write the configured store out as a directory of documents |
+| `rescriptum migrate [<dir>]` | show what a flat answers directory would become |
+| `rescriptum migrate --apply` | move those documents into a directory each |
 | `rescriptum config` | show the configuration, and where each value comes from |
 | `rescriptum config --json` | the same, for a settings panel |
 | `rescriptum config --value KEY` | one value, for a script — never a credential |
@@ -75,8 +77,34 @@ $ RESCRIPTUM_STORE=sqlite RESCRIPTUM_DB_PATH=/srv/answers.db rescriptum export /
 ```
 
 `import` reads a **directory** and writes into the configured store; `export` does the
-reverse. The round trip is byte-identical. Neither runs `check` for you — the output says
-to.
+reverse. The round trip is byte-identical, paths included. Neither runs `check` for you —
+the output says to.
+
+## `migrate`
+
+Answers used to be files at the top of the answers directory — `98fa9b50d810.toml` beside
+`98fa9b50d810.preseed`. They are now a directory each, and a document left flat is
+**reported and not served**. This moves them:
+
+```console
+$ rescriptum migrate
+migrating /srv/answers
+  98fa9b50d810.toml -> 98fa9b50d810/proxmox.toml
+  98fa9b50d810.ipxe -> 98fa9b50d810/boot.ipxe
+  groups/rack-a.toml -> groups/rack-a/proxmox.toml
+  default.toml -> default/proxmox.toml
+  4 document(s) to move — nothing has been changed. Re-run with --apply.
+```
+
+**It shows by default and moves only when told to.** The answers directory is what a rack
+installs from; typing the command to find out what it would do must not rearrange it.
+
+`--apply` performs the moves, each a `rename` within the same directory, so no document is
+ever rewritten. If any destination is already taken, **nothing moves at all** — including
+the documents that could have — and the collisions are named: a half-migrated directory is
+the state nobody can reason about. It takes a directory as an argument, defaulting to
+`RESCRIPTUM_ANSWERS_DIR`, and running it on an already-migrated directory says there is
+nothing to move.
 
 ## `config`
 
@@ -147,7 +175,7 @@ nothing and exits `1`.
 `media check`'s exit status is a contract, like `check`'s. `deploy.sh` keys on it.
 
 `media ipxe` prints to **stdout** and puts everything else on stderr, so
-`rescriptum media ipxe pve-8.4 > groups/rack-a.ipxe` produces a usable answer document —
+`rescriptum media ipxe pve-8.4 > groups/rack-a/boot.ipxe` produces a usable answer document —
 which is all it is. It prints a script; it does not install one.
 
 ## `boot`

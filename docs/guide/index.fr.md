@@ -61,12 +61,12 @@ par machine.
 s'étranglerait avec du TOML. Donc `/rhel/ks` sert des documents `.ks` et rien d'autre,
 `/proxmox/answer` sert du `.toml`, `/ubuntu/` sert du YAML. La conséquence qui fait
 comprendre le modèle : la réponse d'une machine est spécifique au système d'exploitation
-auquel elle est destinée, donc `98fa9b50d810.toml` n'est pas « cette machine » mais
-*« cette machine en tant que Proxmox »* — et `98fa9b50d810.preseed` est le même matériel en
-tant que Debian. Les deux existent en même temps.
+auquel elle est destinée, donc `98fa9b50d810/proxmox.toml` n'est pas « cette machine » mais
+*« cette machine en tant que Proxmox »* — et `98fa9b50d810/debian.preseed`, dans le même
+répertoire, est le même matériel en tant que Debian. Les deux existent en même temps.
 → [Un document par système d'exploitation](./answers/formats.md)
 
-**2. Une machine est revendiquée, pas cherchée.** Nommez un document d'après la MAC et il
+**2. Une machine est revendiquée, pas cherchée.** Nommez un répertoire d'après la MAC et il
 gagne. Ou listez la machine dans les `members` d'un groupe. Ou écrivez un bloc `[match]` et
 laissez la machine être revendiquée pour ce qu'elle *est* — un Dell R620 dont le numéro de
 série commence par `7ABC`. La résolution est déterministe : nommer bat matcher, plus de
@@ -74,10 +74,10 @@ critères bat moins, les égalités se départagent sur le nom trié.
 → [Comment une réponse est choisie](./answers/selection.md)
 
 **3. Les réponses se composent.** Une baie de machines partage tout sauf ses adresses MAC.
-Mettez la partie commune dans un groupe ; une machine qui diffère reçoit un fichier
+Mettez la partie commune dans un groupe ; une machine qui diffère reçoit un document
 contenant **seulement la différence**. Les formats structurés fusionnent vraiment — les
 maps clé par clé, les tableaux remplacés pour qu'une liste puisse encore être raccourcie.
-Ajoutez des placeholders `{{ serial }}` et un seul fichier de groupe couvre cinq cents
+Ajoutez des placeholders `{{ serial }}` et un seul document de groupe couvre cinq cents
 machines.
 → [Groupes et fusion](./answers/grouping.md) · [Templating](./answers/templating.md)
 
@@ -106,8 +106,8 @@ Les deux sont réelles, et la conception doit satisfaire les deux :
 
 - **Un Synology DS416j** — ARMv7, 512 Mo, DSM 7, pas de Docker. La motivation d'origine, et
   la raison pour laquelle c'est un binaire statique unique sans runtime ni interpréteur.
-- **Un hôte de datacenter** encaissant une rafale de provisioning, avec un fichier de
-  réponse par machine. La raison pour laquelle il est asynchrone, borne sa propre
+- **Un hôte de datacenter** encaissant une rafale de provisioning, avec un répertoire de
+  réponses par machine. La raison pour laquelle il est asynchrone, borne sa propre
   concurrence, et met en cache le listing du répertoire au lieu de le parcourir à chaque
   requête.
 

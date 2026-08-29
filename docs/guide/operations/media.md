@@ -211,7 +211,7 @@ boot
 it is an ordinary answer document — selected, layered and templated like any other:
 
 ```console
-$ rescriptum media ipxe pve-8.4 > /srv/answers/groups/rack-a.ipxe
+$ rescriptum media ipxe pve-8.4 > /srv/answers/groups/rack-a/boot.ipxe
 ```
 
 Which is the point. The server does not become clever about booting; it gains a

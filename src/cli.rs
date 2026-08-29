@@ -23,6 +23,8 @@ USAGE:
     rescriptum check              validate the configured store
     rescriptum import <dir>       load a directory of TOML into the store
     rescriptum export <dir>       write the store out as a directory of TOML
+    rescriptum migrate            show what a flat answers directory would become
+    rescriptum migrate --apply    move those documents into their own directories
     rescriptum config             show the configuration, and where each value comes from
     rescriptum config --json      the same, for a settings panel
     rescriptum config --value K   one value, for a script (never a credential)
@@ -226,7 +228,7 @@ pub fn check(cfg: &Config) -> ExitCode {
     let groups = answers.group_names().unwrap_or_default();
     let machines = answers.machine_ids().unwrap_or_default();
     println!(
-        "  {} group(s), {} machine file(s)",
+        "  {} group(s), {} machine document(s)",
         groups.len(),
         machines.len()
     );
@@ -354,6 +356,122 @@ pub fn import(cfg: &Config, args: &[String]) -> ExitCode {
         &source.describe(),
         &target.describe(),
     )
+}
+
+/// `migrate [--apply] [<dir>]` — move a flat answers directory into the layout.
+///
+/// **Shows by default and moves only when told to.** The answers directory is the thing
+/// a rack installs from; a command that rearranges it the moment somebody types the name
+/// to find out what it would do is not a command anybody should have to be careful with.
+///
+/// Every move is a `rename` within the same directory, so the documents themselves are
+/// never rewritten and a half-finished run leaves both halves readable.
+pub fn migrate(cfg: &Config, args: &[String]) -> ExitCode {
+    let mut apply = false;
+    let mut dir: Option<&String> = None;
+    for arg in args {
+        match arg.as_str() {
+            "--apply" => apply = true,
+            other if other.starts_with('-') => {
+                eprintln!("unknown option {other:?}\nusage: rescriptum migrate [--apply] [<dir>]");
+                return ExitCode::FAILURE;
+            }
+            other => {
+                if dir.replace(arg).is_some() {
+                    eprintln!("only one directory: {other:?}");
+                    return ExitCode::FAILURE;
+                }
+            }
+        }
+    }
+    let dir = dir
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| cfg.answers_dir.clone());
+
+    let moves = match crate::store::file::pending_moves(&dir) {
+        Ok(moves) => moves,
+        Err(e) => {
+            eprintln!("cannot read {}: {e}", dir.display());
+            return ExitCode::FAILURE;
+        }
+    };
+
+    println!("migrating {}", dir.display());
+    if moves.is_empty() {
+        println!("  nothing to move — every answer is already in a directory of its own");
+        return ExitCode::SUCCESS;
+    }
+
+    // Collisions first, all of them, before a single rename: finding out halfway through
+    // that one document cannot move is worse than finding out before anything did.
+    let mut blocked = Vec::new();
+    for m in &moves {
+        if m.to.exists() {
+            blocked.push(m);
+        }
+    }
+    if !blocked.is_empty() {
+        for m in &blocked {
+            println!(
+                "  BLOCKED {} -> {} already exists",
+                relative(&m.from, &dir),
+                relative(&m.to, &dir)
+            );
+        }
+        println!(
+            "  {} document(s) cannot move; nothing has been changed. \
+             Reconcile them by hand — two documents of one format have no order between \
+             them, so this cannot be decided here.",
+            blocked.len()
+        );
+        return ExitCode::FAILURE;
+    }
+
+    let mut failures = 0;
+    for m in &moves {
+        let from = relative(&m.from, &dir);
+        let to = relative(&m.to, &dir);
+        if !apply {
+            println!("  {from} -> {to}");
+            continue;
+        }
+        let done =
+            m.to.parent()
+                .map(std::fs::create_dir_all)
+                .unwrap_or(Ok(()))
+                .and_then(|()| std::fs::rename(&m.from, &m.to));
+        match done {
+            Ok(()) => println!("  {from} -> {to}"),
+            Err(e) => {
+                println!("  FAILED {from} -> {to}: {e}");
+                failures += 1;
+            }
+        }
+    }
+
+    if !apply {
+        println!(
+            "  {} document(s) to move — nothing has been changed. \
+             Re-run with --apply.",
+            moves.len()
+        );
+        return ExitCode::SUCCESS;
+    }
+    if failures == 0 {
+        println!("  moved {} document(s) — now run `check`", moves.len());
+        ExitCode::SUCCESS
+    } else {
+        println!("  {failures} failure(s)");
+        ExitCode::FAILURE
+    }
+}
+
+/// A path as the operator sees it, against the directory being migrated.
+fn relative(path: &std::path::Path, root: &std::path::Path) -> String {
+    path.strip_prefix(root)
+        .unwrap_or(path)
+        .display()
+        .to_string()
 }
 
 /// `export <dir>` — write the configured store out as a directory of answer files.

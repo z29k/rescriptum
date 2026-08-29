@@ -17,29 +17,56 @@ couches que vous avez écrites.
 
 ## L'agencement
 
-Tout vit dans un seul répertoire plat. Il n'y a pas de dossier par OS, parce que
-l'organisation du stockage et l'URL sont délibérément séparées — voir
-[formats](./formats.md#le-stockage-nest-pas-lurl).
+**Un répertoire par identité.** Une machine est un répertoire nommé d'après elle, qui
+contient un document par système d'exploitation :
 
 ```
 answers/
-├── 98fa9b50d810.toml       cette machine, en tant que Proxmox
-├── 98fa9b50d810.preseed    …et la même machine, en tant que Debian
-├── aabbccddeeff.yaml       une autre machine, Ubuntu
-├── default.toml            quand rien d'autre ne correspond
+├── 98fa9b50d810/           une machine
+│   ├── proxmox.toml            en tant que Proxmox
+│   └── debian.preseed          …et le même matériel en tant que Debian
+├── aabbccddeeff/           une autre machine
+│   └── ubuntu.yaml             en tant qu'Ubuntu
+├── default/                quand rien d'autre ne correspond
+│   └── proxmox.toml
 └── groups/
-    ├── rack-a.toml         partagé par une baie, revendique ses membres
-    ├── base.preseed
-    └── rhel-compute.ks     revendique des machines pour ce qu'elles sont
+    ├── rack-a/             partagé par une baie, revendique ses membres
+    │   ├── proxmox.toml
+    │   └── debian.preseed
+    └── rhel-compute/       revendique des machines pour ce qu'elles sont
+        └── rhel.ks
 ```
 
-- **Un document machine** est nommé d'après la machine — une adresse MAC, dans n'importe quel
-  style de séparateur — et porte la configuration de cette machine, ou seulement la part qui
-  diffère de son groupe.
-- **Un groupe** vit dans `groups/` et est partagé. Il revendique des machines en les listant
-  dans `members`, ou par un bloc `match` testé contre la requête.
-- **`default.<ext>`** répond quand rien d'autre ne le fait. Un par format : un défaut TOML ne
-  doit pas répondre à un client qui a demandé du kickstart.
+- **Une machine** est un répertoire nommé d'après elle — une adresse MAC, dans n'importe
+  quel style de séparateur — qui porte la configuration de cette machine, ou seulement la
+  part qui diffère de son groupe.
+- **Un groupe** est un répertoire sous `groups/` et il est partagé. Il revendique des
+  machines en les listant dans `members`, ou par un bloc `match` testé contre la requête.
+- **`default/`** répond quand rien d'autre ne le fait. Un document par format : un défaut
+  TOML ne doit pas répondre à un client qui a demandé du kickstart.
+
+### L'extension décide ; le nom, non
+
+Dans un répertoire, **l'extension est le format et ce qui précède ne veut rien dire**.
+`proxmox.toml` et `answer.toml` sont le même document pour le serveur ; le nom est là pour
+qui ouvre le dossier. `rescriptum` en écrit des lisibles — `proxmox.toml`, `ubuntu.yaml`,
+`debian.preseed`, `boot.ipxe` — et ne renomme jamais les vôtres.
+
+La seule règle qui en découle : **un répertoire contient au plus un document par format**.
+Deux `.toml` dans un même répertoire est signalé comme un problème plutôt que tranché,
+parce que rien ne pourrait choisir entre eux d'une façon que vous auriez prévue. Deux
+formats *différents* ne sont pas un doublon — c'est justement l'intérêt du répertoire.
+
+L'organisation du stockage et l'URL restent délibérément séparées : un dossier peut être
+réorganisé, une URL gravée dans une ISO non. Voir
+[formats](./formats.md#le-stockage-nest-pas-lurl).
+
+:::note[Migration depuis un répertoire plat]
+Les réponses étaient des fichiers à la racine du répertoire : `98fa9b50d810.toml` à côté de
+`98fa9b50d810.preseed`. Ils ne sont **plus servis**, et chacun est signalé par son nom avec
+son nouveau chemin. `rescriptum migrate` montre ce qu'il déplacerait ; `rescriptum migrate
+--apply` les déplace.
+:::
 
 ## Les cinq choses à savoir
 
@@ -70,7 +97,7 @@ L'écriture par format est dans [formats](./formats.md#où-vivent-les-clés-de-c
 
 Le répertoire [`examples/`](https://github.com/z29k/rescriptum/tree/main/examples) du dépôt
 contient un exemple commenté de **chaque** format supporté, tous sélectionnés différemment —
-par matériel, par liste de membres, par nom de fichier — et ils sont exercés par la suite de
+par matériel, par liste de membres, par nom de répertoire — et ils sont exercés par la suite de
 tests :
 
 ```console

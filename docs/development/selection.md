@@ -143,13 +143,21 @@ machine, throughput collapses:
 | 2,000 | 311 req/s | 12,520 req/s |
 | 10,000 | — | 6,924 req/s |
 
-One `stat` replaces the whole walk, and a new document is still picked up with no restart
-— which is the guarantee the specification actually wanted. Normalized stems are computed
+One `stat` replaces the whole walk, and a new machine is still picked up with no restart —
+which is the guarantee the specification actually wanted. Normalized identities are computed
 once per store read, not once per request.
 
-> **The backstop is not redundant.** Editing a group file's *contents* moves no directory
-> mtime, and a change made by another process moves no in-process atomic. An integration
-> test covers exactly this.
+> **The backstop is not redundant, and it does more work than it used to.** Editing a
+> document's *contents* moves no directory mtime; neither does adding one *inside* a
+> machine's own directory, since that is one level below the mtime being watched; and a
+> change made by another process moves no in-process atomic. So with a directory per
+> identity, the backstop is what picks up everything except an identity appearing or
+> leaving. Tests cover each case.
+>
+> The figures above were measured against the flat layout. The read itself is now a
+> `readdir` per identity on top of the file it already opened — 28 ms to 63 ms at 2,000
+> machines — which the cache amortises over a second's worth of requests, and which did not
+> move throughput measurably. It is still the reason a group beats a directory per machine.
 
 The remaining cost at 10,000 documents is a linear scan of precomputed needles — pure CPU,
 no syscalls. Bucketing needles by length and sliding a window over the body would remove

@@ -48,12 +48,13 @@ A test at the connection cap pins it.
 
 **A Mac editing the answers directory over SMB can hijack a machine's answer.** macOS writes
 an AppleDouble `._<name>` beside a file whose extended attributes the filesystem will not
-take — `._98-fa-9b-50-d8-10.toml` has an extension that *is* on the allowlist, and
-normalization strips the leading `._`, so it claims the same identity as the real file with a
-body that is binary. The machine being configured then receives a parse error instead of its
-answer, and `check` reports the failure against the *group* as well. `.DS_Store` is harmless
-only by luck (its extension is not on the list). The file store now skips every entry whose
-name starts with `.`; found on a real NAS, not by reading anything.
+take — `._proxmox.toml` has an extension that *is* on the allowlist. With a directory per
+identity it is worse than it was when answers were flat: it is a **second `.toml` in a
+directory that may hold only one**, and it sorts *before* the real one, so a rule that took
+the first would hand every request a binary body. The machine being configured then receives
+a parse error instead of its answer. `.DS_Store` is harmless only by luck (its extension is
+not on the list). The file store skips every entry whose name starts with `.`; found on a
+real NAS, not by reading anything.
 
 **Normalizing a selector pattern strips `*` and `?`** unless you use `normalize_pattern` —
 which turns every glob into a literal, quietly.

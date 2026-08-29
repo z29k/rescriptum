@@ -1,6 +1,6 @@
 ---
 title: Templating
-description: Des placeholders remplis depuis la requête, pour qu'un fichier de groupe couvre cinq cents machines — et pourquoi une valeur manquante est une erreur plutôt qu'une chaîne vide.
+description: Des placeholders remplis depuis la requête, pour qu'un document de groupe couvre cinq cents machines — et pourquoi une valeur manquante est une erreur plutôt qu'une chaîne vide.
 sidebar:
   label: Templating
   order: 4
@@ -9,10 +9,10 @@ sidebar:
 # Templating
 
 Le groupement supprime la duplication entre machines d'accord. Le templating supprime la
-dernière raison d'écrire un fichier par machine : les valeurs qui doivent différer.
+dernière raison d'écrire un document par machine : les valeurs qui doivent différer.
 
 ```toml
-# answers/groups/rack-a.toml
+# answers/groups/rack-a/proxmox.toml
 members = ["98:fa:9b:50:d8:10", "98:fa:9b:50:d8:11", "…"]
 
 [global]
@@ -22,7 +22,7 @@ fqdn = "node-{{ serial }}.example.com"
 filter.ID_NET_NAME_MAC = "*{{ mac }}"
 ```
 
-Cinq cents machines, un fichier. Sans cela, un nom d'hôte par machine signifie un document
+Cinq cents machines, un document. Sans cela, un nom d'hôte par machine signifie un document
 par machine — et cinq cents documents qui diffèrent d'une ligne chacun.
 
 Les placeholders fonctionnent dans **tous** les formats : TOML, YAML, JSON, XML, kickstart,
@@ -52,7 +52,7 @@ sont identiques.
 
 `{{ machine }}` est l'identifiant du *document* machine qui a matché — il n'est donc
 disponible que lorsque la machine a un document à elle. Une machine revendiquée par la liste
-`members` d'un groupe, sans fichier à côté, n'a pas de valeur `machine` et le rendu échoue
+`members` d'un groupe, sans répertoire à elle, n'a pas de valeur `machine` et le rendu échoue
 avec `template needs {{ machine }}, but this request carries no "machine"`.
 
 Dans un groupe, utilisez plutôt un fait de la requête :

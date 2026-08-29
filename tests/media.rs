@@ -13,6 +13,8 @@
 // nothing is a clearer answer than a wall of unresolved imports.
 #![cfg(feature = "boot")]
 
+mod common;
+
 use rescriptum::boot::iso::build;
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -622,11 +624,11 @@ fn image_downloads_never_starve_the_answer_endpoint() {
     // minutes; if answers shared that budget, a rollout would starve its own installs.
     // Two listeners, two budgets — and this is what proves it rather than hoping.
     let s = Server::start(&[("pve-8.4.iso", pve_image())]);
-    fs::write(
-        s.answers_dir.join("default.toml"),
+    common::seed(
+        &s.answers_dir,
+        "default.toml",
         "[global]\nkeyboard = \"fr\"\n",
-    )
-    .expect("write answer");
+    );
     std::thread::sleep(Duration::from_millis(1200));
 
     // Four transfers in flight, each deliberately left unread so it stays open.
@@ -728,11 +730,11 @@ fn a_generated_stanza_is_an_ordinary_answer_document() {
     let out = s.run(&["media", "ipxe", "pve-8.4"]);
     assert!(out.status.success());
 
-    fs::write(
-        s.answers_dir.join("98-fa-9b-50-d8-10.ipxe"),
+    common::seed(
+        &s.answers_dir,
+        "98-fa-9b-50-d8-10.ipxe",
         String::from_utf8_lossy(&out.stdout).as_ref(),
-    )
-    .expect("save the generated answer");
+    );
     std::thread::sleep(Duration::from_millis(1200));
 
     let served = s.answer(r#"{"mac":"98:fa:9b:50:d8:10"}"#);

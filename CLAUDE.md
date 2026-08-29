@@ -88,7 +88,8 @@ These are deliberate design decisions, not oversights. Do not "improve" them wit
   directly. **Never re-declare a module in `main.rs`**: it compiles a second copy, runs every
   unit test twice, and lets the two copies drift.
 - `src/store/` — where documents come from. `mod.rs` defines the thin `Store` / `StoreWrite`
-  traits, `file.rs` a flat directory of documents, `sqlite.rs` a bundled-SQLite database.
+  traits, `file.rs` a **directory per identity** (see *Layout on disk*), `sqlite.rs` a
+  bundled-SQLite database.
 - `src/boot/` — **boot media**: where the installer itself comes from, as opposed to what
   it is told. `sources.rs` is the odd one out: it is where images can be fetched *from*,
   and it stores **nothing about any specific image** — each entry names the checksum index
@@ -127,7 +128,9 @@ These are deliberate design decisions, not oversights. Do not "improve" them wit
 - `src/format/` — one interface per document format. `xml.rs` holds the XML tree and its
   merge rules.
 - `src/merge.rs` — the TOML merge, used by `format`.
-- `src/cli.rs` — the `render`, `check`, `import`, `export` and `config` subcommands.
+- `src/cli.rs` — the `render`, `check`, `import`, `export`, `migrate` and `config`
+  subcommands. `migrate` **shows by default and moves only on `--apply`**, and a single
+  taken destination aborts the whole run rather than leaving a half-migrated directory.
   `config` is dispatched **before** `Config::from_env` and `validate`, unlike every other
   one: a file that will not parse and a token one character short are the states people run
   it to get *out* of, so it loads the file itself and reports rather than dying.
@@ -138,7 +141,8 @@ These are deliberate design decisions, not oversights. Do not "improve" them wit
   dropped. **The one path where something arriving over the network changes the answer
   set**, so it is narrow by construction: machine documents only (never a group — one
   machine finishing must not disarm a rack), format `ipxe` only (the `.toml` is the record
-  of how it was built), and moved under an `installed-` prefix rather than deleted. The
+  of how it was built), and moved into an `installed-<id>/` **sibling directory** rather
+  than deleted — a name that identifies nothing, so no new exclusion rule is needed. The
   token is Proxmox's, and it arrives **in the JSON body**, not as a bearer — so the route
   runs before the answer token's guard, which would otherwise reject every webhook. It
   also takes a bearer header and the identity from the query, because **Proxmox is the
@@ -164,6 +168,11 @@ These are deliberate design decisions, not oversights. Do not "improve" them wit
   it could not report something.
 - `src/main.rs` — runtime setup, accept loop, connection serving, routing, logging, and the
   blocking `resolve()` half of a request.
+- `tests/common/mod.rs` — the one thing every suite shares: `seed()` writes a fixture named
+  the way a test thinks of it (`98fa9b50d810.toml`, `groups/rack-a.toml`, `default.toml`)
+  **through `StoreWrite`**, so it lands exactly where an admin-API write would and cannot
+  drift from the layout. A name the store would refuse is written literally, because those
+  fixtures exist to prove a stray file answers nothing. One copy, not one per suite.
 - `tests/integration.rs` — starts the real binary on an ephemeral port (it prints the address
   it actually bound, so there is no port race) and talks HTTP to it. It keeps the server's
   stderr, which is what makes a startup warning assertable.
@@ -227,8 +236,9 @@ and must not move because someone renamed a folder. An earlier design made the d
 name *be* the URL segment and was discarded for exactly that reason.
 
 The consequence that makes the model click: **a machine's answer is specific to the OS it
-is for**, so `98fa9b50d810.toml` is not "that machine" but "that machine as Proxmox".
-`98fa9b50d810.preseed` is the same hardware as Debian, and both exist at once. The store's
+is for**, so `98fa9b50d810/proxmox.toml` is not "that machine" but "that machine as
+Proxmox". `98fa9b50d810/debian.preseed`, beside it, is the same hardware as Debian, and both
+exist at once. The store's
 key is therefore **(id, format)**, not id — which is what the SQLite schema is built around.
 
 Two traps in the alias table:
@@ -297,20 +307,20 @@ format** — a YAML machine file over a TOML group is refused, not half-served.
 
 ## Grouping and merging
 
-A datacenter has a file per machine, and machines in a rack share almost everything. Answer
-files therefore compose:
+A datacenter has a directory per machine, and machines in a rack share almost everything.
+Answer documents therefore compose:
 
 ```text
 answers/
   groups/
-    base.toml            shared by everything
-    rack-a.toml          extends = "base"; members = [ ...MACs... ]
-  98-fa-9b-50-d8-10.toml one machine's overrides (optional)
-  default.toml           only when nothing else matches
+    base/proxmox.toml            shared by everything
+    rack-a/proxmox.toml          extends = "base"; members = [ ...MACs... ]
+  98-fa-9b-50-d8-10/proxmox.toml one machine's overrides (optional)
+  default/proxmox.toml           only when nothing else matches
 ```
 
 - A **group** claims machines by listing them in `members`. Member strings are normalized the
-  same way filenames are, so separator style does not matter.
+  same way directory names are, so separator style does not matter.
 - A group may `extends` another group, giving a chain. Cycles and missing parents are detected
   at load, reported once, and the broken group is dropped rather than half-applied.
 - A **machine file** layers on top of whichever group claimed it. `extends` in a machine file
@@ -617,62 +627,59 @@ could not check. Note it needs `Resolution::format_name` (the extension), not
   and SeaBIOS says "could not read the boot disk". Use `pc` for a BIOS guest.
 - **`sed -n … "$0"` cannot find a relatively-invoked script after a `cd`.** Resolve the
   path first, or `--help` breaks for everyone who does not type an absolute path.
-- **There is exactly one route to port 69 on DSM 7, and it is `setcap`.** `run-as: root`
-  in `conf/privilege` is refused with `synopkg` error **319**, `invalid package privilege
-  content` — in `defaults` *and* as a per-action `ctrl-script`, the shape Synology's own
-  packages use. A `security.capability` xattr in `package.tgz` installs and **Package
-  Center strips it**. `setcap cap_net_bind_service=+ep` after install works;
-  `net.ipv4.ip_unprivileged_port_start` does not exist on that kernel. Measured on a 7.2.2
-  machine, all four.
-- **Root on DSM 7 is gated on the *signature*, and `libsynopkg.so.1` says so.** Its
-  strings carry the whole rule: a package failing `verifyPackageSignature` may not have a
-  `ctrl-script` or `executable` section, must have `defaults.run-as` = `package`, and
-  — the line that matters — `tool capabilities should not exist`. DSM's privilege format
-  has a native `capabilities` field (documented since 7.0-40656), so a **signed** package
-  declares `cap_net_bind_service` and never needs `setcap`. Synology's guide states it
-  plainly — *"you are not able to install that package unless it is signed by synology"* —
-  so it is their signature, not a trusted publisher's. The one documented bypass, a
-  *development token*, is valid only on the NAS that generated its `debug.dat`, so it is
-  not a distribution path. **The manual `setcap` is settled, not provisional**; no
-  packaging change removes it.
-- **`setcap` holds on the DS416j's volume, measured there.** The four routes to port 69
-  were measured on an x86_64 VM whose `/volume1` is btrfs, `nodev` but not `nosuid`; a
-  `nosuid` mount makes the kernel ignore file capabilities outright, which would have
-  closed the last open route on the one machine this exists for. On the DS416j (ARMv7,
-  `armada38x`) the package binds `udp/69` and `boot check` says
-  `0.0.0.0:69 handed over ipxe-arm64.efi`.
-- **A file capability does not survive an upgrade** — the new binary is a different file.
-  That is why a failed TFTP bind is the **one** listener failure here that is not fatal:
-  when it was, an upgrade took the answer endpoint down with it, failing every install in
-  flight to report that a second port could not be opened. It warns, `boot check` exits
-  non-zero, and the DSM panel shows a `tftp:` line.
+- **The DSM-specific traps are in `packaging/dsm/CLAUDE.md`** — the four routes to port 69
+  and why `setcap` is settled, the signature gate `libsynopkg.so.1` spells out, `setcap`
+  measured on the DS416j's own volume, the capability an upgrade drops, and the panel's
+  runtime-computed defaults. They load with that directory; `docs/development/traps.md`
+  has them at length.
 - **Binding is not a health check.** A bind that *succeeds* on the TFTP port means nothing
   is listening — the degraded state, not the healthy one — and one that fails cannot tell
   this server from another daemon squatting the port, since both are `AddrInUse`. So
   `boot check` sends a real read request (`boot::tftp::probe`) and reports what a machine
   would get. The first version guessed, and a test with a squatter said so at once.
-- **A default computed at runtime must be computed in `settings()` too.** The DSM panel
-  renders a variable's default as the field's value, so a default living only where the
-  server consumes it shows as an empty box while the server runs on a value it derived.
-  `RESCRIPTUM_PUBLIC_HOST` shipped that way. Two `KNOWN` entries are special-cased there
-  — the worker count and the public host — and nothing in the type system says a third
-  would need it.
 - **The size figures in this file go stale.** They moved ~375 KB when armv7 changed from
   musl to glibc. Re-measure before concluding anything from them; a stale baseline once
   turned a 71% budget spend into an apparent 293% overrun.
+- **A directory's mtime does not see one level down.** With a directory per identity, adding
+  or editing a document *inside* a machine's directory moves nothing the listing cache
+  watches, so only `RELOAD_BACKSTOP` catches it. Only the identity itself appearing or
+  leaving is immediate. A test for "a removed document stops being served" that expects it
+  immediately is testing the old layout and will hang on the new one.
+- **An AppleDouble is worse in a directory than it was flat.** `._proxmox.toml` is now a
+  *second* `.toml` in a directory that may hold only one, and `.` sorts before every letter
+  — so a rule that took the first would serve a binary body to every request. `visible_name`
+  is what stops it, and a test asserts the litter is not even *reported* as a conflict.
+- **`git checkout <file>` to undo a deliberately-broken test also undoes the work.** Copy
+  the file aside before breaking it to watch a test fail; a `git checkout` here silently
+  reverted a whole feature and its test, and only a `grep` afterwards caught it.
 
-## Core algorithm (the part worth understanding up front)
+## Layout on disk, and the core algorithm
 
-Answer files live in a configurable directory, named after a MAC address
-(`98-fa-9b-50-d8-10.toml`, `aabbccddeeff.toml`, plus an optional `default.toml`).
+**One directory per identity.** A machine is a directory in `RESCRIPTUM_ANSWERS_DIR` named
+after it, holding one document per format; `groups/` and `default/` are the same shape under
+names the layout reserves (`valid_machine_id` refuses both as machine ids, in *both* stores,
+so `export` from SQLite can always be represented).
+
+Inside a directory, **the extension is the format and the stem is nothing at all** —
+`proxmox.toml` and `answer.toml` are one document. `format::canonical_stem` picks a readable
+name for a document nobody has named; an existing one is overwritten *where it stands*, so
+an operator's name survives a write. Two documents of one format in one directory is a
+**reported problem**, not a resolved one: there is no tiebreak anyone could predict. Sorted
+order decides which answers so the choice does not depend on readdir, and the loser is named.
+
+A servable document left flat at the top — the layout before this one — is **reported and
+not served**, its destination spelled out, and `rescriptum migrate [--apply]` moves them.
+`store::file::pending_moves` is that knowledge exposed once, so the command and the reader
+cannot disagree. Half-reading an old layout would mean a machine whose answer moved silently
+between two files.
 
 Selection per request:
 
 1. Normalize the request body: lowercase, strip every non-alphanumeric character.
-2. For each `<stem>.toml` in the directory (excluding `default.toml`), normalize `<stem>` the
+2. For each identity directory (excluding `groups/` and `default/`), normalize its name the
    same way and test whether it appears as a substring of the normalized body.
-3. First match wins → return that file.
-4. No match → `default.toml` if present, else `404`.
+3. First match wins → return that identity's document for the format asked for.
+4. No match → `default/` if it holds that format, else `404`.
 
 The normalization is what makes this robust: it's indifferent to MAC separator style
 (`98-fa-9b…` / `98:fa:9b…` / `98fa9b…`) and to the JSON structure, which changes between Proxmox
@@ -683,19 +690,30 @@ file is added or removed. The spec asks for a re-read on every request; done lit
 `readdir` plus a sort plus a normalization pass per request, and with one answer file per
 machine — the datacenter case — throughput collapses. Measured, 3000 requests at 100 concurrent:
 
-| Files in the directory | Literal re-read | mtime-cached |
+| Machines in the directory | Literal re-read | mtime-cached |
 |---|---|---|
 | 10 | 11,954 req/s | 12,922 req/s |
 | 200 | 3,198 req/s | 12,890 req/s |
 | 2,000 | 311 req/s | 12,520 req/s |
 | 10,000 | — | 6,924 req/s |
 
-One `stat` replaces the whole walk, and a new file is still picked up with no restart — which is
-the guarantee the spec actually wanted. `RELOAD_BACKSTOP` (1 s) forces a re-read even when mtime
-looks unchanged, covering filesystems with coarse mtime granularity. Normalized stems are
-computed once per directory read, not once per request.
+One `stat` replaces the whole walk, and a new machine is still picked up with no restart —
+which is the guarantee the spec actually wanted. `RELOAD_BACKSTOP` (1 s) forces a re-read even
+when mtime looks unchanged, covering filesystems with coarse mtime granularity. Normalized
+identities are computed once per directory read, not once per request.
 
-The remaining cost at 10,000 files is the linear scan of precomputed needles — pure CPU, no
+**The mtime now sees less, and the read costs more.** A directory's mtime moves when an entry
+is added or removed *in it*, so an identity appearing or leaving is immediate while a document
+added or edited **inside** one is only caught by the backstop — the same rule that already
+covered a file edited in place, now the normal case. And a full reload is a `readdir` per
+identity on top of the file it already opened: measured at 2,000 machines on an M1 Pro,
+**28.6 ms flat → 63.5 ms with a directory each (2.2×)**, unchanged by removing the
+allocations, because it is syscalls. Amortised over a second of requests it did not move
+end-to-end throughput measurably; the req/s table above was measured against the flat layout
+and has *not* been re-measured with a comparable tool. It is still the reason to reach for a
+group before a directory per machine.
+
+The remaining cost at 10,000 machines is the linear scan of precomputed needles — pure CPU, no
 syscalls. Bucketing needles by length and sliding a window over the body would remove it, but a
 10,000-machine rollout already completes in under two seconds, so it has not been worth the
 complexity. Measure before adding it.
@@ -708,7 +726,7 @@ complexity. Measure before adding it.
   `Connection: close`.
 - `404` when no file applies; `500` on read errors.
 - Reject an implausible `Content-Length` (cap at 1 MB) rather than allocating for it.
-- Only read direct entries of the answers directory. Never build a filesystem path from
+- Only read the answers directory and one level below it. Never build a filesystem path from
   request data — that is the path-traversal guard.
 
 Logging goes to stdout/stderr, one line per request (timestamp, source IP, body size, chosen
@@ -779,18 +797,15 @@ loud), `export` accepted so one file can also be sourced, a duplicate key is an 
 Local development (once the crate exists):
 
 ```bash
-cargo build
 cargo run -- check               # validate an answers directory
+cargo run -- migrate             # show what a flat answers directory would become
+cargo run -- migrate --apply     # move those documents into a directory each
 cargo run -- config              # show the configuration and where each value comes from
 cargo run -- render <mac>        # print one machine's composed answer
 cargo run -- media list          # the installer images held
 cargo run -- media add FILE      # register one: verify, probe, record its digest
 cargo run -- media check         # re-verify every recorded digest
 cargo run -- media ipxe ID       # the .ipxe answer that boots one image
-cargo test                       # all tests
-cargo test <name>                # single test by name substring
-cargo test -- --nocapture        # show stdout from tests
-cargo fmt && cargo clippy
 ```
 
 Documentation (see *Documentation* below):
@@ -837,194 +852,24 @@ Verify the first cross-build actually produces a static binary (`file` should sa
 linked*) and that it runs on the NAS. If ARMv7 misbehaves, confirm the real architecture with
 `uname -m` on the NAS before pushing further.
 
-## Release profile
-
-`Cargo.toml` optimizes for size, minus the spec's `panic = "abort"` (see Hard constraints):
-
-```toml
-[profile.release]
-opt-level = "z"
-lto = true
-codegen-units = 1
-strip = true
-```
-
 ## The DSM package
 
 `packaging/dsm/` wraps an already-built binary as a DSM 7 `.spk`. It is a **release
 format**, exactly like the `.tar.gz` archives — no DSM-specific build, no feature flag,
-nothing in `src/`. The **four** places DSM pressed back are answered in packaging: log
-rotation by a `copytruncate` stanza, a CLI that cannot find its configuration by a
-three-line wrapper (`rescriptum-cli`, which names `RESCRIPTUM_ENV_FILE`), no settings panel
-by the desktop application below, and **a privileged port by one root command**. DSM 7
-does not let an unsigned package run as root — measured, four routes, in
-`docs/development/traps.md` with the error codes — but `setcap cap_net_bind_service=+ep`
-on the installed binary works, after which the package binds `udp/69` as its own
-unprivileged user alongside 8000 and 8001. All three are registered with the firewall.
-**The package ships the loaders**, so the share's `boot` folder arrives filled and `start`
-refreshes it when the stamp does not name this version; a TFTP server with nothing to hand
-out boots nothing, and a second download is how a working appliance becomes a support
-thread. Verified on the machine by fetching `ipxe-undionly.kpxe` over TFTP with an
-independent client and comparing it byte for byte.
-**The capability belongs to the file, so an upgrade drops it**; the env file says so and
-points at a Task Scheduler boot-up task. `RESCRIPTUM_TFTP_ADDR` is therefore left unset —
-its default *is* port 69, which is what every loader and every generated snippet expects.
-An earlier version shipped `off` and sent operators to DSM's own TFTP server: that traded
-the product's first principle for a packaging constraint that turned out not to exist, and
-it is not a precedent. `RESCRIPTUM_USER`/`_GROUP` stay documented as unusable — the package
-already is its own unprivileged user. If this ever seems to need a `#[cfg]`, the design has gone wrong.
-
-```bash
-./build.sh --spk x86_64-unknown-linux-musl   # build, then wrap
-packaging/dsm/make-spk.sh armv7              # wrap an existing build
-packaging/dsm/check-spk.sh                   # structural check          ⎫ both run
-packaging/dsm/lifecycle-test.sh              # drive the scripts         ⎭ by ci.yml
-packaging/dsm/vm/on-dsm.sh admin@nas         # what only DSM can answer
-```
-
-**The package is tested in three places, and none of it is Rust** — `cargo test` does not
-touch it. `check-spk.sh` asserts the archive's shape; `lifecycle-test.sh` unpacks an `.spk`
-into a fake `/var/packages` tree and drives the real scripts through install (with a wizard
-and without), start, `/health`, the exit codes, an upgrade over a hand-edited env file and
-a canary — with `etc/` surviving and with it wiped — and an uninstall; both run on every
-push. `vm/on-dsm.sh` runs the rest on a DSM 7 VM and then on the DS416j: `data-share`'s
-ACL, `port-config`, the generated unit, `logrotate -f` against a live descriptor, and
-whether Package Center accepts the archive at all. **Nothing ships on VM evidence alone**,
-and `lifecycle-test.sh` was watched failing — reintroducing one defect turns 54 green into
-46 green and 8 red. **It earns its keep:** its first run over the boot-media package caught
-a live `RESCRIPTUM_MEDIA_ADDR` with `RESCRIPTUM_MEDIA_DIR` still commented, which is a
-startup error — the package would not have started at all.
-
-### The desktop application
-
-`packaging/dsm/payload/ui/` is a **real DSM application** — `SYNO.SDS.AppWindow`,
-`syno_formpanel`, `syno_textfield`, `syno_combobox`, `syno_button` — not a page of ours in a
-frame. `dsmuidir="ui"` makes DSM symlink it into
-`/usr/syno/synoman/webman/3rdparty/rescriptum`, and `dsmappname` names the class `ui/config`
-declares. It manages the server's configuration, shows its status and tails its log.
-
-**ExtJS, not Vue, and the machine decided that.** DSM 7.2 ships a Vue framework and
-Synology's current guide documents only that one — the first version of this was written
-against it. The DS416j is capped at **DSM 7.1.1**, where `Vue` is undefined. ExtJS is on both
-(7.1.1 and 7.2.2, measured), so one application covers every DSM this package supports;
-`os_min_ver` is **7.1**, and 7.0 is not claimed because nothing has run there. The API is
-documented in the ExtJS reference Synology generated for DSM, mirrored at
-<https://github.com/DigitalBox98/SimpleExtJSApp> as `docs/synoextjsdocs.tar.gz`.
-
-The design rule holds: nothing in `src/` knows any of this exists. What the server gained is
-a *generic* `config` subcommand, and the application's backend — `ui/api.cgi` — is a hundred
-lines of shell that authenticate and then shell out to `rescriptum-cli config` and `media`. **The panel never grows a rule of its own**: it starts a download by calling `media add`, which is where the digest rules are tested, and it follows one by watching the `.part` file that command already writes — a CGI cannot hold a request open for 1.5 GB, and nothing about progress had to be invented for the browser. The env-file
-semantics stay in Rust where they are tested rather than being written a second time in `sh`.
-
-**Four things were measured on the machine and every one of them is load-bearing. None is in
-the developer guide** (they are in `docs/development/traps.md` at length):
-
-- **A CGI there runs as the owner of the script**, which for a package tree is the package
-  user. Not `http`, not root. That is what lets it read the `0600` env file it owns, and why
-  it cannot start or stop anything — restarting goes through DSM's own
-  `SYNO.Core.Package.Control`, from the application, with the administrator's session.
-- **DSM does not authenticate that path.** An unauthenticated request gets `200`. So
-  `authenticate.cgi` plus an `administrators` check *is* the door, and a write additionally
-  needs a header a cross-origin page cannot make a browser send. Losing any of them would be
-  silent, which is why `check-spk.sh` greps for them **with the comments stripped** — the
-  first version of that check passed because the word appeared in a comment.
-- **No `su`, ever.** It hangs a CGI outright without `</dev/null` (it reads the web server's
-  stdin and waits forever) and then fails anyway as a non-root process. The script already is
-  the user in question.
-- **The JavaScript is named after the version.** `make-spk.sh` fixes every mtime for
-  reproducibility, nginx serves that as `Last-Modified: 2019`, and a browser's heuristic
-  freshness is then years: an upgraded package kept running the old application through a
-  reinstall and a hard reload. Everything the app fetches itself carries `?v=` for the same
-  reason.
-- **The guide's own ExtJS example does not run**: `Ext.define` + `callParent` throws against
-  `SYNO.SDS.AppInstance`. Declare with `Ext.define` (DSM's launcher finds the class that way)
-  and chain with `superclass.constructor.call`. It is ExtJS **3.4.1** under an `Ext.define`
-  shim.
-- **Never add a method named `show` to the window.** `Ext.Window.prototype.show()` is what
-  DSM calls to display it, so a tab-switching `show()` silently overrode it — the window
-  built, laid out, rendered its taskbar thumbnail, and never appeared, **without throwing on
-  either DSM version**. It cost a bisect from the guide's minimal example upwards. The same
-  hazard applies to every other name on that prototype. Also: the taskbar requires
-  `getWindowTitle()`, and `fieldLabel` only renders inside a form layout.
-
-Bilingual through **DSM's own** text files (`ui/texts/{enu,fre}/strings`, `_S('lang')`
-choosing) — but the app loads them itself, because DSM does not load them for a package
-built without Synology's toolchain. The format and the locale directories stay Synology's;
-only the loading is ours. `ui/config`'s `title` and `desc` are literals for the same reason:
-an unresolved `section:key` renders as that literal text under the icon.
-
-**Verified on a DSM 7.2.2 machine** (`vdsm/virtual-dsm` under emulation — `packaging/dsm/vm/`),
-which found two bugs no fake-tree harness could: `ROOT` derived from `SYNOPKG_PKGDEST` (a
-symlink target, so the env file landed where nothing reads it and the service never started),
-and a *fresh* install restoring a removed installation's configuration out of a stale
-`$SYNOPKG_TEMP_UPGRADE_FOLDER`. 47 checks green end to end. **The DS416j run has since happened too**, and found what the
-VM could not: the ARMv7 musl build cannot run on Synology's 3.10 kernels (hence the glibc
-target), and a Mac editing the answers share over SMB drops AppleDouble files that hijack a
-machine's answer (hence hidden entries being skipped).
-
-Load-bearing, and each one is a trap somebody has paid for:
-
-- **A new setting never reaches an existing installation on its own.** The live env file
-  is written only when absent, so boot media arrived on a DS416j with the folders made,
-  the loaders seeded and 69/udp registered — and `RESCRIPTUM_BOOT_DIR` missing, which
-  `boot check` reported as "boot assets are off". `etc/` surviving an uninstall means a
-  reinstall does not fix it either. `postinst` appends keys the file has **never heard
-  of** and touches nothing present; **a commented-out key counts as present**, which is
-  how an operator says no.
-- **`postinst` runs on an upgrade too.** It writes the env file **only when absent** —
-  guarding on the file, not only on `SYNOPKG_PKG_STATUS` — and `preupgrade`/`postupgrade`
-  carry it through `$SYNOPKG_TEMP_UPGRADE_FOLDER` as well. Unguarded, the obvious
-  implementation replaces the user's port and tokens with defaults on every upgrade.
-- **`postuninst` touches the package tree only.** Never the share, never the database,
-  under any status — it runs during an upgrade as well. DSM deliberately does not remove
-  the share; we do not do its restraint for it.
-- **The scripts are not root.** `run-as: package` governs the scripts, not only the
-  service. That is why the `0600` env file comes out owned correctly for free, and equally
-  why the package cannot chown a user-supplied answers directory or call `synopkghelper`.
-- **`start-stop-status` answers every verb.** `prestart` runs at boot and a non-zero exit
-  stops the package from ever starting — the symptom is "works by hand, never after a
-  reboot". `status` returns **3** for stopped; `1` means "crashed, stale pidfile".
-- **The share does not exist during `postinst`** (`data-share` runs at package *start*), so
-  creating the answers directory inside it belongs in `start`, and may never abort it.
-- **`arch` takes family names.** `x86_64` covers every Intel platform, including ones
-  Synology has not shipped; the family shorthand does *not* reach the Marvell ARMv7
-  platforms, so the DS416j is `armada38x` by name. Widen only after the binary has run on
-  an ABI's oldest-kernel member.
-- **The outer tar is uncompressed**, `ustar`, with fixed mtimes and `0:0` ownership; the
-  inner `package.tgz` is the gzipped part. A gzipped outer archive is rejected with
-  "invalid file format" and nothing else.
-- **`SYNOPKG_PKGDEST` resolves to `/volume1/@appstore/<pkg>`**, so the package root is the
-  fixed `/var/packages/<pkg>`, never `dirname "$SYNOPKG_PKGDEST"`. `RESCRIPTUM_PKG_ROOT` is
-  the seam that lets `lifecycle-test.sh` drive the scripts against a writable tree.
-- **`etc/` and `var/` survive an uninstall** (they are symlinks into `@appconf`/`@appdata`),
-  so the env file and its tokens outlive the package — said plainly in the Synology page.
-- **`$SYNOPKG_TEMP_UPGRADE_FOLDER` outlives its upgrade**, so restoring from it requires
-  `SYNOPKG_PKG_STATUS = UPGRADE` or a fresh install resurrects a removed configuration.
-- **The firewall directory is `/usr/local/etc/services.d/`** (plural; the guide is wrong),
-  and `port-config` acquires *after* `postinst` — the wizard's port does reach it. Both
-  `port-config` and `usr-local-linker` acquire when the package is **enabled**, not at
-  `postinst`.
-- **The generated unit has no `Restart=`**: DSM does not restart the process if it dies.
+nothing in `src/` knows it exists, and if it ever seems to need a `#[cfg]`, the design has
+gone wrong. It carries a real DSM desktop application for the settings panel, and it ships
+the branded loaders, so the share's `boot` folder arrives filled.
 
 **Changing anything under `packaging/dsm/` means running the machine**, not just the local
-harness — the procedure is in `packaging/dsm/vm/README.md` (*Changing the package? This is
-the procedure*), and `AGENTS.md` points at it. A DSM 7.2.2 VM already exists in Docker on
-the maintainer's machine with a `clean` snapshot; `bootstrap.sh` sets one up from scratch,
-`on-dsm.sh` drives it, and the run is destructive on purpose. It asks the server for a real
-answer — a machine file merged over the group that claims it — rather than settling for
-`/health`.
-
-The harnesses catch a broken archive and broken scripts; only Package Center catches a
-broken package. **A tag must not be the first time an `.spk` meets a DSM machine** — the
-rig is `packaging/dsm/vm/`: `docker-compose.yml` runs Synology's own Virtual DSM (DSM 7.2,
-close to the DS416j's 7.2.1). KVM makes it fast, not possible — without `/dev/kvm` the image
-falls back to emulation on its own, about ten times slower, which is what
-`docker-compose.emulated.yml` is for. What does stop a host is **14 GiB free**, hardcoded in
-the image and not derived from `DISK_SIZE`. `run-vm.sh` is the loader-image fallback.
+harness. `packaging/dsm/CLAUDE.md` holds the whole contract — the four places DSM pressed
+back, the privilege routes measured on a DS416j and the DS416j run itself, the desktop
+application, the lifecycle rules and the DSM traps — and it loads whenever you touch that
+directory. The procedure is in `packaging/dsm/vm/README.md` (*Changing the package? This
+is the procedure*), which `AGENTS.md` also points at.
 
 ## Testing expectations
 
-571 tests, plus the package's own harnesses (see *The DSM package*, and note that
+582 tests, plus the package's own harnesses (see *The DSM package*, and note that
 `cargo test` does not run those). `docs/development/testing.md` has the per-suite table;
 the rules that decide where a test goes:
 
@@ -1068,45 +913,15 @@ the rules that decide where a test goes:
 
 `docs/` is the documentation site, rendered by **notabene** (`@z29k/notabene`, the sibling
 project) and published to GitHub Pages at <https://z29k.github.io/rescriptum/>. Two spaces,
-two audiences, and they do not interleave:
+two audiences: `docs/guide/` is **using** rescriptum, `docs/development/` is **working on**
+it. Nothing in `src/` knows the site exists.
 
-- `docs/guide/` — **using** rescriptum: install, quick start, installer media, writing
-  answers (`answers/`), running it (`operations/`), exhaustive tables (`reference/`).
-- `docs/development/` — **working on** rescriptum: constraints, architecture, request
-  lifecycle, internals per module, testing, building, releasing, traps.
-
-This file and `docs/development/` overlap deliberately: this one is condensed for agents,
+This file and `docs/development/` overlap deliberately — this one is condensed for agents,
 that one is written for a human reading in order. **A change to a constraint belongs in
-both.** A user-visible change should land with its documentation in the same PR.
+both**, and a user-visible change should land with its documentation in the same PR.
 
-- `notabene.config.mjs` — the site configuration. `review: "approve"` means an agent
-  *proposes* doc edits and a human validates each against its real git diff at `/review`.
-  `i18n: { locales: ["en","fr"], strategy: "suffix" }` is what makes the FR siblings work.
-  **`tagline` is a plain string, not a per-locale map** — notabene does not accept a map
-  there, and one stringifies to `[object Object]` in the topbar and `llms.txt`.
-- `assets/rescriptum-logo.jpg` — the logo (a sealed rescript on a floppy disk), used as the
-  topbar logo, the favicon, the social card, and the README header.
-- `docs/.notabene/` — the comment and journal store, plain JSON, **committed**. The agent
-  protocol is `docs/.notabene/protocol.md`, pointed at from `AGENTS.md`.
-- `package.json` exists **only** for this. Nothing in `node_modules` is executed by the
-  published site or reaches the Rust binary. `npm audit` reports unfixable transitive
-  advisories in Astro/esbuild/sharp; they are development-only.
-- `.github/workflows/docs.yml` publishes from `main` (so docs normally ship with a
-  release; `workflow_dispatch` publishes a fix that should not wait). `ci.yml` has a
-  `docs` job that builds and runs `notabene lint` on every push.
-
-Writing conventions: relative `.md` links between pages (they become routes *and* stay
-clickable on GitHub), absolute GitHub URLs for repository files outside `docs/`, frontmatter
-`title` / `description` / `sidebar.order`, Mermaid in ` ```mermaid ` fences.
-
-From a French page, a link still uses the **base** name (`./selection.md`, never
-`./selection.fr.md`) — notabene resolves the locale — but the **anchor must be the French
-heading's slug**. `notabene lint` checks routes, **not anchors**: verify those against the
-built HTML.
-
-**Verify prose against the binary rather than against this file.** Every command output in
-`docs/` was captured from a real run; several passages in the older README had drifted from
-what the code actually prints.
+`docs/CLAUDE.md` holds the rest — the site configuration, the FR mirroring rules, the
+writing conventions and the anchor trap — and loads whenever you touch `docs/`.
 
 ## Language
 
@@ -1175,12 +990,9 @@ documentation quality as requirements rather than polish. Being public is not a 
 still ahead: it is the condition every change now lands under. A force-push is immediate and
 irreversible, and so is a published release.
 
-Deliverables per the spec: `src/main.rs` (split into modules if size warrants), `Cargo.toml`,
-a commented `examples/example.toml` covering `global` / `network` / `disk-setup`, `build.sh`,
-`deploy.sh`, a Rust `.gitignore`, and a license. The spec's "README covering purpose,
-cross-compilation, DSM deployment, ISO preparation and troubleshooting" is now `docs/`
-instead — the README had grown to 28 KB and was three documents wearing one coat. It is a
-landing page linking into the site.
+The spec's "README covering purpose, cross-compilation, DSM deployment, ISO preparation
+and troubleshooting" is now `docs/` instead — the README had grown to 28 KB and was three
+documents wearing one coat. It is a landing page linking into the site.
 
 Out of scope but documented rather than implemented: TLS (plain HTTP is fine on a
 trusted LAN — document the workaround for installer versions demanding a cert fingerprint) and

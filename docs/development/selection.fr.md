@@ -147,13 +147,22 @@ par machine, le débit s'effondre :
 | 2 000 | 311 req/s | 12 520 req/s |
 | 10 000 | — | 6 924 req/s |
 
-Un `stat` remplace tout le parcours, et un nouveau document est quand même pris en compte sans
-redémarrage — ce qui est la garantie que la spécification voulait réellement. Les radicaux
-normalisés sont calculés une fois par lecture du store, pas une fois par requête.
+Un `stat` remplace tout le parcours, et une nouvelle machine est quand même prise en compte
+sans redémarrage — ce qui est la garantie que la spécification voulait réellement. Les
+identités normalisées sont calculées une fois par lecture du store, pas une fois par requête.
 
-> **Le filet n'est pas redondant.** Éditer le *contenu* d'un fichier de groupe ne bouge aucun
-> mtime de répertoire, et un changement fait par un autre processus ne bouge aucun atomique en
-> mémoire. Un test d'intégration couvre exactement cela.
+> **Le filet n'est pas redondant, et il travaille plus qu'avant.** Éditer le *contenu* d'un
+> document ne bouge aucun mtime de répertoire ; en ajouter un *à l'intérieur* du répertoire
+> d'une machine non plus, puisque c'est un niveau sous le mtime surveillé ; et un changement
+> fait par un autre processus ne bouge aucun atomique en mémoire. Avec un répertoire par
+> identité, le filet est donc ce qui rattrape tout sauf l'apparition ou la disparition d'une
+> identité. Des tests couvrent chaque cas.
+>
+> Les chiffres ci-dessus ont été mesurés contre l'agencement plat. La lecture elle-même est
+> désormais un `readdir` par identité en plus du fichier qu'elle ouvrait déjà — de 28 ms à
+> 63 ms à 2 000 machines — que le cache amortit sur une seconde de requêtes, et qui n'a pas
+> déplacé le débit de façon mesurable. Cela reste la raison pour laquelle un groupe vaut
+> mieux qu'un répertoire par machine.
 
 Le coût restant à 10 000 documents est un balayage linéaire d'aiguilles précalculées — du CPU
 pur, aucun appel système. Regrouper les aiguilles par longueur et faire glisser une fenêtre

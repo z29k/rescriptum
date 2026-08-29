@@ -1,8 +1,8 @@
 # One machine's answer file.
 #
 # The filename is what matches: name it after the machine's MAC address, in any
-# separator style — `98-fa-9b-50-d8-10.toml`, `98:fa:9b:50:d8:10.toml` and
-# `98fa9b50d810.toml` all match the same machine. Both sides are lowercased and
+# separator style — directories named `98-fa-9b-50-d8-10`, `98:fa:9b:50:d8:10` and
+# `98fa9b50d810` all match the same machine. Both sides are lowercased and
 # stripped of non-alphanumerics before comparing.
 #
 # If this machine belongs to a group (see groups/), keep only the keys that differ from

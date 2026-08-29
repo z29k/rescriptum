@@ -6,7 +6,7 @@
 
 use super::{
     RawDefault, RawGroup, RawMachine, Snapshot, Store, StoreWrite, Version, invalid_format,
-    invalid_id, valid_format, valid_id,
+    invalid_id, invalid_machine_id, valid_format, valid_id, valid_machine_id,
 };
 use rusqlite::Connection;
 use std::io;
@@ -177,9 +177,12 @@ impl Store for SqliteStore {
             .map_err(to_io)?;
         let rows = stmt
             .query_map([], |r| {
+                let id: String = r.get(0)?;
+                let format: String = r.get(1)?;
                 Ok(RawMachine {
-                    id: r.get(0)?,
-                    format: r.get(1)?,
+                    origin: format!("db:machines/{id}.{format}"),
+                    id,
+                    format,
                     body: r.get(2)?,
                 })
             })
@@ -211,8 +214,10 @@ impl Store for SqliteStore {
             .map_err(to_io)?;
         let rows = stmt
             .query_map([DEFAULT_KEY], |r| {
+                let format: String = r.get(0)?;
                 Ok(RawDefault {
-                    format: r.get(0)?,
+                    origin: format!("db:default.{format}"),
+                    format,
                     body: r.get(1)?,
                 })
             })
@@ -231,8 +236,11 @@ impl Store for SqliteStore {
 
 impl StoreWrite for SqliteStore {
     fn put_machine(&self, id: &str, format: &str, body: &str) -> io::Result<()> {
-        if !valid_id(id) {
-            return Err(invalid_id(id));
+        // The reserved names are a *file* layout's problem, refused here too: a database
+        // that accepted one would export into a directory that cannot represent it, and
+        // `export` has to stay a way out.
+        if !valid_machine_id(id) {
+            return Err(invalid_machine_id(id));
         }
         if !valid_format(format) {
             return Err(invalid_format(format));
@@ -249,8 +257,8 @@ impl StoreWrite for SqliteStore {
     }
 
     fn delete_machine(&self, id: &str, format: &str) -> io::Result<bool> {
-        if !valid_id(id) {
-            return Err(invalid_id(id));
+        if !valid_machine_id(id) {
+            return Err(invalid_machine_id(id));
         }
         let n = self
             .lock()

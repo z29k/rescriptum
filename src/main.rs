@@ -84,6 +84,7 @@ fn main() -> ExitCode {
         Some((cmd, _)) if cmd == "check" => return cli::check(&cfg),
         Some((cmd, rest)) if cmd == "import" => return cli::import(&cfg, rest),
         Some((cmd, rest)) if cmd == "export" => return cli::export(&cfg, rest),
+        Some((cmd, rest)) if cmd == "migrate" => return cli::migrate(&cfg, rest),
         Some((cmd, rest)) if cmd == "media" => return cli::media(&cfg, rest),
         Some((cmd, rest)) if cmd == "boot" => return cli::boot(&cfg, rest),
         Some((cmd, _)) => {

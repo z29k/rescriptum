@@ -17,6 +17,10 @@ pub struct RawMachine {
     /// The document's format, as a file extension: `toml`, `yaml`, `ks`, …
     pub format: String,
     pub body: String,
+    /// Where this came from, for diagnostics — a path, or a database URL. With a
+    /// directory per identity the filename is the operator's to choose, so the
+    /// identifier alone no longer says which document failed to parse.
+    pub origin: String,
 }
 
 /// One group document. `members`, `extends` and `match` are read from the body itself,
@@ -35,6 +39,8 @@ pub struct RawGroup {
 pub struct RawDefault {
     pub format: String,
     pub body: String,
+    /// Where this came from, for diagnostics — a path, or a database URL.
+    pub origin: String,
 }
 
 /// Everything needed to answer requests, as of one point in time.
@@ -71,6 +77,37 @@ pub fn valid_id(id: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | ':'))
 }
 
+/// Names the file store keeps for itself, at the top of the answers directory.
+///
+/// A machine called `groups` would be a directory called `groups`, which is where the
+/// groups live — so its documents would come back as a rack's. Refused in **both**
+/// stores rather than only the one that has the problem: a database that accepted the
+/// name would export into a directory that cannot represent it, and `export` has to
+/// stay a way out.
+pub const RESERVED_MACHINE_IDS: [&str; 2] = ["groups", "default"];
+
+/// Is this usable as a machine id? `valid_id`, minus the names the layout reserves.
+pub fn valid_machine_id(id: &str) -> bool {
+    valid_id(id)
+        && !RESERVED_MACHINE_IDS
+            .iter()
+            .any(|r| id.eq_ignore_ascii_case(r))
+}
+
+/// The error to return when `valid_machine_id` says no.
+pub fn invalid_machine_id(id: &str) -> io::Error {
+    if valid_id(id) {
+        return io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "{id:?} is reserved: the answers directory keeps {} for itself",
+                RESERVED_MACHINE_IDS.join(" and ")
+            ),
+        );
+    }
+    invalid_id(id)
+}
+
 /// The error to return when `valid_id` says no.
 pub fn invalid_id(id: &str) -> io::Error {
     io::Error::new(
@@ -96,9 +133,9 @@ pub trait Store: Send + Sync {
 /// The write half, used by the admin API. Separate from `Store` because serving
 /// answers never needs it — a read-only deployment simply does not provide one.
 /// A document is keyed by **what it is for**, which is a machine *and* an operating
-/// system — `98fa9b50d810.toml` is that machine as Proxmox, `98fa9b50d810.preseed` is
-/// the same hardware as Debian. They are two answers to two different questions and
-/// both may exist at once, so every operation names a format.
+/// system — one document is that machine as Proxmox, another is the same hardware as
+/// Debian. They are two answers to two different questions and both may exist at once,
+/// so every operation names a format.
 pub trait StoreWrite: Store {
     fn put_machine(&self, id: &str, format: &str, body: &str) -> io::Result<()>;
     fn delete_machine(&self, id: &str, format: &str) -> io::Result<bool>;

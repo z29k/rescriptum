@@ -4,6 +4,8 @@
 //! this project actually has to avoid — an unattended install that hangs at 3am —
 //! lives in the wiring, not in the pure functions.
 
+mod common;
+
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
@@ -42,12 +44,9 @@ impl Server {
         ));
         fs::create_dir_all(&dir).expect("create answers dir");
         for (name, contents) in files {
-            let path = dir.join(name);
-            // Names may be nested, e.g. "groups/rack-a.toml".
-            if let Some(parent) = path.parent() {
-                fs::create_dir_all(parent).expect("create answer subdirectory");
-            }
-            fs::write(&path, contents).expect("write answer file");
+            // Named the way an operator thinks of them — "98fa9b50d810.toml",
+            // "groups/rack-a.toml" — and put where the layout keeps them.
+            common::seed(&dir, name, contents);
         }
 
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_rescriptum"));
@@ -221,11 +220,14 @@ fn a_file_dropped_in_later_is_picked_up_without_a_restart() {
     let body = installer_body("98:fa:9b:50:d8:10");
     assert!(status_line(&s.post(&body)).starts_with("HTTP/1.1 404"));
 
-    fs::write(
-        s.dir().join("98fa9b50d810.toml"),
+    // A machine that was not there at all, so its directory arrives too — which is what
+    // moves the answers directory's mtime and makes this immediate rather than a wait
+    // for the backstop.
+    common::seed(
+        s.dir(),
+        "98fa9b50d810.toml",
         "marker = \"added-at-runtime\"\n",
-    )
-    .unwrap();
+    );
     let r = s.post(&body);
     assert!(status_line(&r).starts_with("HTTP/1.1 200"), "{r}");
     assert!(body_of(&r).contains("added-at-runtime"), "{r}");
@@ -554,7 +556,7 @@ fn a_group_edited_in_place_is_picked_up_without_a_restart() {
     assert!(body_of(&r).contains("\"fr\""), "{r}");
 
     fs::write(
-        s.dir().join("groups/rack-a.toml"),
+        common::document_path(s.dir(), "groups/rack-a.toml"),
         "members = [\"98:fa:9b:50:d8:10\"]\n[global]\nkeyboard = \"us\"\n",
     )
     .unwrap();
@@ -571,7 +573,7 @@ fn a_broken_answer_file_is_a_500_not_a_wrong_install() {
     assert!(status_line(&r).starts_with("HTTP/1.1 500"), "{r}");
 
     // And the server keeps serving everyone else.
-    fs::write(s.dir().join("default.toml"), "marker = \"ok\"\n").unwrap();
+    common::seed(s.dir(), "default.toml", "marker = \"ok\"\n");
     let r = s.post(&installer_body("11:22:33:44:55:66"));
     assert!(status_line(&r).starts_with("HTTP/1.1 200"), "{r}");
 }
@@ -1207,11 +1209,11 @@ fn a_machine_can_report_that_it_is_installed_and_stop_being_claimed() {
     );
 
     // The claim is gone…
-    assert!(!s.dir().join("98-fa-9b-50-d8-10.ipxe").exists());
+    assert!(!common::document_path(s.dir(), "98-fa-9b-50-d8-10.ipxe").exists());
     // …the document is not, so re-arming is a rename…
-    assert!(s.dir().join("installed-98-fa-9b-50-d8-10.ipxe").exists());
+    assert!(common::document_path(s.dir(), "installed-98-fa-9b-50-d8-10.ipxe").exists());
     // …and the machine's own answer, which the installer reads, is untouched.
-    assert!(s.dir().join("98-fa-9b-50-d8-10.toml").exists());
+    assert!(common::document_path(s.dir(), "98-fa-9b-50-d8-10.toml").exists());
 
     // Twice is not an error: the webhook may be retried, and a machine installed from the
     // menu was never claimed at all.
@@ -1285,9 +1287,9 @@ fn a_kickstart_or_a_preseed_can_report_installed_with_one_curl() {
         response.contains("installed-98-fa-9b-50-d8-10"),
         "{response}"
     );
-    assert!(!s.dir().join("98-fa-9b-50-d8-10.ipxe").exists());
+    assert!(!common::document_path(s.dir(), "98-fa-9b-50-d8-10.ipxe").exists());
     // The kickstart itself is not an `.ipxe` and is left exactly where it was.
-    assert!(s.dir().join("98-fa-9b-50-d8-10.ks").exists());
+    assert!(common::document_path(s.dir(), "98-fa-9b-50-d8-10.ks").exists());
 
     // And a wrong bearer is refused, with nothing left to disarm anyway.
     let response = s.raw(

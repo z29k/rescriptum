@@ -8,7 +8,7 @@ sidebar:
 
 # Testing
 
-571 tests. `cargo test` runs all of them in about twenty seconds — most of that is
+582 tests. `cargo test` runs all of them in about twenty seconds — most of that is
 `tests/tftp.rs`, which waits on real UDP timeouts because that is what it is testing.
 
 **`cargo test` does not run the harnesses that matter most**: the boot rig, the DSM
@@ -27,13 +27,13 @@ cargo test --all-features                 # what CI runs
 | Suite | Cases | For |
 |---|---|---|
 | `tests/integration.rs` | 48 | the real binary over a real socket |
-| `tests/cli.rs` | 47 | `render`, `check`, `import`, `export`, `config` and the env file — against the real binary |
+| `tests/cli.rs` | 50 | `render`, `check`, `import`, `export`, `config` and the env file — against the real binary |
 | `tests/media.rs` | 45 | boot media against the real binary, with both listeners up |
 | `src/config.rs` | 42 | the environment, what refuses to start, and which of the file and the environment wins |
-| `tests/stores.rs` | 39 | **every behaviour, against both stores** |
+| `tests/stores.rs` | 45 | **every behaviour, against both stores** |
 | `tests/tftp.rs` | 30 | TFTP over real UDP: the turn-taking, and what a failed bind must not cost |
-| `src/select.rs` | 27 | normalization, scoring, layering, template filling |
-| `src/format/mod.rs` | 27 | parsing, merging, control keys, endpoint aliases |
+| `src/select.rs` | 28 | normalization, scoring, layering, template filling |
+| `src/format/mod.rs` | 28 | parsing, merging, control keys, endpoint aliases |
 | `tests/admin.rs` | 26 | the admin API end to end, formats included |
 | `src/envfile.rs` | 23 | the env-file parser and writer, and what each refuses |
 | `src/facts.rs` | 22 | query parsing, JSON flattening, globbing |
@@ -44,6 +44,20 @@ cargo test --all-features                 # what CI runs
 | `src/log.rs` | 4 | level parsing, and the timestamp arithmetic |
 | `src/boot/*.rs` | 128 | the ISO reader, probing, the catalogue, image sources, patch plans, the menu, the loader table, DHCP snippets, cpio and SHA-256 |
 | `src/admin.rs`, `src/capture.rs`, `src/store/mod.rs` | 21 | unit-level behaviour |
+
+## `tests/common/mod.rs` — the fixtures every suite shares
+
+Answers are stored as a **directory per identity**, so a fixture cannot just be a filename
+any more. `seed()` takes the name a test thinks in — `98fa9b50d810.toml`,
+`groups/rack-a.toml`, `default.toml` — and writes it **through `StoreWrite`**, so it lands
+exactly where a write from the admin API would and cannot drift from the layout. A name the
+store would refuse (an extension nobody serves) is written literally instead, because those
+fixtures exist precisely to prove that a stray file answers nothing.
+
+One copy, not one per suite — the same reasoning that makes `loaders.rs` a single table
+read by both TFTP and the DHCP snippet. Four copies of a mapping are four chances for a
+fixture to land somewhere the server does not look, and a test that seeds nothing passes
+for the wrong reason.
 
 ## `tests/stores.rs` — the conformance suite
 

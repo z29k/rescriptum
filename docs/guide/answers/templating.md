@@ -1,6 +1,6 @@
 ---
 title: Templating
-description: Placeholders filled from the request, so one group file covers five hundred machines — and why a missing value is an error rather than an empty string.
+description: Placeholders filled from the request, so one group document covers five hundred machines — and why a missing value is an error rather than an empty string.
 sidebar:
   label: Templating
   order: 4
@@ -9,10 +9,10 @@ sidebar:
 # Templating
 
 Grouping removes the duplication between machines that agree. Templating removes the last
-reason to write a file per machine at all: the values that must differ.
+reason to write a document per machine at all: the values that must differ.
 
 ```toml
-# answers/groups/rack-a.toml
+# answers/groups/rack-a/proxmox.toml
 members = ["98:fa:9b:50:d8:10", "98:fa:9b:50:d8:11", "…"]
 
 [global]
@@ -22,7 +22,7 @@ fqdn = "node-{{ serial }}.example.com"
 filter.ID_NET_NAME_MAC = "*{{ mac }}"
 ```
 
-Five hundred machines, one file. Without this, a per-machine hostname means a document per
+Five hundred machines, one document. Without this, a per-machine hostname means a document per
 machine — and five hundred documents that differ in one line each.
 
 Placeholders work in **every** format: TOML, YAML, JSON, XML, kickstart, preseed.
@@ -49,7 +49,7 @@ Whitespace inside the braces is optional: `{{serial}}` and `{{ serial }}` are th
 
 `{{ machine }}` is the identifier of the machine *document* that matched — so it is only
 available when the machine has a document of its own. A machine claimed by a group's
-`members` list, with no file next to it, has no `machine` value and rendering fails with
+`members` list, with no directory of its own, has no `machine` value and rendering fails with
 `template needs {{ machine }}, but this request carries no "machine"`.
 
 In a group, use a request fact instead:

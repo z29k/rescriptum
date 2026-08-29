@@ -248,10 +248,14 @@ auth-token = "nas:s3cr3t"
 $ rescriptum config set RESCRIPTUM_INSTALLED_TOKEN=nas:s3cr3t
 ```
 
-That is the whole of it. The machine finishes, says so, and `98fa9b50d810.ipxe` becomes
-`installed-98fa9b50d810.ipxe` — which no longer matches it, because the prefix is part of
-the name that gets compared. It boots its own disk from then on, and re-arming it is
-renaming the file back.
+That is the whole of it. The machine finishes, says so, and its `.ipxe` moves from
+`98fa9b50d810/` to `installed-98fa9b50d810/` — a directory name that no longer matches it,
+because the prefix is part of the name that gets compared. It boots its own disk from then
+on, and re-arming it is moving the document back.
+
+The disarmed document goes to a **sibling directory** rather than staying inside the
+machine's own, so `98fa9b50d810/` keeps meaning "this machine's configuration" and nothing
+in it has to be read as switched off.
 
 **No token, no endpoint** — absent rather than open. Without one, `/installed` is an
 ordinary answer request like any other path, which is what keeps a URL bakeable into an
@@ -262,8 +266,9 @@ Three things it will not do, and each is deliberate:
 - **It never touches a group.** A group claims a whole rack, and one machine finishing its
   install must not disarm its neighbours. The lookup does not consult groups at all rather
   than filtering them out afterwards.
-- **It never touches anything but the `.ipxe`.** The machine's own `.toml` is what the
-  installer read to build it, and it stays as the record of how.
+- **It never touches anything but the `.ipxe`.** The machine's own `.toml`, beside it in
+  the same directory, is what the installer read to build it, and it stays as the record of
+  how.
 - **It moves, it does not delete.** This is the one path where something arriving over the
   network changes the answer set, so nothing it does is irreversible.
 
@@ -374,7 +379,7 @@ first. And **`:uristring`** on every SMBIOS string, because `${manufacturer}` ex
 
 That final `||` is the whole of "a menu is the default answer": a machine something
 claims gets its own unattended answer, and a machine nothing claims falls through to the
-menu. It is `default.toml`'s job description word for word, applied to a different
+menu. It is `default/`'s job description word for word, applied to a different
 format.
 
 ## The menu

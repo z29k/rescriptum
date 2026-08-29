@@ -34,8 +34,15 @@
 //!   the record of how the machine was built.
 //! - **Moved, not deleted.** The document is re-put under an `installed-` prefix, which no
 //!   longer matches the machine (the prefix is part of the normalized needle), and the
-//!   original is removed. Re-arming is renaming it back. Nothing is destroyed, which
+//!   original is removed. Re-arming is moving it back. Nothing is destroyed, which
 //!   matters for a thing triggered by a network request.
+//!
+//!   With a directory per identity that prefix names a **sibling directory** —
+//!   `installed-98-fa-9b-50-d8-10/boot.ipxe` — rather than a file inside the machine's
+//!   own. That is deliberate twice over: the machine's directory stays the machine's
+//!   configuration, and no new rule is needed to keep the disarmed document from
+//!   answering, because it is the directory name that identifies a machine and this one
+//!   identifies nothing.
 //!
 //! ## Off unless configured
 //!
@@ -72,7 +79,7 @@ impl Disarmed {
         } else {
             self.moved
                 .iter()
-                .map(|(from, to)| format!("{from}.ipxe -> {to}.ipxe"))
+                .map(|(from, to)| format!("{from} -> {to} (ipxe)"))
                 .collect::<Vec<_>>()
                 .join(", ")
         }
@@ -200,6 +207,21 @@ mod tests {
         .into_bytes()
     }
 
+    /// Write one document where the layout keeps it: `<id>.<ext>` names the machine and
+    /// the format, and the file inside its directory is named for us.
+    fn document(dir: &std::path::Path, name: &str, body: &str) -> std::path::PathBuf {
+        let named = std::path::Path::new(name);
+        let (id, ext) = (
+            named.file_stem().unwrap().to_str().unwrap(),
+            named.extension().unwrap().to_str().unwrap(),
+        );
+        let dir = dir.join(id);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(format!("{}.{ext}", crate::format::canonical_stem(ext)));
+        std::fs::write(&path, body).unwrap();
+        path
+    }
+
     fn answers_for(dir: &std::path::Path) -> (Answers, Arc<FileStore>) {
         let store = Arc::new(FileStore::new(dir));
         (Answers::new(store.clone()), store)
@@ -208,8 +230,8 @@ mod tests {
     #[test]
     fn the_machine_that_reported_stops_being_claimed() {
         let dir = scratch("basic");
-        std::fs::write(dir.join("98-fa-9b-50-d8-10.ipxe"), "#!ipxe\nchain x\n").unwrap();
-        std::fs::write(dir.join("98-fa-9b-50-d8-10.toml"), "[global]\n").unwrap();
+        document(&dir, "98-fa-9b-50-d8-10.ipxe", "#!ipxe\nchain x\n");
+        document(&dir, "98-fa-9b-50-d8-10.toml", "[global]\n");
         let (answers, store) = answers_for(&dir);
 
         let facts = Facts::new(None, &webhook("98:fa:9b:50:d8:10"));
@@ -223,13 +245,14 @@ mod tests {
         );
 
         // The claim is gone…
-        assert!(!dir.join("98-fa-9b-50-d8-10.ipxe").exists());
-        // …the document is not, and re-arming is renaming it back.
-        assert!(dir.join("installed-98-fa-9b-50-d8-10.ipxe").exists());
+        assert!(!dir.join("98-fa-9b-50-d8-10/boot.ipxe").exists());
+        // …the document is not, and re-arming is moving it back.
+        assert!(dir.join("installed-98-fa-9b-50-d8-10/boot.ipxe").exists());
         // **And the machine's own answer is untouched.** Deleting it would throw away the
         // record of how this machine was built, and the installer is the thing that reads
-        // it — not the loader.
-        assert!(dir.join("98-fa-9b-50-d8-10.toml").exists());
+        // it — not the loader. It is also why the disarmed document goes to a directory
+        // of its own: the machine's directory is still the machine's.
+        assert!(dir.join("98-fa-9b-50-d8-10/proxmox.toml").exists());
     }
 
     #[test]
@@ -237,7 +260,7 @@ mod tests {
         // The property the prefix exists for. Without it the rename is decoration and the
         // machine reinstalls anyway, which is the whole failure being fixed.
         let dir = scratch("nomatch");
-        std::fs::write(dir.join("98-fa-9b-50-d8-10.ipxe"), "#!ipxe\n").unwrap();
+        document(&dir, "98-fa-9b-50-d8-10.ipxe", "#!ipxe\n");
         let (answers, store) = answers_for(&dir);
         let facts = Facts::new(None, &webhook("98:fa:9b:50:d8:10"));
 
@@ -257,13 +280,13 @@ mod tests {
         // finishing its install must not disarm its neighbours. This is why the lookup
         // never consults groups rather than filtering them out afterwards.
         let dir = scratch("group");
-        std::fs::create_dir_all(dir.join("groups")).unwrap();
-        std::fs::write(
-            dir.join("groups/rack-a.ipxe"),
+        document(
+            &dir.join("groups"),
+            "rack-a.ipxe",
             "# answer: members = 98:fa:9b:50:d8:10\n#!ipxe\n",
-        )
-        .unwrap();
-        std::fs::write(dir.join("default.ipxe"), "#!ipxe\n").unwrap();
+        );
+        std::fs::create_dir_all(dir.join("default")).unwrap();
+        std::fs::write(dir.join("default/boot.ipxe"), "#!ipxe\n").unwrap();
         let (answers, store) = answers_for(&dir);
 
         let facts = Facts::new(None, &webhook("98:fa:9b:50:d8:10"));
@@ -279,8 +302,8 @@ mod tests {
 
         let done = disarm(&answers, store.as_ref(), &facts).expect("disarm");
         assert!(done.moved.is_empty(), "{:?}", done.moved);
-        assert!(dir.join("groups/rack-a.ipxe").exists());
-        assert!(dir.join("default.ipxe").exists());
+        assert!(dir.join("groups/rack-a/boot.ipxe").exists());
+        assert!(dir.join("default/boot.ipxe").exists());
     }
 
     #[test]
@@ -288,12 +311,12 @@ mod tests {
         // The webhook may arrive twice, and a machine may have been installed from the
         // menu rather than from a claim. Neither is a failure.
         let dir = scratch("none");
-        std::fs::write(dir.join("aa-bb-cc-dd-ee-ff.ipxe"), "#!ipxe\n").unwrap();
+        document(&dir, "aa-bb-cc-dd-ee-ff.ipxe", "#!ipxe\n");
         let (answers, store) = answers_for(&dir);
         let facts = Facts::new(None, &webhook("98:fa:9b:50:d8:10"));
         let done = disarm(&answers, store.as_ref(), &facts).expect("disarm");
         assert!(done.moved.is_empty());
-        assert!(dir.join("aa-bb-cc-dd-ee-ff.ipxe").exists());
+        assert!(dir.join("aa-bb-cc-dd-ee-ff/boot.ipxe").exists());
     }
 
     #[test]

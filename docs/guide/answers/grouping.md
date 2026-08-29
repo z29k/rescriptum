@@ -1,6 +1,6 @@
 ---
 title: Groups and merging
-description: A rack shares one file; a machine that differs carries only its difference. What merges, what replaces, and why arrays replace.
+description: A rack shares one document; a machine that differs carries only its difference. What merges, what replaces, and why arrays replace.
 sidebar:
   label: Grouping
   order: 3
@@ -14,16 +14,20 @@ once per machine is how a fleet's configuration drifts. So answers compose.
 ```
 answers/
 ├── groups/
-│   ├── base.toml              shared by everything
-│   └── rack-a.toml            extends = "base"; members = [ … ]
-├── 98-fa-9b-50-d8-10.toml     one machine's overrides (optional)
-└── default.toml               only when nothing else matches
+│   ├── base/
+│   │   └── proxmox.toml       shared by everything
+│   └── rack-a/
+│       └── proxmox.toml       extends = "base"; members = [ … ]
+├── 98-fa-9b-50-d8-10/
+│   └── proxmox.toml           one machine's overrides (optional)
+└── default/
+    └── proxmox.toml           only when nothing else matches
 ```
 
 ## The shared part
 
 ```toml
-# answers/groups/rack-a.toml
+# answers/groups/rack-a/proxmox.toml
 members = [
   "98:fa:9b:50:d8:10",
   "98:fa:9b:50:d8:11",
@@ -46,7 +50,7 @@ disk-list  = ["sda", "sdb"]
 A machine that differs gets a document with **only the difference** in it:
 
 ```toml
-# answers/98-fa-9b-50-d8-10.toml
+# answers/98-fa-9b-50-d8-10/proxmox.toml
 [global]
 fqdn = "node01.example.com"
 
@@ -95,7 +99,7 @@ A group may extend another group, giving a chain — what every rack shares in o
 per-rack differences in another:
 
 ```toml
-# answers/groups/base.toml
+# answers/groups/base/proxmox.toml
 [global]
 mailto   = "ops@example.com"
 timezone = "Europe/Paris"
@@ -103,7 +107,7 @@ root-ssh-keys = ["ssh-ed25519 AAAA…REPLACE ops@example.com"]
 ```
 
 ```toml
-# answers/groups/rack-a.toml
+# answers/groups/rack-a/proxmox.toml
 extends = "base"
 members = ["98:fa:9b:50:d8:10", "98:fa:9b:50:d8:11"]
 
@@ -117,7 +121,7 @@ Layers then apply `base` → `rack-a` → machine document.
 machine that needs a group it is not listed in:
 
 ```toml
-# answers/98-fa-9b-50-d8-99.toml
+# answers/98-fa-9b-50-d8-99/proxmox.toml
 extends = "rack-a"          # even though rack-a does not list this MAC
 
 [global]
@@ -144,7 +148,7 @@ once, and the broken group is **dropped rather than half-applied**:
 2026-08-24T08:43:36Z - warning: group "rack-a": extends unknown group "base"
 ```
 
-One bad group file does not stop the other racks from installing. A machine that
+One bad group does not stop the other racks from installing. A machine that
 *needed* that group gets a loud `500` rather than a half-built answer — serving a
 configuration whose base is missing would install the machine half-configured, and nobody
 would find out until it was running.
@@ -167,9 +171,16 @@ is read**, and served afterwards as a prepared string. The common datacenter cas
 nothing per request. Adding a per-machine override buys a merge per request — worth it
 where it is needed, and worth avoiding where it is not.
 
+The other half of the same argument is what a *read* costs. The whole store is re-read at
+most once a second, and with a directory per identity that read is a `readdir` per machine
+on top of the file it already opened — measured at 2,000 machines on an M1 Pro, **28 ms
+before the layout changed and 63 ms after**. It is amortised over a second's worth of
+requests either way, and the throughput figures above did not move measurably; but a group
+that needs no per-machine directory avoids that cost too.
+
 ## Next
 
-- [Templating](./templating.md) — `{{ serial }}` removes the remaining reason for a file
-  per machine.
+- [Templating](./templating.md) — `{{ serial }}` removes the remaining reason for a
+  directory per machine.
 - [Validating](./validating.md) — a merged answer is a document nobody wrote; look at it
   before a rack does.

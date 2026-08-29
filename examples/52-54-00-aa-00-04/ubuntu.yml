@@ -1,7 +1,7 @@
 # Ubuntu autoinstall for one machine — spelled `.yml` rather than `.yaml`.
 #
 # Both are YAML and both are served by /ubuntu/, /autoinstall/, /cloudinit/ and
-# /nocloud/. But they are DIFFERENT KEYS: a `.yml` machine file will not layer onto a
+# /nocloud/. But they are DIFFERENT KEYS: a `.yml` machine document will not layer onto a
 # `.yaml` group, because `extends` and merging resolve within one format. Pick one
 # spelling per fleet and stay with it; this file exists to show that the other is
 # accepted, not to recommend mixing them.
