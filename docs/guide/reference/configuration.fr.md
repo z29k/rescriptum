@@ -1,6 +1,6 @@
 ---
 title: Configuration
-description: Chaque variable d'environnement, sa valeur par défaut, et ce qui arrive quand on se trompe.
+description: Chaque variable d'environnement, sa valeur par défaut, les deux formats de fichier qui peuvent les fournir, et ce qui arrive quand on se trompe.
 sidebar:
   label: Configuration
   order: 1
@@ -8,14 +8,18 @@ sidebar:
 
 # Configuration
 
-Des variables d'environnement — et, en option, un fichier d'où en lire une partie. Il n'y a
-pas de *format* de configuration à apprendre ni de ligne de commande à se tromper.
+Des variables d'environnement — et, en option, un fichier d'où les lire, dans l'une de deux
+formes. Il n'y a pas de ligne de commande à se tromper, et les variables *sont* toute la
+configuration : les deux formats de fichier règlent exactement les mêmes choses sous
+exactement les mêmes règles, donc rien de ce qu'on écrit dans un fichier ne peut signifier
+quelque chose que l'environnement ne dirait pas.
 
 ## Les variables
 
 | Variable | Défaut | Signification |
 |---|---|---|
-| `RESCRIPTUM_ENV_FILE` | non défini | Lire aussi les valeurs par défaut depuis ce fichier — voir [plus bas](#le-fichier-denvironnement) |
+| `RESCRIPTUM_CONFIG` | non défini | Lire les valeurs par défaut depuis ce fichier **TOML** — voir [plus bas](#le-fichier-toml) |
+| `RESCRIPTUM_ENV_FILE` | non défini | Lire les valeurs par défaut depuis ce fichier `CLÉ=valeur` — voir [plus bas](#le-fichier-denvironnement) |
 | `RESCRIPTUM_STORE` | `files` | `files` (un répertoire) ou `sqlite` (une base) |
 | `RESCRIPTUM_ANSWERS_DIR` | `/srv/answers` | Répertoire des documents de réponse |
 | `RESCRIPTUM_DB_PATH` | `/srv/answers.db` | Chemin de la base, quand `RESCRIPTUM_STORE=sqlite` |
@@ -93,6 +97,99 @@ qu'il ne peut pas signaler quelque chose.
 La rotation vous incombe. Sous systemd il n'y a rien à faire, le log part dans le journal ;
 avec un fichier, pointez `logrotate` dessus avec `copytruncate`.
 
+## Le fichier TOML
+
+`RESCRIPTUM_CONFIG` nomme un fichier en TOML qui règle les mêmes variables, dans une forme
+faite pour être lue. C'est celui vers lequel se tourner quand **une personne édite le
+fichier à la main** — sur un NAS, dans File Station ou via SMB — c'est-à-dire exactement là
+où `RESCRIPTUM_ANSWERS_DIR=…` sur chaque ligne se lit mal, et où le mot « environnement »
+envoie chercher un shell qui n'existe pas.
+
+```toml
+# /etc/rescriptum.toml   (chmod 600, appartenant à root)
+answers_dir = "/srv/answers"
+listen_addr = "0.0.0.0:8000"
+log         = "problems"          # all | problems | off
+
+[store]
+kind    = "sqlite"
+db_path = "/srv/answers.db"
+
+[server]
+workers         = 2
+max_connections = 2048
+timeout_secs    = 10
+
+[admin]
+addr  = "127.0.0.1:8001"
+token = "…"
+
+[answer]
+token       = "…"
+capture_dir = "/var/lib/rescriptum/captures"
+```
+
+```console
+$ RESCRIPTUM_CONFIG=/etc/rescriptum.toml rescriptum
+2026-08-29T12:42:02Z - reading configuration defaults from /etc/rescriptum.toml (8 set)
+```
+
+Toutes les règles du fichier d'environnement valent ici aussi : **jamais découvert,
+seulement nommé** (il n'y a pas de `./rescriptum.toml`) ; **l'environnement réel gagne** ;
+et **un fichier demandé et illisible est une erreur de démarrage**, jamais un
+avertissement.
+
+**Placez-le hors du répertoire de réponses.** Tout `.toml` servable à la racine de ce
+répertoire est un document réponse, et ce format partage l'extension — un fichier de
+configuration déposé là est signalé par `check` comme une réponse mal placée, et `migrate`
+propose de le déplacer. `/etc` est le foyer évident ; sur une installation empaquetée, le
+paquet en choisit un.
+
+### Les noms
+
+Le préfixe disparaît et les tables font le regroupement. Rien d'autre ne change : chaque
+ligne ci-dessous est la variable du même nom, et `rescriptum config` affiche les deux
+orthographes.
+
+| Dans le fichier | Variable |
+|---|---|
+| `answers_dir` | `RESCRIPTUM_ANSWERS_DIR` |
+| `listen_addr` | `RESCRIPTUM_LISTEN_ADDR` |
+| `log`, `log_file` | `RESCRIPTUM_LOG`, `RESCRIPTUM_LOG_FILE` |
+| `public_host` | `RESCRIPTUM_PUBLIC_HOST` |
+| `user`, `group` | `RESCRIPTUM_USER`, `RESCRIPTUM_GROUP` |
+| `store.kind`, `store.db_path` | `RESCRIPTUM_STORE`, `RESCRIPTUM_DB_PATH` |
+| `server.workers`, `server.max_connections`, `server.timeout_secs` | `RESCRIPTUM_WORKERS`, `RESCRIPTUM_MAX_CONNECTIONS`, `RESCRIPTUM_TIMEOUT_SECS` |
+| `admin.addr`, `admin.token` | `RESCRIPTUM_ADMIN_ADDR`, `RESCRIPTUM_ADMIN_TOKEN` |
+| `answer.token`, `answer.capture_dir` | `RESCRIPTUM_ANSWER_TOKEN`, `RESCRIPTUM_CAPTURE_DIR` |
+| `media.dir`, `media.addr`, `media.timeout_secs`, `media.max_connections` | les quatre `RESCRIPTUM_MEDIA_*` |
+| `boot.dir`, `boot.allow`, `boot.unclaimed`, `boot.timeout_secs`, `boot.logo`, `boot.title` | les six `RESCRIPTUM_BOOT_*` |
+| `tftp.addr`, `tftp.port_range`, `tftp.blksize` | les trois `RESCRIPTUM_TFTP_*` |
+| `installed.token` | `RESCRIPTUM_INSTALLED_TOKEN` |
+
+### Le format
+
+| | |
+|---|---|
+| N'importe quel scalaire TOML | un nombre peut s'écrire en nombre (`workers = 2`) ou en chaîne ; les deux arrivent au serveur comme le même réglage |
+| Un commentaire `#` | n'importe où, y compris en fin de ligne — contrairement au fichier d'environnement, qui n'a pas d'échappements et ne peut donc pas en avoir |
+| Une valeur avec un `#`, un guillemet ou une espace | sans problème, échappée comme TOML échappe, et relue à l'identique |
+| `""` | **non défini** — la même règle qu'une variable exportée mais vide, et c'est ce qui permet à `config unset` de vider une ligne au lieu de supprimer le paragraphe qui la documente |
+| La même clé deux fois | refusée par TOML lui-même, donc le fichier ne se charge pas |
+| Une clé que ce programme ne lit pas | un avertissement la nommant : `admin.tokenn` est attrapé au lieu d'être ignoré |
+| Une liste ou une table là où une valeur est attendue | une **erreur de démarrage** : contrairement à une faute de frappe, elle visait un réglage réel, et servir la valeur par défaut alors que le fichier dit le contraire serait silencieux |
+| Un fichier lisible par d'autres | un avertissement avec son mode, parce qu'il peut contenir `admin.token` |
+
+Les avertissements nomment les clés et les chemins, jamais les valeurs.
+
+### Les deux fichiers à la fois
+
+Nommer les deux est une transition plutôt qu'un état stable : rien n'est refusé et l'ordre
+est annoncé au démarrage — **l'environnement bat le fichier TOML, qui bat le fichier
+d'environnement.** `rescriptum config` montre lequel des trois a mis chaque valeur en
+vigueur, et `config set` écrit dans le fichier TOML — celui que le serveur lit en premier,
+pour qu'une écriture ne puisse pas être une modification qui ne change rien en silence.
+
 ## Le fichier d'environnement
 
 `RESCRIPTUM_ENV_FILE` nomme un fichier contenant les mêmes variables. Il existe pour les
@@ -143,11 +240,13 @@ Les avertissements nomment les clés et les chemins, jamais les valeurs.
 
 ## Le lire et le modifier
 
-`rescriptum config` affiche chaque variable, sa valeur, et **qui du fichier ou de
-l'environnement l'y a mise** — la distinction qui compte, puisque le fichier fournit des
-valeurs par défaut et que l'environnement réel l'emporte. `config set` modifie le fichier
-comme on voudrait qu'il le soit : commentaires conservés, réglage commenté décommenté sur
-place plutôt que dupliqué, et refus avant toute écriture d'une modification qui laisserait
+`rescriptum config` affiche chaque variable, sa valeur, et **qui des fichiers ou de
+l'environnement l'y a mise** — la distinction qui compte, puisque les fichiers fournissent
+des valeurs par défaut et que l'environnement réel l'emporte. `config set` modifie le
+fichier comme on voudrait qu'il le soit, dans l'un ou l'autre format : commentaires
+conservés, réglage commenté décommenté sur place plutôt que dupliqué (fichier
+d'environnement) ou valeur remplacée là où elle est (TOML), et refus avant toute écriture
+d'une modification qui laisserait
 un serveur incapable de démarrer. C'est documenté dans la
 [référence de la ligne de commande](./cli.md#config), et c'est ce que
 l'[application DSM](../operations/synology.md#lapplication-de-bureau) pilote dessous.
@@ -160,7 +259,8 @@ l'[application DSM](../operations/synology.md#lapplication-de-bureau) pilote des
 | Uniquement des espaces | pareil, et les valeurs sont trimées |
 | Un nombre nul ou impossible à parser | retombe sur la **valeur par défaut**, plutôt que de démarrer un serveur qui accepte des connexions sans jamais répondre |
 | `RESCRIPTUM_STORE` avec toute autre valeur | un avertissement, et `files` est utilisé |
-| `RESCRIPTUM_ENV_FILE` nommant un fichier absent, illisible ou malformé | une **erreur** de démarrage |
+| `RESCRIPTUM_ENV_FILE` ou `RESCRIPTUM_CONFIG` nommant un fichier absent, illisible ou malformé | une **erreur** de démarrage |
+| Un réglage TOML recevant une liste ou une table | une **erreur** de démarrage, contrairement à une clé mal orthographiée, qui avertit |
 | `RESCRIPTUM_STORE=sqlite` sur un binaire construit sans la feature | une **erreur** au démarrage |
 
 ## Erreurs de démarrage
@@ -204,15 +304,17 @@ Ceux-ci sont affichés et le serveur continue :
 | `sqlite` | activée | Le store SQLite et l'API d'administration |
 | `boot` | activée | Le catalogue de médias, le lecteur ISO et le listener média |
 
-Mesuré sur ARMv7 (gnueabihf, plancher glibc 2.17). Remesurez plutôt que de citer ces
-chiffres : ils ont bougé d'environ 375 Ko quand cette cible est passée de musl à glibc.
+Mesuré sur ARMv7 (gnueabihf, plancher glibc 2.17), les quatre d'affilée le 2026-08-29.
+Remesurez plutôt que de citer ces chiffres : ils ont bougé d'environ 375 Ko quand cette
+cible est passée de musl à glibc, et le jeu qu'ils remplacent ici avait dérivé d'environ
+200 Ko.
 
 | Build | Octets |
 |---|---|
-| les deux (défaut) | 2 602 056 |
-| `sqlite` seule | 2 482 000 |
-| `boot` seule | 1 436 704 |
-| aucune | 1 316 648 |
+| les deux (défaut) | 2 813 712 |
+| `sqlite` seule | 2 557 592 |
+| `boot` seule | 1 649 048 |
+| aucune | 1 392 544 |
 
 ## Limites fixes
 

@@ -21,6 +21,7 @@ struct Case {
 impl Drop for Case {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.dir);
+        let _ = fs::remove_dir_all(self.etc());
     }
 }
 
@@ -50,6 +51,27 @@ impl Case {
             fs::create_dir_all(path.parent().expect("a parent")).expect("subdirectory");
             fs::write(&path, contents).expect("flat fixture");
         }
+    }
+
+    /// A scratch directory **beside** the answers directory, for the files that
+    /// configure the server rather than being served by it.
+    ///
+    /// This is not tidiness. Every servable `.toml` at the top of the answers directory
+    /// is a misplaced answer document, and a configuration file is not exempt — see
+    /// `a_configuration_file_inside_the_answers_directory_is_reported_as_a_stray_answer`,
+    /// which pins that rather than leaving it to be discovered.
+    fn etc(&self) -> PathBuf {
+        let mut name = self.dir.file_name().expect("a name").to_os_string();
+        name.push("-etc");
+        self.dir.with_file_name(name)
+    }
+
+    fn conf(&self, name: &str, body: &str) -> PathBuf {
+        let dir = self.etc();
+        fs::create_dir_all(&dir).expect("scratch etc");
+        let path = dir.join(name);
+        fs::write(&path, body).expect("configuration file");
+        path
     }
 
     fn run(&self, args: &[&str]) -> Run {
@@ -699,6 +721,188 @@ fn naming_the_env_file_inside_itself_says_why_it_does_nothing() {
     );
 }
 
+// ---- the toml file --------------------------------------------------------
+//
+// The same job as the env file, in the shape a person edits by hand on a NAS. What these
+// pin is that it is the *same* configuration: one set of settings, one precedence rule,
+// and a document that cannot mean anything the environment could not.
+
+#[test]
+fn a_toml_file_supplies_configuration() {
+    let c = Case::new(&[("groups/rack-a.toml", RACK)]);
+    let toml = c.conf(
+        "rescriptum.toml",
+        &format!(
+            "answers_dir = \"{}\"\n\n[server]\ntimeout_secs = 7\n",
+            c.dir.display()
+        ),
+    );
+
+    let r = c.run_env(&[("RESCRIPTUM_CONFIG", &toml)], &["check"]);
+    assert!(r.ok, "{r}");
+    assert!(r.stdout.contains("1 group(s)"), "{r}");
+    assert!(
+        r.stderr.contains("reading configuration defaults from"),
+        "the file it read must be named in the log\n{r}"
+    );
+}
+
+#[test]
+fn the_real_environment_wins_over_the_toml_file() {
+    // The rule the env file already has, and the reason both files are only defaults.
+    let c = Case::new(&[("98fa9b50d810.toml", "marker = \"from-the-flag\"\n")]);
+    let elsewhere = c.dir.join("unused");
+    fs::create_dir_all(&elsewhere).unwrap();
+    let toml = c.conf(
+        "rescriptum.toml",
+        &format!("answers_dir = \"{}\"\n", elsewhere.display()),
+    );
+
+    let r = c.run_env(
+        &[
+            ("RESCRIPTUM_CONFIG", &toml),
+            ("RESCRIPTUM_ANSWERS_DIR", c.dir.as_path()),
+        ],
+        &["render", "98:fa:9b:50:d8:10"],
+    );
+    assert!(r.ok, "{r}");
+    assert!(r.stdout.contains("from-the-flag"), "{r}");
+}
+
+#[test]
+fn the_toml_file_wins_over_the_env_file_and_says_that_both_are_named() {
+    // Naming both is a deployment mid-migration. Which one wins is the single question
+    // neither file can answer by itself, so the server answers it out loud.
+    let c = Case::new(&[("98fa9b50d810.toml", "marker = \"from-the-toml\"\n")]);
+    let elsewhere = c.dir.join("unused");
+    fs::create_dir_all(&elsewhere).unwrap();
+    let env = c.conf(
+        "rescriptum.env",
+        &format!("RESCRIPTUM_ANSWERS_DIR={}\n", elsewhere.display()),
+    );
+    let toml = c.conf(
+        "rescriptum.toml",
+        &format!("answers_dir = \"{}\"\n", c.dir.display()),
+    );
+
+    let r = c.run_env(
+        &[("RESCRIPTUM_CONFIG", &toml), ("RESCRIPTUM_ENV_FILE", &env)],
+        &["render", "98:fa:9b:50:d8:10"],
+    );
+    assert!(r.ok, "{r}");
+    assert!(r.stdout.contains("from-the-toml"), "{r}");
+    assert!(
+        r.stderr.contains("are both named"),
+        "an operator must be told which file is winning\n{r}"
+    );
+}
+
+#[test]
+fn a_toml_file_that_cannot_be_read_refuses_to_start() {
+    // Carrying on with defaults is what a named file exists to prevent, whichever format
+    // it is written in.
+    let c = Case::new(&[]);
+    let r = c.run_env(
+        &[("RESCRIPTUM_CONFIG", &c.dir.join("absent.toml"))],
+        &["check"],
+    );
+    assert!(!r.ok, "{r}");
+    assert!(r.stderr.contains("RESCRIPTUM_CONFIG"), "{r}");
+    assert!(r.stderr.contains("cannot be read"), "{r}");
+}
+
+#[test]
+fn a_malformed_toml_file_refuses_to_start_and_says_where() {
+    let c = Case::new(&[]);
+    let toml = c.conf("bad.toml", "answers_dir = \n");
+
+    let r = c.run_env(&[("RESCRIPTUM_CONFIG", &toml)], &["check"]);
+    assert!(!r.ok, "{r}");
+    assert!(r.stderr.contains("bad.toml"), "{r}");
+    // The parser's own message carries the line and column; what matters here is that it
+    // arrives on one line, since this is a startup error in a log.
+    assert_eq!(
+        r.stderr.lines().filter(|l| l.contains("bad.toml")).count(),
+        1,
+        "{r}"
+    );
+}
+
+#[test]
+fn a_setting_given_a_list_is_refused_rather_than_quietly_defaulted() {
+    // A misspelling is a warning; this was aimed at something real, so serving the
+    // default while the file plainly says otherwise would be the silent failure.
+    let c = Case::new(&[]);
+    let toml = c.conf("list.toml", "answers_dir = [\"/srv/answers\"]\n");
+
+    let r = c.run_env(&[("RESCRIPTUM_CONFIG", &toml)], &["check"]);
+    assert!(!r.ok, "{r}");
+    assert!(r.stderr.contains("answers_dir"), "{r}");
+}
+
+#[test]
+fn a_misspelled_setting_in_the_toml_file_is_warned_about() {
+    let c = Case::new(&[("groups/rack-a.toml", RACK)]);
+    let toml = c.conf(
+        "typo.toml",
+        &format!(
+            "answers_dir = \"{}\"\n\n[admin]\ntoken = \"0123456789abcdef0\"\ntokenn = \"hunter2\"\n",
+            c.dir.display()
+        ),
+    );
+
+    let r = c.run_env(&[("RESCRIPTUM_CONFIG", &toml)], &["check"]);
+    assert!(r.ok, "a typo is a warning, not a refusal\n{r}");
+    assert!(r.stderr.contains("admin.tokenn"), "{r}");
+    assert!(
+        !r.stderr.contains("hunter2"),
+        "a warning must never print what the file holds\n{r}"
+    );
+}
+
+#[test]
+fn no_toml_file_is_ever_discovered_on_its_own() {
+    // Same reasoning as the env file, and it is not negotiable: this binary runs as root,
+    // and the file holds admin.token.
+    let c = Case::new(&[("98fa9b50d810.toml", "marker = \"real\"\n")]);
+    for name in ["rescriptum.toml", "config.toml", ".rescriptum.toml"] {
+        fs::write(c.dir.join(name), "answers_dir = \"/nonexistent/planted\"\n").unwrap();
+    }
+
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_rescriptum"));
+    cmd.env("RESCRIPTUM_ANSWERS_DIR", c.dir.as_path())
+        .current_dir(&c.dir);
+    let r = Run::from(
+        cmd.args(["render", "98:fa:9b:50:d8:10"])
+            .output()
+            .expect("run"),
+    );
+    assert!(r.ok, "{r}");
+    assert!(r.stdout.contains("real"), "{r}");
+}
+
+#[test]
+fn a_configuration_file_inside_the_answers_directory_is_reported_as_a_stray_answer() {
+    // Found by writing the tests above: a `.toml` at the top of the answers directory is
+    // a misplaced answer document, and this format shares that extension. Nothing here
+    // makes an exception for it — a configuration file belongs beside the store, not in
+    // it — so `check` says the same thing it says about any stray document. Better said
+    // than discovered when `migrate --apply` offers to move somebody's configuration.
+    let c = Case::new(&[("groups/rack-a.toml", RACK)]);
+    let inside = c.dir.join("rescriptum.toml");
+    fs::write(&inside, format!("answers_dir = \"{}\"\n", c.dir.display())).unwrap();
+
+    let r = c.run_env(&[("RESCRIPTUM_CONFIG", &inside)], &["check"]);
+    assert!(
+        !r.ok,
+        "a stray document is a problem, and problems fail check\n{r}"
+    );
+    assert!(r.stdout.contains("rescriptum.toml"), "{r}");
+    assert!(r.stdout.contains("an answer is a directory now"), "{r}");
+    // And it is still read as configuration, because the variable named it.
+    assert!(r.stdout.contains("1 group(s)"), "{r}");
+}
+
 // ---- config ---------------------------------------------------------------
 //
 // The command a settings panel drives, and the one people reach for when the server will
@@ -724,6 +928,13 @@ impl Case {
         let path = self.dir.join("rescriptum.env");
         fs::write(&path, body).expect("env file");
         path.to_string_lossy().into_owned()
+    }
+
+    /// Beside the answers directory, where a configuration file belongs — see `etc`.
+    fn toml_file(&self, body: &str) -> String {
+        self.conf("rescriptum.toml", body)
+            .to_string_lossy()
+            .into_owned()
     }
 }
 
@@ -927,7 +1138,7 @@ fn config_json_carries_the_source_and_the_help_a_panel_needs() {
     let r = c.run_config(&[("RESCRIPTUM_ENV_FILE", &env)], &["config", "--json"]);
     assert!(r.ok, "{r}");
     assert!(r.stdout.contains("\"key\":\"RESCRIPTUM_STORE\""), "{r}");
-    assert!(r.stdout.contains("\"source\":\"file\""), "{r}");
+    assert!(r.stdout.contains("\"source\":\"env file\""), "{r}");
     assert!(
         r.stdout.contains("\"secret\":true"),
         "the tokens are marked\n{r}"
@@ -950,6 +1161,145 @@ fn config_with_no_file_named_says_so_rather_than_failing() {
     let w = c.run_config(&[], &["config", "set", "RESCRIPTUM_LOG=off"]);
     assert!(!w.ok, "there is nothing to write to\n{w}");
     assert!(w.stderr.contains("RESCRIPTUM_ENV_FILE"), "{w}");
+}
+
+#[test]
+fn config_writes_the_toml_file_and_leaves_its_documentation_standing() {
+    // On a packaged install the comments *are* the configuration's documentation. A
+    // writer that regenerated the file would throw them away the first time anyone
+    // changed a setting, which is why this edits the document rather than rendering one.
+    let c = Case::new(&[]);
+    let before = "# How much to log.\nlog = \"all\"  # all | problems | off\n\n[store]\n# Where answers come from.\nkind = \"files\"\n";
+    let toml = c.toml_file(before);
+
+    let r = c.run_config(
+        &[("RESCRIPTUM_CONFIG", &toml)],
+        &["config", "set", "RESCRIPTUM_LOG=problems"],
+    );
+    assert!(r.ok, "{r}");
+
+    let after = fs::read_to_string(&toml).expect("still there");
+    assert!(after.contains("# How much to log."), "{after}");
+    assert!(after.contains("# all | problems | off"), "{after}");
+    assert!(after.contains("# Where answers come from."), "{after}");
+    assert!(after.contains("log = \"problems\""), "{after}");
+    assert_eq!(after.matches("log =").count(), 1, "duplicated\n{after}");
+
+    // And the server reads back what was written, from the file that was written.
+    let r = c.run_config(&[("RESCRIPTUM_CONFIG", &toml)], &["config"]);
+    let log = line_for(&r.stdout, "RESCRIPTUM_LOG ");
+    assert!(
+        log.contains("problems") && log.ends_with("toml file"),
+        "{log:?}\n{r}"
+    );
+}
+
+#[test]
+fn config_unset_empties_a_setting_rather_than_deleting_its_paragraph() {
+    // Deleting the key would take the comment above it with it. Empty already counts as
+    // unset everywhere else in this program, so the line stays and says nothing is set.
+    let c = Case::new(&[]);
+    let toml =
+        c.toml_file("# The token every installer must present.\n[answer]\ntoken = \"hunter2\"\n");
+
+    let r = c.run_config(
+        &[("RESCRIPTUM_CONFIG", &toml)],
+        &["config", "unset", "RESCRIPTUM_ANSWER_TOKEN"],
+    );
+    assert!(r.ok, "{r}");
+
+    let after = fs::read_to_string(&toml).expect("still there");
+    assert!(
+        after.contains("# The token every installer must present."),
+        "{after}"
+    );
+    assert!(after.contains("token = \"\""), "{after}");
+    assert!(!after.contains("hunter2"), "{after}");
+
+    let r = c.run_config(&[("RESCRIPTUM_CONFIG", &toml)], &["config"]);
+    let token = line_for(&r.stdout, "RESCRIPTUM_ANSWER_TOKEN");
+    assert!(token.contains("(not set)"), "{token:?}\n{r}");
+}
+
+#[test]
+fn config_set_refuses_to_leave_a_server_that_cannot_start_in_toml_too() {
+    // The same guard, over the other format. A write that reaches the disk and stops the
+    // server is the failure; the format it was written in is not the interesting part.
+    let c = Case::new(&[]);
+    let before = "[store]\nkind = \"sqlite\"\n";
+    let toml = c.toml_file(before);
+
+    let r = c.run_config(
+        &[("RESCRIPTUM_CONFIG", &toml)],
+        &["config", "set", "RESCRIPTUM_ADMIN_ADDR=127.0.0.1:8001"],
+    );
+    assert!(!r.ok, "an unauthenticated admin API must be refused\n{r}");
+    assert!(r.stderr.contains("refused"), "{r}");
+    assert_eq!(
+        fs::read_to_string(&toml).expect("still there"),
+        before,
+        "the file must be untouched when the write is refused"
+    );
+}
+
+#[test]
+fn config_set_writes_the_toml_file_when_both_files_are_named() {
+    // It is the one the server reads first, so writing the other would be a change that
+    // silently does nothing — which is the whole failure mode this area exists to remove.
+    let c = Case::new(&[]);
+    let env = c.env_file("RESCRIPTUM_STORE=files\n");
+    let toml = c.toml_file("log = \"all\"\n");
+
+    let r = c.run_config(
+        &[("RESCRIPTUM_CONFIG", &toml), ("RESCRIPTUM_ENV_FILE", &env)],
+        &["config", "set", "RESCRIPTUM_LOG=off"],
+    );
+    assert!(r.ok, "{r}");
+    assert!(
+        r.stderr.contains(&toml),
+        "it must say which file it wrote\n{r}"
+    );
+    assert!(fs::read_to_string(&toml).unwrap().contains("log = \"off\""));
+    assert_eq!(
+        fs::read_to_string(&env).unwrap(),
+        "RESCRIPTUM_STORE=files\n",
+        "the env file must be left alone"
+    );
+}
+
+#[test]
+fn config_set_answers_the_documents_name_with_the_one_that_works() {
+    // Somebody reading the file types the name they see in it. "Not a setting this
+    // program reads" would be true of the command line and useless to them.
+    let c = Case::new(&[]);
+    let toml = c.toml_file("log = \"all\"\n");
+
+    let r = c.run_config(
+        &[("RESCRIPTUM_CONFIG", &toml)],
+        &["config", "set", "answers_dir=/srv/answers"],
+    );
+    assert!(!r.ok, "{r}");
+    assert!(r.stderr.contains("RESCRIPTUM_ANSWERS_DIR"), "{r}");
+}
+
+#[test]
+fn config_json_names_both_files_and_the_name_each_setting_has_in_one() {
+    // The panel renders this. It has to be able to say which file a save would land in,
+    // and to show the line somebody would edit by hand.
+    let c = Case::new(&[]);
+    let toml = c.toml_file("[store]\nkind = \"sqlite\"\n");
+
+    let r = c.run_config(&[("RESCRIPTUM_CONFIG", &toml)], &["config", "--json"]);
+    assert!(r.ok, "{r}");
+    assert!(r.stdout.contains("\"source\":\"toml file\""), "{r}");
+    assert!(r.stdout.contains("\"path\":\"store.kind\""), "{r}");
+    assert!(
+        r.stdout.contains(&format!("\"toml_file\":\"{toml}\"")),
+        "{r}"
+    );
+    assert!(r.stdout.contains(&format!("\"target\":\"{toml}\"")), "{r}");
+    assert!(r.stdout.contains("\"writable\":true"), "{r}");
+    assert_eq!(r.stdout.lines().count(), 1, "{r}");
 }
 
 #[test]

@@ -1,6 +1,6 @@
 ---
 title: Configuration
-description: Every environment variable, its default, and what happens when you get one wrong.
+description: Every environment variable, its default, the two file formats that can supply them, and what happens when you get one wrong.
 sidebar:
   label: Configuration
   order: 1
@@ -8,14 +8,17 @@ sidebar:
 
 # Configuration
 
-Environment variables only — and, optionally, a file to read some of them from. There is
-no configuration *format* to learn and no command line to get wrong.
+Environment variables — and, optionally, a file to read them from, in either of two
+shapes. There is no command line to get wrong, and the variables are the whole
+configuration: both file formats set exactly the same things under exactly the same
+rules, so nothing you can write in a file means anything the environment could not.
 
 ## The variables
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `RESCRIPTUM_ENV_FILE` | unset | Read defaults from this file too — see [below](#the-env-file) |
+| `RESCRIPTUM_CONFIG` | unset | Read defaults from this **TOML** file — see [below](#the-toml-file) |
+| `RESCRIPTUM_ENV_FILE` | unset | Read defaults from this `KEY=value` file — see [below](#the-env-file) |
 | `RESCRIPTUM_STORE` | `files` | `files` (a directory) or `sqlite` (a database) |
 | `RESCRIPTUM_ANSWERS_DIR` | `/srv/answers` | Directory of answer documents |
 | `RESCRIPTUM_DB_PATH` | `/srv/answers.db` | Database path, when `RESCRIPTUM_STORE=sqlite` |
@@ -89,6 +92,96 @@ fail every install in flight in order to report that it could not report somethi
 Rotation is yours. Under systemd there is nothing to do, since the log goes to the journal;
 with a file, point `logrotate` at it with `copytruncate`.
 
+## The TOML file
+
+`RESCRIPTUM_CONFIG` names a file in TOML that sets the same variables in a shape meant to
+be read. Reach for it when a **person edits the file by hand** — on a NAS, in File Station
+or over SMB — which is exactly where `RESCRIPTUM_ANSWERS_DIR=…` on every line reads
+poorly and where the word "environment" sends people looking for a shell that is not
+there.
+
+```toml
+# /etc/rescriptum.toml   (chmod 600, owned by root)
+answers_dir = "/srv/answers"
+listen_addr = "0.0.0.0:8000"
+log         = "problems"          # all | problems | off
+
+[store]
+kind    = "sqlite"
+db_path = "/srv/answers.db"
+
+[server]
+workers         = 2
+max_connections = 2048
+timeout_secs    = 10
+
+[admin]
+addr  = "127.0.0.1:8001"
+token = "…"
+
+[answer]
+token       = "…"
+capture_dir = "/var/lib/rescriptum/captures"
+```
+
+```console
+$ RESCRIPTUM_CONFIG=/etc/rescriptum.toml rescriptum
+2026-08-29T12:42:02Z - reading configuration defaults from /etc/rescriptum.toml (8 set)
+```
+
+Every rule the env file has, this one has too: **never discovered, only named** (there is
+no `./rescriptum.toml`); **the real environment wins**; and **a file that was asked for and
+cannot be read is a startup error**, never a warning.
+
+**Put it outside the answers directory.** Every servable `.toml` at the top of that
+directory is an answer document, and this format shares the extension — a configuration
+file dropped in there is reported by `check` as a misplaced answer, and `migrate` offers
+to move it. `/etc` is the obvious home; on a packaged install the package chooses one.
+
+### The names
+
+The prefix goes away and tables do the grouping. Nothing else changes: each line below is
+the variable of the same name, and `rescriptum config` prints both spellings.
+
+| In the file | Variable |
+|---|---|
+| `answers_dir` | `RESCRIPTUM_ANSWERS_DIR` |
+| `listen_addr` | `RESCRIPTUM_LISTEN_ADDR` |
+| `log`, `log_file` | `RESCRIPTUM_LOG`, `RESCRIPTUM_LOG_FILE` |
+| `public_host` | `RESCRIPTUM_PUBLIC_HOST` |
+| `user`, `group` | `RESCRIPTUM_USER`, `RESCRIPTUM_GROUP` |
+| `store.kind`, `store.db_path` | `RESCRIPTUM_STORE`, `RESCRIPTUM_DB_PATH` |
+| `server.workers`, `server.max_connections`, `server.timeout_secs` | `RESCRIPTUM_WORKERS`, `RESCRIPTUM_MAX_CONNECTIONS`, `RESCRIPTUM_TIMEOUT_SECS` |
+| `admin.addr`, `admin.token` | `RESCRIPTUM_ADMIN_ADDR`, `RESCRIPTUM_ADMIN_TOKEN` |
+| `answer.token`, `answer.capture_dir` | `RESCRIPTUM_ANSWER_TOKEN`, `RESCRIPTUM_CAPTURE_DIR` |
+| `media.dir`, `media.addr`, `media.timeout_secs`, `media.max_connections` | the `RESCRIPTUM_MEDIA_*` four |
+| `boot.dir`, `boot.allow`, `boot.unclaimed`, `boot.timeout_secs`, `boot.logo`, `boot.title` | the `RESCRIPTUM_BOOT_*` six |
+| `tftp.addr`, `tftp.port_range`, `tftp.blksize` | the `RESCRIPTUM_TFTP_*` three |
+| `installed.token` | `RESCRIPTUM_INSTALLED_TOKEN` |
+
+### The format
+
+| | |
+|---|---|
+| Any TOML scalar | a number may be written as a number (`workers = 2`) or as a string; both reach the server as the same setting |
+| A `#` comment | anywhere, including at the end of a line — unlike the env file, which has no escapes and so cannot have inline comments |
+| A value with a `#`, a quote or a space | fine, quoted the way TOML quotes things, and read back unchanged |
+| `""` | **unset** — the same rule as an exported-but-empty variable, which is what lets `config unset` empty a line instead of deleting the paragraph that documents it |
+| The same key twice | refused by TOML itself, so the file does not load |
+| A key this program does not read | a warning naming it, so `admin.tokenn` is caught rather than ignored |
+| A list or a table where a value belongs | a **startup error**: unlike a misspelling it was aimed at a real setting, and serving the default while the file says otherwise would be silent |
+| A file others can read | a warning with its mode, because it may hold `admin.token` |
+
+Warnings name keys and paths, never values.
+
+### Both files at once
+
+Naming both is a transition rather than a steady state, so nothing is refused and the
+order is stated at startup: **the environment beats the TOML file, which beats the env
+file.** `rescriptum config` shows which of the three put every value in force, and
+`config set` writes to the TOML file — the one the server reads first, so that a write
+cannot be a change that silently does nothing.
+
 ## The env file
 
 `RESCRIPTUM_ENV_FILE` names a file of the same variables. It exists for deployments with
@@ -138,12 +231,13 @@ Warnings name keys and paths, never values.
 
 ## Reading and editing it
 
-`rescriptum config` prints every variable, its value, and **which of the file and the
-environment put it there** — the distinction that matters, because the file supplies
+`rescriptum config` prints every variable, its value, and **which of the files and the
+environment put it there** — the distinction that matters, because the files supply
 defaults and the real environment wins. `config set` edits the file the way you would want
-it edited: comments kept, a commented-out setting uncommented in place rather than
-duplicated, and a change that would leave a server unable to start refused before anything
-is written. It is documented in the [command line reference](./cli.md#config), and it is
+it edited, in either format: comments kept, a commented-out setting uncommented in place
+rather than duplicated (in the env file) or the value replaced where it stands (in TOML),
+and a change that would leave a server unable to start refused before anything is
+written. It is documented in the [command line reference](./cli.md#config), and it is
 what the [DSM application](../operations/synology.md#the-desktop-application) drives
 underneath.
 
@@ -155,7 +249,8 @@ underneath.
 | Whitespace-only | same, and values are trimmed |
 | A zero or unparseable number | falls back to the **default**, rather than starting a server that accepts connections and never answers |
 | `RESCRIPTUM_STORE` set to anything else | a warning, and `files` is used |
-| `RESCRIPTUM_ENV_FILE` naming a missing, unreadable or malformed file | a startup **error** |
+| `RESCRIPTUM_ENV_FILE` or `RESCRIPTUM_CONFIG` naming a missing, unreadable or malformed file | a startup **error** |
+| A TOML setting given a list or a table | a startup **error**, unlike a misspelled key, which warns |
 | `RESCRIPTUM_STORE=sqlite` on a binary built without the feature | a startup **error** |
 
 ## Startup errors
@@ -199,15 +294,16 @@ These are printed and the server carries on:
 | `sqlite` | on | The SQLite store and the admin API |
 | `boot` | on | The media catalogue, the ISO reader and the media listener |
 
-Measured on ARMv7 (gnueabihf, glibc floor 2.17). Re-measure rather than quoting these:
-they moved by about 375 KB when that target changed from musl.
+Measured on ARMv7 (gnueabihf, glibc floor 2.17), all four in one sitting on 2026-08-29.
+Re-measure rather than quoting these: they moved by about 375 KB when that target changed
+from musl, and the set they replace here had drifted about 200 KB out of date.
 
 | Build | Bytes |
 |---|---|
-| both (default) | 2,602,056 |
-| `sqlite` only | 2,482,000 |
-| `boot` only | 1,436,704 |
-| neither | 1,316,648 |
+| both (default) | 2,813,712 |
+| `sqlite` only | 2,557,592 |
+| `boot` only | 1,649,048 |
+| neither | 1,392,544 |
 
 ## Fixed limits
 

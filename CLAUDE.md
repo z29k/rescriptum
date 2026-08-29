@@ -150,7 +150,17 @@ These are deliberate design decisions, not oversights. Do not "improve" them wit
   `late_command` or a chroot script, where one `curl` is writable and composing
   Proxmox's JSON is not.
 - `src/config.rs` — environment configuration. `Config::from_lookup` takes a lookup closure so
-  tests never touch the process environment.
+  tests never touch the process environment — which is also the seam every configuration
+  file hangs off: a file is just another source behind that closure.
+- `src/tomlconfig.rs` — the optional **TOML** file `RESCRIPTUM_CONFIG` names, for the
+  platform where a person edits configuration by hand. It **maps a document onto the same
+  `RESCRIPTUM_*` names and does nothing else**, so one place still decides what a setting
+  means and the file cannot grow behaviour the environment lacks. `MAPPING` is that table,
+  and a unit test asserts it covers `envfile::KNOWN_KEYS` exactly — a setting missing from
+  it is one the file silently cannot configure. Writes go through `toml_edit`, which edits
+  the document in place: **replace the value, never the entry**, because a setting's
+  explanation lives in the *key's* decor and inserting over the key throws the paragraph
+  away.
 - `src/envfile.rs` — the optional file of defaults `RESCRIPTUM_ENV_FILE` names, and the
   writer behind `config set`: `rewrite()` edits lines where they stand, **uncommenting** a
   commented setting rather than appending a duplicate, because on a packaged install those
@@ -401,9 +411,16 @@ spend into an apparent 293% overrun.**
 
 | Build | Bytes |
 |---|---|
-| `sqlite` + `boot` (default) | 2,741,360 |
-| `sqlite` only | 2,482,000 |
-| neither | 1,316,648 |
+| `sqlite` + `boot` (default) | 2,813,712 |
+| `sqlite` only | 2,557,592 |
+| `boot` only | 1,649,048 |
+| neither | 1,392,544 |
+
+Re-measured 2026-08-29 on armv7-gnueabihf (floor 2.17), all four in one sitting. **Both
+tables that held these numbers were stale by roughly 200 KB** — this one and
+`docs/guide/reference/configuration`, which disagreed with each other as well.
+`boot` costs **1,164,120** against `sqlite` alone by this measurement; the budget question
+below is written against the older figure and needs re-deciding against this one.
 
 **`boot` costs 259,360 bytes, against a ≤170 KB budget the plan set before any of it was
 written** — the image-source catalogue added 31,520 of that. That is recorded in `plans/boot-media.md` with a per-phase breakdown rather
@@ -745,11 +762,14 @@ file or failure). When a PXE install won't start, this is the only diagnostic av
 
 ## Configuration
 
-Environment variables only — plus an optional file to read some of them from:
+Environment variables — plus an optional file to read them from, in either of two shapes.
+Both files set the same variables under the same rules; **the environment wins over both,
+and the TOML file wins over the env file**:
 
 | Variable | Default | Role |
 |---|---|---|
-| `RESCRIPTUM_ENV_FILE` | unset | A file of the same variables. See below |
+| `RESCRIPTUM_CONFIG` | unset | A **TOML** file of the same settings, under readable names. See below |
+| `RESCRIPTUM_ENV_FILE` | unset | A `KEY=value` file of the same variables. See below |
 | `RESCRIPTUM_STORE` | `files` | `files` or `sqlite` |
 | `RESCRIPTUM_ANSWERS_DIR` | `/srv/answers` | Directory of answer documents |
 | `RESCRIPTUM_DB_PATH` | `/srv/answers.db` | SQLite database, when `RESCRIPTUM_STORE=sqlite` |
@@ -802,6 +822,23 @@ Three properties are the point, and a change that drops one is a regression:
 It is not a shell: no `${}` expansion, no inline comments (a `#` in a value is part of the
 value — truncating a token silently is worse than a comment landing in a value, where it is
 loud), `export` accepted so one file can also be sourced, a duplicate key is an error.
+
+**`RESCRIPTUM_CONFIG` (`src/tomlconfig.rs`)** is the same job in the shape a person reads:
+the prefix goes away and tables do the grouping (`store.kind`, `admin.token`,
+`server.workers`). It exists because on DSM there is no environment — there is a file — and
+`RESCRIPTUM_ANSWERS_DIR=…` on every line is a poor thing to hand somebody editing in File
+Station. Every rule above carries over unchanged, and three things are specific to it:
+
+- **It costs a mapping, not a dependency.** `toml_edit` already parses every answer
+  document. Measured on armv7: **+14,544 bytes** (2,799,168 → 2,813,712), 0.5%.
+- **`""` is unset**, the same rule an exported-but-empty variable has — which is what lets
+  `config unset` empty a line instead of deleting the paragraph documenting it. A list or a
+  table where a value belongs is a startup *error*, unlike a misspelled key, which warns:
+  it was aimed at a real setting, so serving the default would be the silent failure.
+- **A configuration file must not live in the answers directory.** Every servable `.toml`
+  at the top of that directory is an answer document, and this format shares the extension
+  — `check` reports one dropped there as a misplaced answer and `migrate` offers to move
+  it. A test pins that rather than leaving it to be discovered.
 
 ## Commands
 
@@ -880,7 +917,7 @@ is the procedure*), which `AGENTS.md` also points at.
 
 ## Testing expectations
 
-582 tests, plus the package's own harnesses (see *The DSM package*, and note that
+613 tests, plus the package's own harnesses (see *The DSM package*, and note that
 `cargo test` does not run those). `docs/development/testing.md` has the per-suite table;
 the rules that decide where a test goes:
 

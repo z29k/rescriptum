@@ -24,12 +24,13 @@ With no arguments, `rescriptum` runs the server. Everything else is a subcommand
 | `rescriptum config` | show the configuration, and where each value comes from |
 | `rescriptum config --json` | the same, for a settings panel |
 | `rescriptum config --value KEY` | one value, for a script — never a credential |
-| `rescriptum config set K=V …` | edit the file `RESCRIPTUM_ENV_FILE` names |
-| `rescriptum config unset KEY …` | comment a setting back out of it |
+| `rescriptum config set K=V …` | edit the file `RESCRIPTUM_CONFIG` or `RESCRIPTUM_ENV_FILE` names |
+| `rescriptum config unset KEY …` | take a setting back out of it |
 | `rescriptum --help` | usage and the environment variables |
 
 All of them read the same [environment variables](./configuration.md), including
-[`RESCRIPTUM_ENV_FILE`](./configuration.md#the-env-file) — which is resolved first, so a
+[`RESCRIPTUM_CONFIG`](./configuration.md#the-toml-file) and
+[`RESCRIPTUM_ENV_FILE`](./configuration.md#the-env-file) — which are resolved first, so a
 file that cannot be read stops any command that needs configuration. `--help` and
 `--version` are answered before it is read, because they are what you reach for when
 something is wrong. There are no global flags.
@@ -123,9 +124,14 @@ env file: /var/packages/rescriptum/etc/rescriptum.env
   RESCRIPTUM_ADMIN_TOKEN      (set)                             file
 ```
 
-The third column is the point. The file supplies **defaults** and the real environment
-wins, so a value marked `environment` cannot be changed by editing the file — and `config
-set` says so rather than letting you write something the running server will ignore.
+The third column is the point. The files supply **defaults** and the real environment
+wins, so a value marked `environment` cannot be changed by editing a file — and `config
+set` says so rather than letting you write something the running server will ignore. With
+a TOML file the column reads `toml file`, and naming both files prints both paths plus the
+order they win in.
+
+**`config set` writes the TOML file when both are named**, because it is the one the server
+reads first: writing the other would be a change that silently does nothing.
 
 **A credential is never printed**, by any form of this command. A token shows as `(set)` or
 `(not set)`; `--value` refuses outright.
@@ -137,7 +143,10 @@ wrote /var/packages/rescriptum/etc/rescriptum.env
 
 Writing keeps the file as it is otherwise: comments stay, a setting is replaced where it
 stands, and one that is commented out is **uncommented in place** rather than appended
-below — which matters when the comment above it is the only documentation the file has.
+below — which matters when the comment above it is the only documentation the file has. In
+a TOML file the same care applies to the document: the value is replaced where it stands,
+its trailing comment survives, and `config unset` **empties the value rather than deleting
+the line**, so the paragraph explaining the setting stays where it was.
 
 Two refusals are deliberate:
 
