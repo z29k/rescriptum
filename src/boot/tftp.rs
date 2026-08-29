@@ -638,10 +638,7 @@ fn parse_request(bytes: &[u8]) -> Result<Request, Refusal> {
     }
 
     let mut options = Vec::new();
-    loop {
-        let (Some(name), Some(value)) = (fields.next(), fields.next()) else {
-            break;
-        };
+    while let (Some(name), Some(value)) = (fields.next(), fields.next()) {
         let (Ok(name), Ok(value)) = (String::from_utf8(name), String::from_utf8(value)) else {
             break;
         };

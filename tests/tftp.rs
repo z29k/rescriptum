@@ -1163,10 +1163,7 @@ fn a_rom_that_asks_for_a_window_still_gets_its_file_promptly() {
 
     let mut got = Vec::new();
     let mut since_ack = 0usize;
-    loop {
-        let Ok((n, _)) = sock.recv_from(&mut buffer) else {
-            break;
-        };
+    while let Ok((n, _)) = sock.recv_from(&mut buffer) {
         if u16::from_be_bytes([buffer[0], buffer[1]]) != OP_DATA {
             break;
         }

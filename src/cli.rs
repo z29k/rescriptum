@@ -914,7 +914,8 @@ fn media_add(catalog: &crate::boot::catalog::Catalog, args: &[String]) -> ExitCo
     eprintln!("hashing {} …", path.display());
     let mut last = 0u64;
     let digest = match crate::boot::sha256::file(&path, |done, total| {
-        let percent = if total == 0 { 100 } else { done * 100 / total };
+        // No total means no progress to report, so call it finished rather than dividing.
+        let percent = (done * 100).checked_div(total).unwrap_or(100);
         if percent >= last + 10 {
             last = percent - percent % 10;
             eprintln!("  {last}% ({} of {})", human(done), human(total));

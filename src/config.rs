@@ -484,6 +484,10 @@ impl Config {
     /// always works. The default stays at what fits a clean path, because lowering it for
     /// everybody costs every deployment throughput to fix a minority's network — but the
     /// failure it causes is now loud enough to find.
+    ///
+    /// Behind the `boot` feature: the only caller is the TFTP server, and the constants
+    /// it clamps against live there too.
+    #[cfg(feature = "boot")]
     pub fn tftp_blksize(&self) -> usize {
         self.tftp_blksize
             .unwrap_or(crate::boot::tftp::MAX_BLOCK)

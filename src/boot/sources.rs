@@ -143,7 +143,7 @@ impl Source {
         // the version-ish parts of the name rather than the whole string: plain
         // lexicographic ordering puts `9.10` before `9.9`, which would offer a rack an
         // older installer than the one it asked for.
-        out.sort_by(|a, b| natural(&b.name).cmp(&natural(&a.name)));
+        out.sort_by_key(|s| std::cmp::Reverse(natural(&s.name)));
         out
     }
 }
