@@ -61,12 +61,12 @@ par machine.
 s'étranglerait avec du TOML. Donc `/rhel/ks` sert des documents `.ks` et rien d'autre,
 `/proxmox/answer` sert du `.toml`, `/ubuntu/` sert du YAML. La conséquence qui fait
 comprendre le modèle : la réponse d'une machine est spécifique au système d'exploitation
-auquel elle est destinée, donc `98fa9b50d810.toml` n'est pas « cette machine » mais
-*« cette machine en tant que Proxmox »* — et `98fa9b50d810.preseed` est le même matériel en
-tant que Debian. Les deux existent en même temps.
+auquel elle est destinée, donc `98fa9b50d810/proxmox.toml` n'est pas « cette machine » mais
+*« cette machine en tant que Proxmox »* — et `98fa9b50d810/debian.preseed`, dans le même
+répertoire, est le même matériel en tant que Debian. Les deux existent en même temps.
 → [Un document par système d'exploitation](./answers/formats.md)
 
-**2. Une machine est revendiquée, pas cherchée.** Nommez un document d'après la MAC et il
+**2. Une machine est revendiquée, pas cherchée.** Nommez un répertoire d'après la MAC et il
 gagne. Ou listez la machine dans les `members` d'un groupe. Ou écrivez un bloc `[match]` et
 laissez la machine être revendiquée pour ce qu'elle *est* — un Dell R620 dont le numéro de
 série commence par `7ABC`. La résolution est déterministe : nommer bat matcher, plus de
@@ -74,10 +74,10 @@ critères bat moins, les égalités se départagent sur le nom trié.
 → [Comment une réponse est choisie](./answers/selection.md)
 
 **3. Les réponses se composent.** Une baie de machines partage tout sauf ses adresses MAC.
-Mettez la partie commune dans un groupe ; une machine qui diffère reçoit un fichier
+Mettez la partie commune dans un groupe ; une machine qui diffère reçoit un document
 contenant **seulement la différence**. Les formats structurés fusionnent vraiment — les
 maps clé par clé, les tableaux remplacés pour qu'une liste puisse encore être raccourcie.
-Ajoutez des placeholders `{{ serial }}` et un seul fichier de groupe couvre cinq cents
+Ajoutez des placeholders `{{ serial }}` et un seul document de groupe couvre cinq cents
 machines.
 → [Groupes et fusion](./answers/grouping.md) · [Templating](./answers/templating.md)
 
@@ -90,13 +90,15 @@ validateur de l'installateur lui-même quand il est dans le PATH.
 
 ## Ce que ce n'est pas
 
-- **Pas un serveur PXE/TFTP/DHCP.** Il répond à une seule question — *quelle configuration
-  reçoit cette machine ?* — et laisse le netboot à ce que vous faites déjà tourner.
+- **Pas un serveur DHCP, sous aucune forme.** Ni répondeur, ni proxy, ni derrière un
+  drapeau. Les sites qui déploient ceci en ont déjà un, et le faire pointer vers un
+  serveur de démarrage est un problème résolu depuis trente ans.
+- **Pas un système de gestion de configuration.** Il livre un document au moment de
+  l'installation et n'a ensuite plus rien à voir avec la machine — rien de ce qu'il
+  installe n'en dépend ensuite.
 - **Pas un validateur de schéma.** Il prouve que vos documents sont bien formés et
   fusionnent proprement. Savoir si le résultat est du *Proxmox* valide est le travail de
   `proxmox-auto-install-assistant`, et `check` l'appellera s'il est installé.
-- **Pas un système de gestion de configuration.** Il remet un document au moment de
-  l'installation et n'a plus rien à voir avec la machine ensuite.
 
 ## Deux réalités de déploiement
 
@@ -104,8 +106,8 @@ Les deux sont réelles, et la conception doit satisfaire les deux :
 
 - **Un Synology DS416j** — ARMv7, 512 Mo, DSM 7, pas de Docker. La motivation d'origine, et
   la raison pour laquelle c'est un binaire statique unique sans runtime ni interpréteur.
-- **Un hôte de datacenter** encaissant une rafale de provisioning, avec un fichier de
-  réponse par machine. La raison pour laquelle il est asynchrone, borne sa propre
+- **Un hôte de datacenter** encaissant une rafale de provisioning, avec un répertoire de
+  réponses par machine. La raison pour laquelle il est asynchrone, borne sa propre
   concurrence, et met en cache le listing du répertoire au lieu de le parcourir à chaque
   requête.
 
@@ -120,6 +122,7 @@ propre.
 - [Préparer les médias d'installation](./iso.md) — l'URL à graver dans chaque ISO.
 - [Écrire des réponses](./answers/index.md) — sélection, formats, groupes, templating.
 - [L'exploiter](./operations/index.md) — déploiement, sécurité, stockage, dépannage.
+- [Médias de démarrage](./operations/media.md) et [démarrage réseau](./operations/netboot.md) — servir l'installeur lui-même, pas seulement sa réponse.
 
 Vous travaillez *sur* rescriptum plutôt qu'avec ? L'espace
 [Développement](../development/index.md) est l'autre moitié de ce site.

@@ -1,0 +1,26 @@
+# dnsmasq, installed at **image-build** time.
+#
+# The rig's network is `internal: true` — a harness that runs a DHCP server has to be
+# unable to answer anything on the host's LAN — which also means nothing on it can reach
+# an apt repository. Installing at run time looked fine and exited 127 with
+# `exec: dnsmasq: not found`, after apt had failed silently into /dev/null.
+#
+# Same lesson as the loaders, and the rig's own README already said it: if a service on
+# this network needs something from the internet, it gets it before the network exists.
+FROM debian:bookworm-slim
+
+# tcpdump is a rig tool, not decoration: when no client boots, the only question worth
+# asking is whether the DHCP request reached this container at all, and nothing else in
+# the stack can answer it. The network is `internal`, so it has to be here at build time.
+RUN apt-get update && apt-get install -y --no-install-recommends dnsmasq tcpdump \
+    && rm -rf /var/lib/apt/lists/* \
+    && dnsmasq --version | head -1
+
+# `--log-facility=-` sends dnsmasq's logging to stderr. **Without it everything goes to
+# syslog**, which in a container is nowhere: the rig's DHCPACK marker could never match,
+# and a run where nothing booted would look identical to one where nothing was logged.
+#
+# The configuration under test is mounted, printed, and then handed to dnsmasq. Printing
+# it is not decoration: when no client boots, the first question is what the DHCP server
+# was actually told, and this is the answer.
+CMD ["sh", "-c", "echo '--- the configuration under test ---'; cat /etc/rig/dnsmasq.conf; tcpdump -i eth0 -n -l port 67 or port 68 & exec dnsmasq --keep-in-foreground --log-facility=- --log-dhcp --conf-file=/etc/rig/dnsmasq.conf"]

@@ -54,12 +54,12 @@ Either way, the answer has to be chosen — and usually assembled — per machin
 **1. The endpoint declares the format.** A kickstart client wants kickstart and would
 choke on TOML. So `/rhel/ks` serves `.ks` documents and nothing else, `/proxmox/answer`
 serves `.toml`, `/ubuntu/` serves YAML. The consequence that makes the model click:
-a machine's answer is specific to the OS it is for, so `98fa9b50d810.toml` is not "that
-machine" but *"that machine as Proxmox"* — and `98fa9b50d810.preseed` is the same
-hardware as Debian. Both exist at once.
+a machine's answer is specific to the OS it is for, so `98fa9b50d810/proxmox.toml` is not
+"that machine" but *"that machine as Proxmox"* — and `98fa9b50d810/debian.preseed`, in the
+same directory, is the same hardware as Debian. Both exist at once.
 → [One document per operating system](./answers/formats.md)
 
-**2. A machine is claimed, not looked up.** Name a document after the MAC and it wins.
+**2. A machine is claimed, not looked up.** Name a directory after the MAC and it wins.
 Or list the machine in a group's `members`. Or write a `[match]` block and let the
 machine be claimed by what it *is* — a Dell R620 with a serial starting `7ABC`. The
 resolution is deterministic: naming beats matching, more criteria beats fewer, ties break
@@ -67,9 +67,9 @@ on sorted name.
 → [How an answer is picked](./answers/selection.md)
 
 **3. Answers compose.** A rack of machines shares everything except its MAC addresses.
-Put the shared part in a group; a machine that differs gets a file containing **only the
+Put the shared part in a group; a machine that differs gets a document containing **only the
 difference**. Structured formats really merge — maps key by key, arrays replaced so a
-list can still be shortened. Add `{{ serial }}` placeholders and one group file covers
+list can still be shortened. Add `{{ serial }}` placeholders and one group document covers
 five hundred machines.
 → [Groups and merging](./answers/grouping.md) · [Templating](./answers/templating.md)
 
@@ -82,13 +82,14 @@ one is on PATH.
 
 ## What it is not
 
-- **Not a PXE/TFTP/DHCP server.** It answers one question — *what configuration does this
-  machine get?* — and leaves netbooting to whatever you already run.
+- **Not a DHCP server, in any form.** Not a responder, not a proxy, not behind a flag.
+  Sites that deploy this already run one, and pointing it at a boot server is a solved
+  problem with thirty years of tooling.
+- **Not a config management system.** It hands over a document at install time and then
+  has nothing more to do with the machine — nothing it installs depends on it afterwards.
 - **Not a schema validator.** It proves your documents are well-formed and merge cleanly.
   Whether the result is valid *Proxmox* is `proxmox-auto-install-assistant`'s job, and
   `check` will call it when it is installed.
-- **Not a config management system.** It hands over a document at install time and then
-  has nothing more to do with the machine.
 
 ## Two deployment realities
 
@@ -96,7 +97,7 @@ Both are real, and the design has to satisfy both:
 
 - **A Synology DS416j** — ARMv7, 512 MB, DSM 7, no Docker. The original motivation, and
   the reason this is a single static binary with no runtime and no interpreter.
-- **A datacenter host** fielding a provisioning burst, with one answer file per machine.
+- **A datacenter host** fielding a provisioning burst, with one answer directory per machine.
   The reason it is async, bounds its own concurrency, and caches the directory listing
   instead of walking it per request.
 
@@ -110,6 +111,7 @@ nothing parsed per request — grouping is the fast path, not just the tidy one.
 - [Preparing installer media](./iso.md) — the URL to bake into each ISO.
 - [Writing answers](./answers/index.md) — selection, formats, groups, templating.
 - [Running it](./operations/index.md) — deployment, security, storage, troubleshooting.
+- [Boot media](./operations/media.md) and [netbooting](./operations/netboot.md) — serve the installer itself, not only its answer.
 
 Working on rescriptum rather than with it? The [Development](../development/index.md)
 space is the other half of this site.

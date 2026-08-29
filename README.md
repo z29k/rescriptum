@@ -54,8 +54,8 @@ $ RESCRIPTUM_ANSWERS_DIR=/srv/answers rescriptum
 ## Thirty seconds
 
 ```console
-$ mkdir -p answers/groups
-$ cat > answers/groups/rack-a.toml <<'TOML'
+$ mkdir -p answers/groups/rack-a
+$ cat > answers/groups/rack-a/proxmox.toml <<'TOML'
 members = ["98:fa:9b:50:d8:10", "98:fa:9b:50:d8:11"]
 
 [global]
@@ -75,8 +75,9 @@ timezone = "Europe/Paris"
 …
 ```
 
-That is one rack **as Proxmox**. The same directory holds `groups/rack-a.ks` for the RHEL
-nodes and `groups/rack-a.preseed` for the Debian ones — same idea, different extension. A
+That is one rack **as Proxmox**. The same directory holds `groups/rack-a/rhel.ks` for the
+RHEL nodes and `groups/rack-a/debian.preseed` for the Debian ones — same directory, different
+extension. A
 document is keyed by *(machine, format)*, so one machine can be several operating systems
 at once and the URL picks between them.
 
@@ -102,12 +103,12 @@ Each of these is a link into the [documentation](https://z29k.github.io/rescript
 go deep only where you are curious.
 
 - **[Picks the right answer](https://z29k.github.io/rescriptum/guide/answers/selection)** —
-  by filename, by a group's member list, or by a `[match]` block claiming a machine for
+  by directory name, by a group's member list, or by a `[match]` block claiming a machine for
   what it *is*. Deterministic: naming beats matching, more criteria beats fewer, ties
   break on sorted name.
 - **[One document per operating system](https://z29k.github.io/rescriptum/guide/answers/formats)** —
-  `98fa9b50d810.toml` is that machine *as Proxmox*, `98fa9b50d810.preseed` the same
-  hardware *as Debian*. Both exist at once; the URL chooses.
+  `98fa9b50d810/proxmox.toml` is that machine *as Proxmox*, `98fa9b50d810/debian.preseed`
+  the same hardware *as Debian*. Both exist at once; the URL chooses.
 - **[Answers that compose](https://z29k.github.io/rescriptum/guide/answers/grouping)** —
   group chains via `extends`, machine documents on top. Maps merge, arrays replace, the
   machine always wins.

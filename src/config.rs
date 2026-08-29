@@ -28,6 +28,26 @@ pub const DEFAULT_MAX_CONNECTIONS: usize = 2048;
 /// worker for at most this long.
 pub const DEFAULT_TIMEOUT_SECS: u64 = 10;
 
+/// The media listener's port, and **it is a contract rather than a preference.** The
+/// loader we ship carries an embedded script that chains to `${next-server}:8001`, and
+/// that script is baked in before any deployment exists — it can read no configuration.
+/// Moving this is allowed and survivable, but every loader already shipped assumes it.
+pub const DEFAULT_MEDIA_ADDR: &str = "0.0.0.0:8001";
+/// A whole-transfer deadline, deliberately not the answer listener's ten seconds: a
+/// 1.5 GB image is fifteen seconds on gigabit and two minutes on 100 Mbit, and on the
+/// answer listener every download would be killed mid-transfer.
+pub const DEFAULT_MEDIA_TIMEOUT_SECS: u64 = 600;
+/// Concurrent transfers, low on purpose. A download holds its permit for minutes, and
+/// the small end of the range this has to work on is a NAS with one spinning disk.
+pub const DEFAULT_MEDIA_MAX_CONNECTIONS: usize = 16;
+/// TFTP's well-known port, and privileged. It is the only privileged port this server
+/// ever wants — with no DHCP responder there is nothing after 67 or 4011.
+pub const DEFAULT_TFTP_ADDR: &str = "0.0.0.0:69";
+/// Seconds the built-in menu waits before falling through to local boot. **The name
+/// spells the unit because `choose` counts milliseconds**: a seconds value passed
+/// through unconverted is a menu that flashes past before a human has read its title.
+pub const DEFAULT_BOOT_TIMEOUT_SECS: u64 = 15;
+
 /// Where answers are read from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StoreKind {
@@ -66,6 +86,54 @@ pub struct Config {
     pub workers: usize,
     pub max_connections: usize,
     pub timeout: Duration,
+
+    /// The host this server names itself by in the scripts it writes.
+    ///
+    /// **A host, never a URL.** The server writes URLs for two listeners plus a bare
+    /// address into a DHCP snippet, so a value carrying one port would silently pin
+    /// every generated script to one listener. Each URL appends its own port.
+    ///
+    /// `None` means derive one and say so loudly — a wrong guess here produces a
+    /// machine that boots, chains, and hangs on an address that does not exist, and
+    /// the startup log line is the only place the answer will ever appear.
+    pub public_host: Option<String>,
+    /// Where installer images live. **Unset is the whole off switch**: no media
+    /// directory, no media listener, nothing changes for an existing deployment.
+    pub media_dir: Option<PathBuf>,
+    /// The media listener's address, **as the operator set it**. `None` means nobody
+    /// did, and `media_addr()` supplies the default. The distinction is kept because
+    /// naming an address without naming a directory is a mistake worth refusing, and a
+    /// value that had already been defaulted could not be told from one that was asked
+    /// for.
+    pub media_addr: Option<String>,
+    pub media_timeout: Duration,
+    pub media_max_connections: usize,
+    /// Proxmox's `[post-installation-webhook]` token. **Unset is the whole off switch**:
+    /// no token, no endpoint — absent rather than open. See `installed`.
+    pub installed_token: Option<String>,
+    /// A CIDR allowlist for boot traffic. Unset means anyone who can reach the port.
+    pub boot_allow: Option<String>,
+    /// Loaders and menus — what TFTP hands out. **Unset means no TFTP at all**, the
+    /// same off switch shape the media directory has.
+    pub boot_dir: Option<PathBuf>,
+    /// The TFTP listener, as the operator set it. `None` means nobody did; see
+    /// `tftp_addr()`.
+    pub tftp_addr: Option<String>,
+    /// The ports TFTP answers transfers from, as `first-last`. See `tftp_port_range`.
+    pub tftp_port_range: Option<String>,
+    /// The largest TFTP block this server will agree to. See `tftp_blksize`.
+    pub tftp_blksize: Option<usize>,
+    /// Seconds before the built-in menu falls through to booting from local disk.
+    pub boot_timeout: Duration,
+    /// What a machine no answer claims is offered. See `unclaimed_boots_local`.
+    pub boot_unclaimed: Option<String>,
+    /// Replace the embedded logo and the menu's title, for a site that wants its own.
+    pub boot_logo: Option<PathBuf>,
+    pub boot_title: Option<String>,
+    /// Drop to this user and group **after** binding. Binding first is the whole point:
+    /// the other order works as root in testing and fails on deployment.
+    pub user: Option<String>,
+    pub group: Option<String>,
 }
 
 impl Config {
@@ -175,6 +243,34 @@ impl Config {
                 "RESCRIPTUM_TIMEOUT_SECS",
                 DEFAULT_TIMEOUT_SECS as usize,
             ) as u64),
+            public_host: optional("RESCRIPTUM_PUBLIC_HOST"),
+            media_dir: optional("RESCRIPTUM_MEDIA_DIR").map(PathBuf::from),
+            media_addr: optional("RESCRIPTUM_MEDIA_ADDR"),
+            media_timeout: Duration::from_secs(get_usize(
+                "RESCRIPTUM_MEDIA_TIMEOUT_SECS",
+                DEFAULT_MEDIA_TIMEOUT_SECS as usize,
+            ) as u64),
+            media_max_connections: get_usize(
+                "RESCRIPTUM_MEDIA_MAX_CONNECTIONS",
+                DEFAULT_MEDIA_MAX_CONNECTIONS,
+            ),
+            installed_token: optional("RESCRIPTUM_INSTALLED_TOKEN"),
+            boot_allow: optional("RESCRIPTUM_BOOT_ALLOW"),
+            boot_dir: optional("RESCRIPTUM_BOOT_DIR").map(PathBuf::from),
+            tftp_addr: optional("RESCRIPTUM_TFTP_ADDR"),
+            boot_timeout: Duration::from_secs(get_usize(
+                "RESCRIPTUM_BOOT_TIMEOUT_SECS",
+                DEFAULT_BOOT_TIMEOUT_SECS as usize,
+            ) as u64),
+            tftp_port_range: optional("RESCRIPTUM_TFTP_PORT_RANGE"),
+            tftp_blksize: optional("RESCRIPTUM_TFTP_BLKSIZE")
+                .and_then(|v| v.trim().parse::<usize>().ok())
+                .filter(|n| *n > 0),
+            boot_unclaimed: optional("RESCRIPTUM_BOOT_UNCLAIMED"),
+            boot_logo: optional("RESCRIPTUM_BOOT_LOGO").map(PathBuf::from),
+            boot_title: optional("RESCRIPTUM_BOOT_TITLE"),
+            user: optional("RESCRIPTUM_USER"),
+            group: optional("RESCRIPTUM_GROUP"),
         }
     }
 }
@@ -186,6 +282,8 @@ impl Config {
     /// silently came up without a token would let anyone who can reach it rewrite the
     /// root password and SSH keys of every machine subsequently installed.
     pub fn validate(&self) -> Result<(), String> {
+        self.validate_media()?;
+
         let Some(addr) = &self.admin_addr else {
             return Ok(());
         };
@@ -214,6 +312,229 @@ impl Config {
             Some(_) => {}
         }
         Ok(())
+    }
+
+    /// The media half of `validate`. Same rule as everywhere else here: refuse only
+    /// what would not work or would not be safe, and warn about everything that can be
+    /// fixed while the server runs.
+    fn validate_media(&self) -> Result<(), String> {
+        // A binary built without the feature must say so rather than ignoring the
+        // directory it was pointed at. Same shape as `open_store` refusing
+        // `RESCRIPTUM_STORE=sqlite` without the `sqlite` feature: the variable stays
+        // described everywhere, and only the binary that cannot honour it objects.
+        #[cfg(not(feature = "boot"))]
+        if self.media_dir.is_some() {
+            return Err(
+                "RESCRIPTUM_MEDIA_DIR is set, but this binary was built without the `boot` \
+                 feature, so it can serve no media."
+                    .to_string(),
+            );
+        }
+
+        // A host, never a URL. One port in the value would silently pin every generated
+        // script to one listener, and the symptom is a machine chaining into nowhere.
+        if let Some(host) = &self.public_host {
+            let wrong = if host.contains("://") {
+                Some("a scheme")
+            } else if host.contains('/') {
+                Some("a path")
+            } else if host.rsplit_once(':').is_some_and(|(head, tail)| {
+                // `[::1]` is an address, not a host with a port. Only a trailing
+                // `:digits` after something that is not a bracketed address is one.
+                !host.starts_with('[')
+                    && !head.contains(':')
+                    && tail.chars().all(|c| c.is_ascii_digit())
+            }) {
+                Some("a port")
+            } else {
+                None
+            };
+            if let Some(wrong) = wrong {
+                return Err(format!(
+                    "RESCRIPTUM_PUBLIC_HOST is {host:?}, which carries {wrong}. It is a host \
+                     on its own — every generated URL appends its own listener's port."
+                ));
+            }
+        }
+
+        if self.tftp_addr.is_some() && !self.tftp_is_off() && self.boot_dir.is_none() {
+            return Err(format!(
+                "RESCRIPTUM_TFTP_ADDR is set ({}), but RESCRIPTUM_BOOT_DIR is not. There would \
+                 be a listener with no loaders to hand out.",
+                self.tftp_addr.as_deref().unwrap_or_default()
+            ));
+        }
+
+        if self.media_addr.is_some() && self.media_dir.is_none() {
+            return Err(format!(
+                "RESCRIPTUM_MEDIA_ADDR is set ({}), but RESCRIPTUM_MEDIA_DIR is not. There \
+                 would be a listener with nothing to serve.",
+                self.media_addr.as_deref().unwrap_or_default()
+            ));
+        }
+
+        // Two listeners on one port: the second bind fails, and which one loses depends
+        // on start order. Saying so beats a race whose symptom is "it worked yesterday".
+        //
+        // Port zero is exempt, and not as a special case for tests: `:0` asks the kernel
+        // for *any* free port, so two of them are never the same port. Refusing them
+        // would refuse the one configuration that cannot collide.
+        if self.media_dir.is_some() && !ephemeral(&self.media_addr()) {
+            let media = self.media_addr();
+            for (other, name) in [
+                (Some(&self.listen_addr), "RESCRIPTUM_LISTEN_ADDR"),
+                (self.admin_addr.as_ref(), "RESCRIPTUM_ADMIN_ADDR"),
+            ] {
+                if other.is_some_and(|o| o == &media) {
+                    return Err(format!(
+                        "RESCRIPTUM_MEDIA_ADDR and {name} are both {media}. Media downloads \
+                         hold a connection for minutes and answers must not queue behind \
+                         them, which is why they are separate listeners."
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// The TFTP listener's effective address, or `None` when TFTP is off.
+    ///
+    /// **`off` is a value, not an absence** — it is how an operator says the loader will
+    /// come from somebody else's TFTP server while rescriptum keeps serving the rest of
+    /// the chain. The loaders stay served over HTTP at `/boot/…` and stay checked by
+    /// `boot check`; only the listener is gone.
+    ///
+    /// **It is a deployment workaround, never a packaged default.** rescriptum *is* the
+    /// TFTP server; a build or a package that ships with `off` set has traded away the
+    /// thing it is for. Where the platform makes port 69 hard, the answer is to make one
+    /// of the three routes durable there — bind then drop, socket activation, `setcap` —
+    /// not to hand the port to another daemon. See `tftp_addr_is_named` for what happens
+    /// when the route has not been opened yet.
+    pub fn tftp_addr(&self) -> Option<String> {
+        match self.tftp_addr.as_deref() {
+            Some(value) if is_off(value) => None,
+            Some(value) => Some(value.to_string()),
+            None => Some(DEFAULT_TFTP_ADDR.to_string()),
+        }
+    }
+
+    /// Whether TFTP was turned off deliberately, as opposed to never asked for. Worth
+    /// telling apart: the first deserves a line at startup saying what will hand the
+    /// loader over instead.
+    pub fn tftp_is_off(&self) -> bool {
+        self.tftp_addr.as_deref().is_some_and(is_off)
+    }
+
+    /// Whether a machine that no answer claims is sent straight to its own disk instead
+    /// of being offered the menu.
+    ///
+    /// **The default is the menu, and that is the project's thesis rather than an
+    /// oversight**: a machine nobody has decided anything about should end up somewhere a
+    /// human can decide, not silently do nothing. That is right for a machine being
+    /// provisioned, and wrong for a fleet already in production — where most machines are
+    /// installed, and showing every one of them a menu for fifteen seconds on every
+    /// reboot is noise at best and an accidental reinstall at worst.
+    ///
+    /// So `local` inverts what an answer file *means*. With the menu, a file claiming a
+    /// machine is how you say "leave this one alone"; with `local`, a file is how you say
+    /// "install this one", and its absence is the safe state. The second reading is the
+    /// one that scales, because the number of machines you want to reinstall is always
+    /// smaller than the number you do not.
+    pub fn unclaimed_boots_local(&self) -> bool {
+        self.boot_unclaimed
+            .as_deref()
+            .map(str::trim)
+            .is_some_and(|v| v.eq_ignore_ascii_case("local"))
+    }
+
+    /// The ports a TFTP transfer may answer from, parsed from `first-last`.
+    ///
+    /// **This exists because of firewalls, and it is not a preference.** A TFTP transfer
+    /// does not continue on port 69: the server answers from a fresh port and the client
+    /// acknowledges to *that*. A firewall told to allow 69 lets the request in, lets the
+    /// answer out, and then drops the acknowledgement — which looks exactly like a client
+    /// that stopped caring, and is the single hardest failure in this protocol to read.
+    ///
+    /// Unset, the kernel picks and nothing needs opening on a host with no firewall.
+    /// Set, the range is what an operator opens, and it need only be as large as the
+    /// transfers that can overlap — `MAX_TRANSFERS` bounds those at 64.
+    ///
+    /// Anything unparseable is `None` rather than an error: a wrong value here must not
+    /// stop a server from booting a fleet, and the startup line says which it took.
+    pub fn tftp_port_range(&self) -> Option<(u16, u16)> {
+        let raw = self.tftp_port_range.as_deref()?.trim();
+        let (a, b) = raw.split_once('-')?;
+        let first: u16 = a.trim().parse().ok()?;
+        let last: u16 = b.trim().parse().ok()?;
+        // Backwards is a typo, not an empty range, and 0 would ask the kernel to choose
+        // — which is what leaving this unset already means.
+        (first > 0 && last >= first).then_some((first, last))
+    }
+
+    /// The largest TFTP block to agree to, when a client asks for a bigger one.
+    ///
+    /// **1468 exactly fills a 1500-byte path and leaves nothing over**: 1468 of payload,
+    /// 4 of TFTP header, 8 of UDP, 20 of IP. iPXE asks for precisely that, and on a plain
+    /// untagged Ethernet it is right. Put one VLAN tag in the way and the frame is 1504,
+    /// which is dropped or fragmented — and a PXE ROM meeting either usually just stops,
+    /// with no message, having downloaded nothing. Same for PPPoE, and for any tunnel.
+    ///
+    /// So this exists to be lowered when a boot stalls at the first block. 1400 leaves 68
+    /// bytes of headroom, which covers a tag and most tunnels; 512 is the RFC default and
+    /// always works. The default stays at what fits a clean path, because lowering it for
+    /// everybody costs every deployment throughput to fix a minority's network — but the
+    /// failure it causes is now loud enough to find.
+    ///
+    /// Behind the `boot` feature: the only caller is the TFTP server, and the constants
+    /// it clamps against live there too.
+    #[cfg(feature = "boot")]
+    pub fn tftp_blksize(&self) -> usize {
+        self.tftp_blksize
+            .unwrap_or(crate::boot::tftp::MAX_BLOCK)
+            .clamp(
+                crate::boot::tftp::DEFAULT_BLOCK,
+                crate::boot::tftp::MAX_BLOCK,
+            )
+    }
+
+    /// The menu timeout **in milliseconds**, which is the unit `choose` counts. The
+    /// conversion has exactly one place, and this is it.
+    pub fn boot_timeout_millis(&self) -> u64 {
+        self.boot_timeout.as_millis() as u64
+    }
+
+    /// The media listener's effective address.
+    pub fn media_addr(&self) -> String {
+        self.media_addr
+            .clone()
+            .unwrap_or_else(|| DEFAULT_MEDIA_ADDR.to_string())
+    }
+
+    /// The host this server names itself by, and where that name came from.
+    ///
+    /// Derivation opens a UDP socket toward a documentation address and reads back the
+    /// local address the routing table chose. **No packet is sent** — connecting a UDP
+    /// socket only picks a route. It is the standard trick, it costs nothing, and it is
+    /// wrong often enough on multi-homed and NAT hosts to be a warning rather than a
+    /// silent success.
+    pub fn public_host(&self) -> (String, bool) {
+        match &self.public_host {
+            Some(host) => (host.clone(), false),
+            None => (
+                derive_public_host().unwrap_or_else(|| "127.0.0.1".to_string()),
+                true,
+            ),
+        }
+    }
+
+    /// The two URLs a generated script needs, each with its own listener's port.
+    #[cfg(feature = "boot")]
+    pub fn endpoints(&self) -> crate::boot::stanza::Endpoints {
+        let (host, _) = self.public_host();
+        crate::boot::stanza::Endpoints {
+            media: format!("http://{}", join(&host, &self.media_addr())),
+            answer: format!("http://{}", join(&host, &self.listen_addr)),
+        }
     }
 
     /// The answer endpoint's own check, separate because a short token there is worth a
@@ -262,6 +583,126 @@ impl Config {
     }
 }
 
+/// The spellings that mean "not at all", matching `RESCRIPTUM_LOG=off`.
+fn is_off(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "off" | "none" | "disabled"
+    )
+}
+
+/// Whether an address asks the kernel to choose the port. Two such listeners never
+/// collide, however identical the strings look.
+fn ephemeral(addr: &str) -> bool {
+    addr.rsplit_once(':')
+        .is_some_and(|(_, port)| port.trim() == "0")
+}
+
+/// A reachable host plus the port of a listen address, ready to go into a URL.
+///
+/// Only `endpoints` calls this, and only a binary that can serve media has one.
+#[cfg(feature = "boot")]
+///
+/// The listen address is usually `0.0.0.0:8001`, which is not something anybody can
+/// fetch from — the port is the only part of it worth keeping.
+fn join(host: &str, listen_addr: &str) -> String {
+    let port = listen_addr
+        .rsplit_once(':')
+        .map(|(_, port)| port)
+        .unwrap_or("80");
+    // An IPv6 literal needs brackets before a port can follow it.
+    if host.contains(':') && !host.starts_with('[') {
+        format!("[{host}]:{port}")
+    } else {
+        format!("{host}:{port}")
+    }
+}
+
+/// Ask the routing table which of this host's addresses faces the outside world.
+///
+/// 192.0.2.1 is TEST-NET-1, a documentation address that exists to be written down and
+/// never answered. Connecting a UDP socket to it sends nothing; it only makes the
+/// kernel choose a source address, which is the answer we are after — and on a host
+/// with one interface it is simply the right one.
+pub fn derive_public_host() -> Option<String> {
+    choose_host(routed_address(), &local_addresses())
+}
+
+/// The choice itself, separated from the two syscalls that feed it so it can be tested.
+fn choose_host(routed: Option<String>, addresses: &[String]) -> Option<String> {
+    if routed.is_some() {
+        return routed;
+    }
+    // No default route — an isolated provisioning segment, which is a perfectly ordinary
+    // way to run this. The routing table has nothing to say, but the interface list
+    // still does: with exactly one address there is no choice to get wrong. With
+    // several there is, and guessing one silently is worse than saying nothing.
+    (addresses.len() == 1).then(|| addresses[0].clone())
+}
+
+fn routed_address() -> Option<String> {
+    let socket = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
+    socket.connect("192.0.2.1:9").ok()?;
+    let address = socket.local_addr().ok()?.ip();
+    (!address.is_unspecified()).then(|| address.to_string())
+}
+
+/// Every address this host actually has, loopback and link-local excluded.
+///
+/// The derivation above picks the interface the *default route* uses, which is right on
+/// a host with one address and a coin toss on a NAS with two NICs or a bond. Knowing
+/// what else is available is what turns "this might be wrong" into something an
+/// operator can act on without going to look — and looking is the step nobody takes
+/// before a rack is already failing to boot.
+pub fn local_addresses() -> Vec<String> {
+    #[cfg(not(unix))]
+    {
+        Vec::new()
+    }
+    #[cfg(unix)]
+    {
+        use std::net::{Ipv4Addr, Ipv6Addr};
+
+        let mut list: *mut libc::ifaddrs = std::ptr::null_mut();
+        if unsafe { libc::getifaddrs(&mut list) } != 0 {
+            return Vec::new();
+        }
+        let mut found: Vec<String> = Vec::new();
+        let mut node = list;
+        while !node.is_null() {
+            let entry = unsafe { &*node };
+            node = entry.ifa_next;
+            if entry.ifa_addr.is_null() {
+                continue;
+            }
+            let family = unsafe { (*entry.ifa_addr).sa_family } as i32;
+            let address = if family == libc::AF_INET {
+                let raw = unsafe { &*(entry.ifa_addr as *const libc::sockaddr_in) };
+                let octets = u32::from_be(raw.sin_addr.s_addr);
+                let v4 = Ipv4Addr::from(octets);
+                (!v4.is_loopback() && !v4.is_link_local() && !v4.is_unspecified())
+                    .then(|| v4.to_string())
+            } else if family == libc::AF_INET6 {
+                let raw = unsafe { &*(entry.ifa_addr as *const libc::sockaddr_in6) };
+                let v6 = Ipv6Addr::from(raw.sin6_addr.s6_addr);
+                // No link-local: an fe80:: address needs a scope to be usable, and a
+                // scope is not something that survives being written into a script.
+                let link_local = v6.segments()[0] & 0xffc0 == 0xfe80;
+                (!v6.is_loopback() && !link_local && !v6.is_unspecified()).then(|| v6.to_string())
+            } else {
+                None
+            };
+            if let Some(address) = address
+                && !found.contains(&address)
+            {
+                found.push(address);
+            }
+        }
+        unsafe { libc::freeifaddrs(list) };
+        found
+    }
+}
+
 /// One configuration variable, **described** rather than merely read.
 ///
 /// `from_lookup` above knows how to interpret each of these. This table is what anything
@@ -282,7 +723,7 @@ pub struct Known {
 
 /// Every variable, in the order a person would want to meet them: what answers come
 /// from, where the server listens, how much it says, then the two credentials.
-pub const KNOWN: [Known; 13] = [
+pub const KNOWN: [Known; 30] = [
     Known {
         key: "RESCRIPTUM_STORE",
         default: Some("files"),
@@ -363,6 +804,111 @@ pub const KNOWN: [Known; 13] = [
         secret: true,
         help: "Bearer token for the write API. At least 16 characters, and required.",
     },
+    Known {
+        key: "RESCRIPTUM_PUBLIC_HOST",
+        // Not a constant: the default is this host's own LAN address, which is only
+        // knowable at runtime. `settings()` fills it in, the way it does the CPU count.
+        default: None,
+        secret: false,
+        help: "The host this server names itself by. A host, never a URL. \
+               Unset, the address of the interface that reaches the network is used.",
+    },
+    Known {
+        key: "RESCRIPTUM_MEDIA_DIR",
+        default: None,
+        secret: false,
+        help: "Installer images. Unset means no media and no media listener.",
+    },
+    Known {
+        key: "RESCRIPTUM_MEDIA_ADDR",
+        default: Some(DEFAULT_MEDIA_ADDR),
+        secret: false,
+        help: "The media listener, when there is a media directory. Loaders assume 8001.",
+    },
+    Known {
+        key: "RESCRIPTUM_MEDIA_TIMEOUT_SECS",
+        default: Some("600"),
+        secret: false,
+        help: "Whole-transfer deadline for a download. Not the answer listener's 10.",
+    },
+    Known {
+        key: "RESCRIPTUM_MEDIA_MAX_CONNECTIONS",
+        default: Some("16"),
+        secret: false,
+        help: "Concurrent transfers, low on purpose: each holds its permit for minutes.",
+    },
+    Known {
+        key: "RESCRIPTUM_BOOT_ALLOW",
+        default: None,
+        secret: false,
+        help: "Client CIDRs allowed to fetch boot media. Unset means anyone who can reach it.",
+    },
+    Known {
+        key: "RESCRIPTUM_BOOT_DIR",
+        default: None,
+        secret: false,
+        help: "Loaders and menus, handed out over TFTP. Unset means no TFTP at all.",
+    },
+    Known {
+        key: "RESCRIPTUM_TFTP_ADDR",
+        default: Some(DEFAULT_TFTP_ADDR),
+        secret: false,
+        help: "The TFTP listener, or `off` for none. Port 69 is privileged; see RESCRIPTUM_USER.",
+    },
+    Known {
+        key: "RESCRIPTUM_BOOT_TIMEOUT_SECS",
+        default: Some("15"),
+        secret: false,
+        help: "Seconds before the menu falls through to local disk. Rendered as milliseconds.",
+    },
+    Known {
+        key: "RESCRIPTUM_INSTALLED_TOKEN",
+        default: None,
+        secret: true,
+        help: "Proxmox's post-installation-webhook token. Set it and POST /installed exists, which drops a machine's install claim when it reports success. Unset, there is no endpoint.",
+    },
+    Known {
+        key: "RESCRIPTUM_TFTP_PORT_RANGE",
+        default: None,
+        secret: false,
+        help: "The ports transfers answer from, as `first-last` (e.g. 30000-30063). A TFTP transfer leaves port 69 immediately, so this is what a firewall has to allow besides 69/udp. Unset, the kernel picks.",
+    },
+    Known {
+        key: "RESCRIPTUM_TFTP_BLKSIZE",
+        default: Some("1468"),
+        secret: false,
+        help: "The largest TFTP block to agree to. 1468 fills a 1500-byte path exactly; lower it (1400, or 512) if a boot stalls at the first block, which is what a VLAN tag or a tunnel does to it.",
+    },
+    Known {
+        key: "RESCRIPTUM_BOOT_UNCLAIMED",
+        default: Some("menu"),
+        secret: false,
+        help: "What a machine no answer claims gets: `menu`, or `local` to send it straight to its own disk.",
+    },
+    Known {
+        key: "RESCRIPTUM_BOOT_LOGO",
+        default: None,
+        secret: false,
+        help: "A PNG to show behind the menu, replacing the built-in one.",
+    },
+    Known {
+        key: "RESCRIPTUM_BOOT_TITLE",
+        default: None,
+        secret: false,
+        help: "The menu's title bar, replacing the built-in one.",
+    },
+    Known {
+        key: "RESCRIPTUM_USER",
+        default: None,
+        secret: false,
+        help: "Drop to this user after binding. Binding first is the point.",
+    },
+    Known {
+        key: "RESCRIPTUM_GROUP",
+        default: None,
+        secret: false,
+        help: "Drop to this group after binding.",
+    },
 ];
 
 /// Which of the three places a value came from.
@@ -435,6 +981,11 @@ pub fn settings(
 
             let default = match known.key {
                 "RESCRIPTUM_WORKERS" => Some(default_workers().to_string()),
+                // **The other default that cannot be a constant.** The server derives
+                // this at startup, so a panel showing an empty field would be showing
+                // something other than what the server will use — and the operator has
+                // no way to tell whether the guess is right without reading a log.
+                "RESCRIPTUM_PUBLIC_HOST" => derive_public_host(),
                 _ => known.default.map(str::to_string),
             };
             let value = from_env.or(from_file).or_else(|| default.clone());
@@ -652,6 +1203,268 @@ mod tests {
     fn surrounding_whitespace_is_trimmed() {
         let c = Config::from_lookup(lookup(&[("RESCRIPTUM_LISTEN_ADDR", "  0.0.0.0:8080 ")]));
         assert_eq!(c.listen_addr, "0.0.0.0:8080");
+    }
+
+    // ---- media and the public host ---------------------------------------
+
+    #[test]
+    fn media_is_off_until_a_directory_is_named() {
+        // Nothing changes for an existing deployment: no directory, no listener.
+        let c = Config::from_lookup(lookup(&[]));
+        assert_eq!(c.media_dir, None);
+        assert_eq!(c.media_addr, None);
+        assert!(c.validate().is_ok());
+    }
+
+    #[test]
+    fn a_boot_directory_alone_still_starts_tftp() {
+        // The default has not moved: `off` is opt-in, and a plain Linux host that names
+        // a boot directory gets the TFTP server the plan calls core.
+        let c = Config::from_lookup(lookup(&[("RESCRIPTUM_BOOT_DIR", "/srv/boot")]));
+        assert_eq!(c.tftp_addr().as_deref(), Some("0.0.0.0:69"));
+        assert!(!c.tftp_is_off());
+    }
+
+    #[test]
+    fn the_media_listener_defaults_to_the_port_the_loaders_assume() {
+        let c = Config::from_lookup(lookup(&[("RESCRIPTUM_MEDIA_DIR", "/srv/media")]));
+        assert_eq!(c.media_addr(), "0.0.0.0:8001");
+        // Pinned deliberately. The loader we ship embeds a script that chains to
+        // `${next-server}:8001` before any deployment exists, so this is a contract in
+        // the same way an answer URL baked into an ISO is.
+        assert_eq!(DEFAULT_MEDIA_ADDR, "0.0.0.0:8001");
+        assert!(c.validate().is_ok());
+    }
+
+    #[test]
+    fn an_address_with_nothing_to_serve_is_refused() {
+        let c = Config::from_lookup(lookup(&[("RESCRIPTUM_MEDIA_ADDR", "0.0.0.0:8001")]));
+        let e = c.validate().expect_err("must refuse");
+        assert!(e.contains("RESCRIPTUM_MEDIA_DIR"), "{e}");
+    }
+
+    #[test]
+    fn two_listeners_on_one_port_are_refused_rather_than_raced() {
+        // The second bind loses, and which one that is depends on start order.
+        let c = Config::from_lookup(lookup(&[
+            ("RESCRIPTUM_MEDIA_DIR", "/srv/media"),
+            ("RESCRIPTUM_MEDIA_ADDR", "0.0.0.0:8000"),
+        ]));
+        let e = c.validate().expect_err("must refuse");
+        assert!(e.contains("RESCRIPTUM_LISTEN_ADDR"), "{e}");
+
+        let c = Config::from_lookup(lookup(&[
+            ("RESCRIPTUM_MEDIA_DIR", "/srv/media"),
+            ("RESCRIPTUM_MEDIA_ADDR", "127.0.0.1:8001"),
+            ("RESCRIPTUM_ADMIN_ADDR", "127.0.0.1:8001"),
+            ("RESCRIPTUM_STORE", "sqlite"),
+            ("RESCRIPTUM_ADMIN_TOKEN", "0123456789abcdef0"),
+        ]));
+        let e = c.validate().expect_err("must refuse");
+        assert!(e.contains("RESCRIPTUM_ADMIN_ADDR"), "{e}");
+    }
+
+    #[test]
+    fn tftp_can_be_turned_off_without_giving_up_the_boot_directory() {
+        // **Off is a deployment workaround, never a packaged default.** It is how an
+        // operator says another daemon on this host hands the loader over while
+        // rescriptum serves the rest of the chain. rescriptum *is* the TFTP server; a
+        // package that shipped with this set would have traded away the thing it is for.
+        let c = Config::from_lookup(lookup(&[
+            ("RESCRIPTUM_BOOT_DIR", "/srv/boot"),
+            ("RESCRIPTUM_TFTP_ADDR", "off"),
+        ]));
+        assert!(c.validate().is_ok(), "{:?}", c.validate());
+        assert_eq!(c.tftp_addr(), None, "no listener");
+        assert!(
+            c.tftp_is_off(),
+            "and deliberately so, not merely unasked for"
+        );
+        // The directory is still configured, so /boot/ and `boot check` still work.
+        assert_eq!(c.boot_dir, Some(PathBuf::from("/srv/boot")));
+    }
+
+    #[test]
+    fn off_is_spelled_the_way_the_log_level_spells_it() {
+        for value in ["off", "OFF", "none", "disabled", " off "] {
+            let c = Config::from_lookup(|key| {
+                (key == "RESCRIPTUM_TFTP_ADDR").then(|| value.to_string())
+            });
+            assert_eq!(c.tftp_addr(), None, "{value:?}");
+        }
+        // And an address is still an address.
+        let c = Config::from_lookup(lookup(&[
+            ("RESCRIPTUM_BOOT_DIR", "/srv/boot"),
+            ("RESCRIPTUM_TFTP_ADDR", "0.0.0.0:6969"),
+        ]));
+        assert_eq!(c.tftp_addr().as_deref(), Some("0.0.0.0:6969"));
+        assert!(!c.tftp_is_off());
+    }
+
+    #[test]
+    fn turning_tftp_off_needs_no_boot_directory_to_justify_it() {
+        // Off is off: refusing this would be refusing somebody who said "definitely not"
+        // before they said where anything lives.
+        let c = Config::from_lookup(lookup(&[("RESCRIPTUM_TFTP_ADDR", "off")]));
+        assert!(c.validate().is_ok(), "{:?}", c.validate());
+        // But naming a real address with nowhere to serve from is still refused.
+        let c = Config::from_lookup(lookup(&[("RESCRIPTUM_TFTP_ADDR", "0.0.0.0:69")]));
+        assert!(c.validate().is_err());
+    }
+
+    #[test]
+    fn two_ephemeral_ports_are_not_a_collision() {
+        // `:0` asks the kernel for any free port, so two of them are never the same
+        // port. Refusing them would refuse the one configuration that cannot collide —
+        // and it is the one every integration test uses.
+        let c = Config::from_lookup(lookup(&[
+            ("RESCRIPTUM_MEDIA_DIR", "/srv/media"),
+            ("RESCRIPTUM_MEDIA_ADDR", "127.0.0.1:0"),
+            ("RESCRIPTUM_LISTEN_ADDR", "127.0.0.1:0"),
+        ]));
+        assert!(c.validate().is_ok(), "{:?}", c.validate());
+    }
+
+    #[test]
+    fn the_public_host_refuses_to_be_a_url() {
+        // It is written into URLs for *two* listeners plus a bare address in a DHCP
+        // snippet. A value carrying one port would pin every generated script to one
+        // listener, and the symptom is a machine chaining into nowhere.
+        for (value, wrong) in [
+            ("http://192.0.2.10", "a scheme"),
+            ("192.0.2.10:8001", "a port"),
+            ("192.0.2.10/boot", "a path"),
+        ] {
+            let c = Config::from_lookup(|key| {
+                (key == "RESCRIPTUM_PUBLIC_HOST").then(|| value.to_string())
+            });
+            let e = c.validate().expect_err("must refuse {value}");
+            assert!(e.contains(wrong), "{value}: {e}");
+        }
+    }
+
+    #[test]
+    fn a_plain_host_or_an_ipv6_literal_is_accepted() {
+        for value in [
+            "192.0.2.10",
+            "boot.example.com",
+            "[2001:db8::1]",
+            "2001:db8::1",
+        ] {
+            let c = Config::from_lookup(|key| {
+                (key == "RESCRIPTUM_PUBLIC_HOST").then(|| value.to_string())
+            });
+            assert!(c.validate().is_ok(), "{value} must be accepted");
+            assert_eq!(c.public_host(), (value.to_string(), false));
+        }
+    }
+
+    #[test]
+    fn the_settings_table_shows_the_address_the_server_would_actually_use() {
+        // **A panel with an empty field here is showing something other than what the
+        // server does.** The value is derived at startup, so the table has to derive it
+        // too — the same treatment the CPU count already gets, and for the same reason.
+        let s = settings(None, |_| None);
+        let host = setting(&s, "RESCRIPTUM_PUBLIC_HOST");
+        assert!(host.set, "a derived value is still a value in force");
+        assert_eq!(
+            host.value, host.default,
+            "unset means the derived default is what is in force"
+        );
+        assert_eq!(
+            host.value,
+            Config::from_lookup(|_| None).public_host().0.into(),
+            "and it is the same address the server itself would pick"
+        );
+    }
+
+    #[test]
+    fn without_a_default_route_a_single_interface_still_answers() {
+        // An isolated provisioning segment has no default route, which is exactly the
+        // network this server is most often put on. One address there is not a guess.
+        let one = vec!["10.0.0.4".to_string()];
+        assert_eq!(choose_host(None, &one), Some("10.0.0.4".to_string()));
+
+        // Two, and there is a real choice — one that only the operator can make.
+        let two = vec!["10.0.0.4".to_string(), "192.168.1.4".to_string()];
+        assert_eq!(choose_host(None, &two), None);
+        assert_eq!(choose_host(None, &[]), None);
+
+        // A route beats the interface list even when the list is unambiguous: the
+        // kernel knows which way traffic actually leaves.
+        assert_eq!(
+            choose_host(Some("172.16.0.9".to_string()), &two),
+            Some("172.16.0.9".to_string())
+        );
+    }
+
+    #[test]
+    fn the_host_knows_what_addresses_it_has() {
+        // Loopback and link-local are excluded: the first is not reachable from a
+        // machine, and the second needs a scope that does not survive being written
+        // into a script.
+        let addresses = local_addresses();
+        for address in &addresses {
+            assert!(!address.starts_with("127."), "{address} is loopback");
+            assert!(!address.starts_with("169.254."), "{address} is link-local");
+            assert!(!address.starts_with("fe80:"), "{address} is link-local");
+            assert_ne!(address, "::1");
+        }
+        // The derived host, when there is one, is one of them — it is chosen from this
+        // set by the routing table rather than invented.
+        if let Some(derived) = derive_public_host()
+            && !addresses.is_empty()
+        {
+            assert!(
+                addresses.contains(&derived),
+                "derived {derived} is not among {addresses:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_derived_public_host_is_reported_as_derived() {
+        // Derivation is wrong often enough on multi-homed and NAT hosts that it is a
+        // warning rather than a silent success — the flag is what makes it sayable.
+        let (_host, derived) = Config::from_lookup(lookup(&[])).public_host();
+        assert!(derived);
+    }
+
+    #[test]
+    #[cfg(feature = "boot")]
+    fn each_generated_url_carries_its_own_listeners_port() {
+        // The whole reason the variable is a host: one value, two listeners.
+        let c = Config::from_lookup(lookup(&[
+            ("RESCRIPTUM_PUBLIC_HOST", "192.0.2.10"),
+            ("RESCRIPTUM_MEDIA_DIR", "/srv/media"),
+        ]));
+        let endpoints = c.endpoints();
+        assert_eq!(endpoints.answer, "http://192.0.2.10:8000");
+        assert_eq!(endpoints.media, "http://192.0.2.10:8001");
+    }
+
+    #[test]
+    #[cfg(feature = "boot")]
+    fn an_ipv6_host_is_bracketed_before_a_port_is_appended() {
+        let c = Config::from_lookup(lookup(&[
+            ("RESCRIPTUM_PUBLIC_HOST", "2001:db8::1"),
+            ("RESCRIPTUM_MEDIA_DIR", "/srv/media"),
+        ]));
+        assert_eq!(c.endpoints().media, "http://[2001:db8::1]:8001");
+    }
+
+    #[test]
+    fn media_tuning_falls_back_the_way_everything_else_does() {
+        let c = Config::from_lookup(lookup(&[
+            ("RESCRIPTUM_MEDIA_DIR", "/srv/media"),
+            ("RESCRIPTUM_MEDIA_TIMEOUT_SECS", "0"),
+            ("RESCRIPTUM_MEDIA_MAX_CONNECTIONS", "plenty"),
+        ]));
+        assert_eq!(c.media_timeout, Duration::from_secs(600));
+        assert_eq!(c.media_max_connections, 16);
+        // And the default is deliberately not the answer listener's ten seconds: a
+        // 1.5 GB transfer is two minutes on 100 Mbit, and it would be killed mid-flight.
+        assert!(c.media_timeout > c.timeout);
     }
 
     // ---- the described surface -------------------------------------------

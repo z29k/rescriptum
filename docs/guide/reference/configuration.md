@@ -29,6 +29,22 @@ no configuration *format* to learn and no command line to get wrong.
 | `RESCRIPTUM_CAPTURE_DIR` | unset | Record request bodies here. Unset means no capture |
 | `RESCRIPTUM_LOG` | `all` | `all`, `problems` or `off` — see [below](#logging) |
 | `RESCRIPTUM_LOG_FILE` | unset | A file to append to, or `stdout` / `stderr`. Unset means stderr |
+| `RESCRIPTUM_MEDIA_DIR` | unset | Installer images. **Unset means no media and no media listener** |
+| `RESCRIPTUM_MEDIA_ADDR` | `0.0.0.0:8001` | The media listener, when there is a media directory |
+| `RESCRIPTUM_MEDIA_TIMEOUT_SECS` | `600` | Whole-transfer deadline. Deliberately not the answer listener's 10 |
+| `RESCRIPTUM_MEDIA_MAX_CONNECTIONS` | `16` | Concurrent transfers. Low on purpose: each holds its permit for minutes |
+| `RESCRIPTUM_PUBLIC_HOST` | derived | The host generated URLs name. **A host, never a URL** |
+| `RESCRIPTUM_BOOT_ALLOW` | unset | Client CIDRs allowed to fetch boot media. Unset means anyone who can reach the port |
+| `RESCRIPTUM_BOOT_DIR` | unset | Loaders and menus, handed out over TFTP. **Unset means no TFTP at all** |
+| `RESCRIPTUM_TFTP_ADDR` | `0.0.0.0:69` | The TFTP listener, or **`off`** for none. Port 69 is privileged; see `RESCRIPTUM_USER` |
+| `RESCRIPTUM_TFTP_PORT_RANGE` | unset | The ports transfers answer from, as `first-last`. **A TFTP transfer leaves port 69 immediately** — the server replies from a fresh port and the client acknowledges to that — so a firewall allowing only 69 drops the acknowledgement and the machine looks like it lost interest. Pin the range so it can be opened. Unset, the kernel picks |
+| `RESCRIPTUM_TFTP_BLKSIZE` | `1468` | The largest TFTP block to agree to. 1468 fills a 1500-byte path **exactly** — 1468 payload, 4 TFTP, 8 UDP, 20 IP — so a VLAN tag or a tunnel makes the frame too big and a PXE ROM usually just stops. Lower it (1400, or 512) when a boot stalls at the first block |
+| `RESCRIPTUM_BOOT_TIMEOUT_SECS` | `15` | Seconds before the menu falls through to local boot |
+| `RESCRIPTUM_BOOT_UNCLAIMED` | `menu` | What a machine no answer claims gets. `local` hands it back to its firmware instead, which inverts what an answer file means: present is *install this one* rather than *leave this one alone* |
+| `RESCRIPTUM_INSTALLED_TOKEN` | unset | Proxmox's `[post-installation-webhook]` token. Set it and `POST /installed` exists, dropping a machine's install claim when it reports success. **Unset, there is no endpoint** |
+| `RESCRIPTUM_BOOT_LOGO` | built-in | A PNG to show behind the menu |
+| `RESCRIPTUM_BOOT_TITLE` | built-in | The menu's title bar |
+| `RESCRIPTUM_USER` / `_GROUP` | unset | Drop to these **after** binding. The other order fails on deployment |
 
 `/srv` is where the filesystem hierarchy standard puts data served by the system, which is
 what an answers directory is. Both defaults live there so that a bare `rescriptum` does
@@ -153,6 +169,12 @@ These stop the server rather than warning, because starting anyway would be wors
 | `RESCRIPTUM_ADMIN_TOKEN` under 16 characters | short enough to guess |
 | The listen address cannot be bound | nothing to do |
 | The store cannot be opened | nothing to serve |
+| `RESCRIPTUM_MEDIA_ADDR` set with no `RESCRIPTUM_MEDIA_DIR` | a listener with nothing to serve |
+| `RESCRIPTUM_MEDIA_ADDR` equal to the answer or admin address | the second bind loses, and which one depends on start order |
+| `RESCRIPTUM_PUBLIC_HOST` carrying a scheme, a port or a path | it is written into URLs for two listeners; one port in the value pins every generated script to one of them |
+| `RESCRIPTUM_TFTP_ADDR` set with no `RESCRIPTUM_BOOT_DIR` | a listener with no loaders to hand out |
+| The boot directory cannot be resolved | every path check compares against it |
+| `RESCRIPTUM_USER` names an account that does not exist | nothing to become |
 
 ## Startup warnings
 
@@ -166,12 +188,26 @@ These are printed and the server carries on:
 | Admin API not on loopback | `warning: the admin API is not bound to loopback — …` |
 | `RESCRIPTUM_ANSWER_TOKEN` under 16 characters | a warning, **not** an error — refusing to start would leave a fleet unable to install |
 | Any problem in the answer set | one `warning:` line each, the same set `check` reports |
+| `RESCRIPTUM_PUBLIC_HOST` unset | The routing table's answer, or the sole interface address when there is no default route. Logged either way, as a warning **naming the other addresses** when there are any. A NAT host still gets it wrong silently |
+| TFTP cannot bind | `warning: cannot bind TFTP on … ` — **the one listener whose failed bind is not fatal.** Port 69 is the only privileged port in the design, so it is the only bind that can fail for something nobody configured; answers are the product, and dying would fail every install in flight to report that a second port could not be opened. `boot check` exits non-zero and the message names the ways to have the port |
+| Media directory missing or unlistable | one `warning: media: …` line — a fleet must never be unable to install because one image is odd |
 
 ## Compile-time options
 
 | Feature | Default | Effect |
 |---|---|---|
-| `sqlite` | on | The SQLite store and the admin API. `cargo build --no-default-features` drops both — 944,928 bytes instead of 2,103,456 on ARMv7 |
+| `sqlite` | on | The SQLite store and the admin API |
+| `boot` | on | The media catalogue, the ISO reader and the media listener |
+
+Measured on ARMv7 (gnueabihf, glibc floor 2.17). Re-measure rather than quoting these:
+they moved by about 375 KB when that target changed from musl.
+
+| Build | Bytes |
+|---|---|
+| both (default) | 2,602,056 |
+| `sqlite` only | 2,482,000 |
+| `boot` only | 1,436,704 |
+| neither | 1,316,648 |
 
 ## Fixed limits
 

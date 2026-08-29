@@ -1,0 +1,401 @@
+---
+title: Serving boot media
+description: Serve the installer itself — kernel, initrd and image — from the same server that decides the answer, on its own listener.
+sidebar:
+  label: Boot media
+  order: 8
+---
+
+# Serving boot media
+
+An answer tells a machine *how* to install. It says nothing about where the installer
+comes from — and until now that was somebody else's web server, holding images that
+nobody checked against the answers written for them.
+
+With a media directory, the same server does both. **A machine's MAC selects its answer
+and the image that answer was written for, and the two cannot drift apart because one
+component decided both.**
+
+```console
+$ export RESCRIPTUM_MEDIA_DIR=/srv/media
+```
+
+Unset is the whole off switch. Nothing changes for an existing deployment until you set
+it.
+
+## Where the base images live
+
+**No installer image is in this project, and none is in a release.** An ISO is somebody
+else's artefact, it is one to four gigabytes, and it changes on its own schedule — three
+separate reasons it belongs on your disk rather than in ours. `RESCRIPTUM_MEDIA_DIR` is
+where you keep them, and **that directory is the archive**: what a vendor published, on
+disk, never modified afterwards.
+
+That last part is a property rather than a promise. Nothing here rewrites an image —
+preparing one produces a sidecar and an injection applied *on the wire* (see
+[Preparing a Proxmox image](#preparing-a-proxmox-image)), so the bytes on disk stay
+exactly what the vendor published and their digest stays checkable against the vendor's
+own `SHA256SUMS`. `media list` says which entries are the archive and which derive from
+it.
+
+## Getting an image in
+
+Three ways, and the first is the one to reach for.
+
+### Pick one from a catalogue
+
+```console
+$ rescriptum media sources
+SOURCE       NAME              WHAT IT INSTALLS
+proxmox-ve   Proxmox VE        the founding case — answers come from a file injected into the image
+debian       Debian            netinst images; the answer is a preseed on the kernel command line
+ubuntu       Ubuntu LTS        autoinstall, via a cloud-init datasource on the kernel command line
+almalinux    AlmaLinux 9       kickstart, named on the kernel command line
+rocky        Rocky Linux 9     kickstart, named on the kernel command line
+
+$ rescriptum media sources proxmox-ve
+reading https://enterprise.proxmox.com/iso/SHA256SUMS …
+Proxmox VE — the founding case — answers come from a file injected into the image
+  proxmox-ve_9.2-1.iso
+  proxmox-ve_9.2-1-arm64.iso
+  proxmox-ve_9.1-1.iso
+
+$ rescriptum media add --from proxmox-ve proxmox-ve_9.2-1.iso
+```
+
+**Nothing about a specific image is stored in this server.** Each catalogue names the
+checksum index the vendor already publishes beside its own images, and the names and
+digests are read from it when you ask — so the list is whatever that vendor has today, and
+the digest is theirs. A table of URLs baked into a release would be offering last quarter's
+images, some of them since deleted.
+
+**What that is worth, said plainly.** Taking the digest from the same host that serves the
+image is *not* a signature check. Over HTTPS it authenticates the vendor's domain and it
+catches a truncated download, a corrupt mirror and a file that changed underneath — most of
+what actually goes wrong — and nothing beyond that. If you want more, use the next section
+with a digest you obtained yourself.
+
+### Let the server fetch it
+
+```console
+$ rescriptum media add https://enterprise.proxmox.com/iso/proxmox-ve_8.4-1.iso \
+    --sha256 9f86d081884c7d65…
+fetching https://enterprise.proxmox.com/iso/proxmox-ve_8.4-1.iso
+  with curl, into /srv/media/proxmox-ve_8.4-1.iso.part
+######################################################################## 100.0%
+verifying 1.5G …
+fetched 1.5G via curl, digest verified
+```
+
+It lands on a `.part` name and is renamed only once the digest matches, so **a partial
+download never becomes a catalogue entry** — the catalogue probes whatever it finds, and
+a truncated ISO probes as an unknown image a machine would then try to boot. An
+interrupted fetch leaves the `.part` in place and running the command again resumes it.
+
+`--sha256` is **required** here, because nothing else would check what arrived. Vendors
+publish a `SHA256SUMS` beside the image. If you genuinely mean to go without, say
+`--unverified` — the point is that skipping it is a deliberate act rather than the
+default, since this decides what every machine on the network installs.
+
+`--as NAME.iso` picks the filename when the URL does not imply a usable one.
+
+::: tip There is no TLS in this binary
+rustls plus a root store is forty-odd crates and over a megabyte on ARMv7, for a job
+every host already has a tool for. So this runs `curl`, or `wget` if that is what is
+installed, and says plainly when it finds neither — in which case the answer is the one
+below.
+:::
+
+### Or put it there yourself
+
+Over SMB, over `scp`, from wherever the ISO already is — the native act on a NAS — and
+then register it:
+
+```console
+$ rescriptum media add /srv/media/pve-8.4.iso --sha256 9f86d081884c7d65…
+hashing /srv/media/pve-8.4.iso …
+  10% (152.0M of 1.5G)
+  …
+pve-8.4  9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08
+  proxmox Proxmox Virtual Environment 8.4-1
+  kernel /boot/linux26
+  initrd /boot/initrd.img
+  wrote /srv/media/pve-8.4.media
+```
+
+`--sha256` is optional and worth giving: a mismatch is either a truncated download or
+the wrong file, and both would install the wrong thing on every machine that asks.
+Nothing is recorded when it does not match.
+
+**Nothing is copied and the image is never modified.** What `media add` writes is the
+`.media` sidecar beside it, recording the digest and what the probe found. That is the
+whole point: hashing 1.5 GB takes the better part of a minute, and the server must never
+spend a minute inside a request.
+
+An image with no sidecar still appears and is still served — it just has no digest to
+re-check, and it is probed on sight.
+
+## What it can tell about an image
+
+```console
+$ rescriptum media list
+ID                   FAMILY   ARCH       VERSION                          SIZE  PINNED
+pve-8.4              proxmox  x86_64     Proxmox Virtual Environment…     1.5G  9f86d0818
+ubuntu-24.04         ubuntu   x86_64     Ubuntu-Server 24.04.1 LTS        2.1G  —
+gparted-1.6          unknown  —          GPARTED-LIVE                   420.0M  —
+```
+
+Six families are recognised — Proxmox, Debian, Ubuntu, RHEL and its rebuilds, SUSE and
+Fedora CoreOS — from a table of markers inside the image. Where a vendor left a version
+string it is used; the volume identifier is the fallback.
+
+**An image nothing recognises is still listed and still served.** Not describable is not
+the same as not usable: it can be `sanboot`ed, or written to a stick, or fetched whole by
+firmware. What it cannot do is produce a boot stanza, and the server says so rather than
+guessing.
+
+## The endpoints
+
+The media listener is its own socket, on `0.0.0.0:8001` by default.
+
+| Route | What comes back |
+|---|---|
+| `GET /` | the catalogue as text, or JSON with `Accept: application/json` |
+| `GET /<id>/iso` | the image |
+| `GET /<id>/kernel` | the kernel, streamed **from inside** the image |
+| `GET /<id>/initrd` | the initrd, likewise |
+| `GET /<id>/initrd+iso` | the initrd with the image appended, for old loaders |
+| `GET /<id>/file/<path>` | any file inside the image |
+| `GET /health` | `200 OK` |
+
+Nothing is extracted and nothing is unpacked. A file in an ISO9660 image is one
+contiguous run of bytes, so serving `/pve-8.4/kernel` is a seek and a length — the same
+few kilobytes of work whether the image is 400 MB or 4 GB.
+
+Ranges, `ETag`, `If-Range` and `HEAD` are all answered, because real clients need them:
+Ubuntu's casper and Red Hat's anaconda both range-fetch, and UEFI HTTP Boot sends `HEAD`
+before it fetches.
+
+### Why it is a second listener
+
+Not preference — three separate reasons, any one of which would be enough:
+
+- The answer endpoint answers on **any path**, because the URL is baked into an ISO. A
+  `/media/…` prefix would carve a reserved space out of one that is deliberately open.
+- `RESCRIPTUM_TIMEOUT_SECS` is a whole-connection deadline of ten seconds. A 1.5 GB
+  transfer is fifteen seconds on gigabit and two minutes on 100 Mbit, so every download
+  would be killed mid-flight — and it would look like a flaky network, not a setting.
+- A download holds a connection permit for minutes. Sharing that budget with answers
+  means a rollout starves its own installs.
+
+The two have separate budgets, and a test proves it rather than hoping: answers keep
+succeeding with four transfers in flight.
+
+## Booting a machine from it
+
+`media ipxe` writes the boot stanza for one image:
+
+```console
+$ rescriptum media ipxe pve-8.4
+#!ipxe
+# Proxmox Virtual Environment 8.4-1 — generated by `rescriptum media ipxe pve-8.4`.
+# An ordinary answer document: selection, layering and templating all apply.
+kernel http://192.0.2.10:8001/pve-8.4/kernel ramdisk_size=16777216 rw quiet initrd=initrd.img \
+    splash=silent proxmox-start-auto-installer
+initrd http://192.0.2.10:8001/pve-8.4/initrd initrd.img
+initrd http://192.0.2.10:8001/pve-8.4/iso proxmox.iso
+boot
+```
+
+**It prints a script; it does not install one.** Save it into the answers directory and
+it is an ordinary answer document — selected, layered and templated like any other:
+
+```console
+$ rescriptum media ipxe pve-8.4 > /srv/answers/groups/rack-a/boot.ipxe
+```
+
+Which is the point. The server does not become clever about booting; it gains a
+generator, and the composition engine you already have does the rest. A `{{ mac }}` in
+the generated answer URL is filled per request from the machine's own facts.
+
+Each family gets what it actually needs, and they are not alike:
+
+| Family | How the answer reaches it |
+|---|---|
+| Proxmox VE | inside the image, via `auto-installer-mode.toml` — and `proxmox-start-auto-installer` on the command line to select the automated path |
+| Debian | `preseed/url=…` |
+| Ubuntu | `ds=nocloud-net;s=…/`, from which cloud-init fetches `user-data` *and* `meta-data` |
+| RHEL family | `inst.ks=…` |
+| SUSE | `autoyast=…` |
+| Fedora CoreOS | `ignition.config.url=…` |
+
+Proxmox is the odd one out, and it is worth knowing why: it is the only one that carries
+the answer's location *inside the image* rather than on the kernel command line. That is
+also why it is the only one that needs `prepare-iso` run over it once — see
+[Preparing installer media](../iso.md).
+
+::: tip Already ran `prepare-iso --pxe`?
+That leaves a directory holding `vmlinuz`, `initrd.img` and a trimmed ISO. Point
+`RESCRIPTUM_MEDIA_DIR` at it and it works as-is — the trimmed image is still recognised
+as Proxmox, and the kernel and initrd beside it are found and served.
+:::
+
+## Preparing a Proxmox image
+
+Proxmox is the only family that carries the answer's *location* inside the image, in
+`/auto-installer-mode.toml`. That used to mean running
+`proxmox-auto-install-assistant prepare-iso` somewhere else first.
+
+```console
+$ rescriptum media prepare pve-8.4
+pve-8.4-http  prepared from pve-8.4
+  answer   http://192.0.2.10:8000/proxmox
+  injects  /auto-installer-mode.toml (198 bytes)
+  image    1610612736 bytes (source 1610610688 + 2048 appended)
+  wrote    /srv/media/pve-8.4-http.media
+
+Nothing was copied. Serve it as /pve-8.4-http/iso, or write it to a stick with
+  rescriptum media export pve-8.4-http /tmp/pve-8.4-http.iso
+```
+
+**What that wrote is a sidecar: about two hundred bytes standing in for 1.5 GB.** The
+source is never modified, never copied, and its published digest stays verifiable. The
+file is injected *on the wire*, so changing the answer URL later rewrites those two
+hundred bytes rather than a gigabyte — and both entries appear in `media list`, backed by
+one image on disk.
+
+`--as NAME` picks the derived entry's name, and `--url`, `--cert-fingerprint` and
+`--token` say what goes in the file.
+
+### For a USB stick
+
+```console
+$ rescriptum media export pve-8.4-http /tmp/pve-auto.iso
+```
+
+Materialises exactly what the listener would have served, through the same code path. A
+stick written any other way would be a second implementation to keep honest, and the
+difference would only show up on somebody's desk.
+
+### When it refuses
+
+Refusing is a **complete** answer here, because the fallback is one command on any Debian
+box and this server is perfectly happy to serve its output:
+
+```console
+$ proxmox-auto-install-assistant prepare-iso pve.iso --fetch-from http --url …
+```
+
+It refuses when the image has **neither Rock Ridge nor Joliet** — the file could then
+only exist under a mangled 8.3 name like `AUTO_INS.TOM;1`, and the installer would never
+find it. It refuses a **UDF** image, because a Windows ISO keeps its large files only in
+the UDF tree and patching the ISO9660 tree would produce something that looks right and
+is not. And it refuses when the root directory has **no slack** in any of its sectors:
+relocating the extent would drag in the path tables, which is deliberately not done.
+
+It also refuses to prepare a non-Proxmox image, and names the alternative: every other
+family takes the URL on the kernel command line, where `media ipxe` already puts it.
+
+### If the source changes underneath
+
+The injection offsets are computed against one image. A source that changed would be
+patched in the wrong place, producing an image that mounts and is wrong — so the sidecar
+records the source's length and the catalogue refuses when it no longer matches:
+
+```
+  problem: pve-8.4-http.media: pve-8.4 was 1610610688 bytes when this was prepared and
+  is 1610612736 now. The injection offsets no longer apply — re-run `media prepare`.
+```
+
+## Telling the server its own name
+
+The moment it writes URLs into scripts, the server needs a name for itself that a machine
+can actually reach. `0.0.0.0:8001` is not one.
+
+```console
+$ export RESCRIPTUM_PUBLIC_HOST=192.0.2.10
+```
+
+**A host, never a URL.** No scheme, no port, no path — the server writes URLs for two
+listeners, and a value carrying one port would pin every generated script to one of them.
+Each URL appends its own listener's port. A value with any of the three is refused at
+startup, naming which.
+
+Left unset, it asks the routing table which of this host's addresses faces outward — and
+on a segment with no default route, falls back to the interface list, which on a host with
+one address is not a guess at all. Either way it **says at startup what it settled on**,
+and whether there was anything to settle:
+
+```
+RESCRIPTUM_PUBLIC_HOST is not set — using 192.0.2.10, the only address this host has.
+Every generated URL will name it.
+```
+
+```
+warning: RESCRIPTUM_PUBLIC_HOST is not set — derived 192.0.2.10, which is what every
+generated URL will name. This host also has 10.8.0.4. If the machines reach it on one of
+those instead, set it explicitly.
+```
+
+The second is the one to take seriously: a wrong guess produces a machine that boots,
+chains, and hangs on an address that does not exist. Naming the alternatives is what makes
+that answerable from the log itself, rather than by going to look at the host. NAT is the
+case neither line can catch — the address is genuinely this host's, and genuinely not the
+one the machines reach.
+
+## Keeping it honest
+
+```console
+$ rescriptum media check
+checking media in /srv/media
+  2 image(s), 1 verified against a recorded digest
+  note: ubuntu-24.04 has no recorded digest — `media add` records one
+  ok — everything recorded still matches
+```
+
+Its exit code is a contract, like `check`'s: zero when everything recorded still matches,
+one when something drifted. `deploy.sh` keys on it.
+
+An image that changed under a recorded digest is the one failure that silently installs
+something nobody reviewed, so it is loud:
+
+```
+  FAIL pve-8.4: the image no longer matches what was recorded
+       recorded 9f86d081884c7d65…
+       found    7d793037a0760186…
+```
+
+What this proves is **integrity, not authenticity**: what is served is what was
+registered. Whether what was registered is what the vendor published is a question for
+the vendor's own signatures, and `--sha256` at `media add` is where that check belongs.
+
+## Who may fetch
+
+Boot traffic is unauthenticated, and necessarily so — a PXE ROM has no credentials, the
+same necessity that already governs the answer endpoint. The controls are therefore
+structural: read-only, catalogue-bound, and no filesystem path is ever built from a
+request. Plus one that can say *not you*:
+
+```console
+$ export RESCRIPTUM_BOOT_ALLOW=10.0.0.0/8,192.168.0.0/16
+```
+
+Unset means anyone who can reach the port, which on a provisioning VLAN is the honest
+configuration. **A boot VLAN is the recommendation that actually works**; see
+[Security](./security.md).
+
+## Tuning
+
+| Variable | Default | What it is for |
+|---|---|---|
+| `RESCRIPTUM_MEDIA_ADDR` | `0.0.0.0:8001` | The listener |
+| `RESCRIPTUM_MEDIA_TIMEOUT_SECS` | `600` | Whole-transfer deadline |
+| `RESCRIPTUM_MEDIA_MAX_CONNECTIONS` | `16` | Concurrent transfers |
+
+Sixteen is low on purpose. Each transfer holds its permit for minutes, and the small end
+of what this has to run on is a NAS with one spinning disk: sixteen transfers at 64 KiB a
+chunk is about two megabytes of buffers, which is arithmetic that has to hold in 512 MB
+of RAM.
+
+On a datacenter host, raise it. The answer endpoint has its own budget and is untouched
+either way.

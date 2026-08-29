@@ -8,14 +8,14 @@ sidebar:
 
 # Validating what will be served
 
-Before answers composed, an admin wrote a complete file and validated it:
+Before answers composed, an admin wrote a complete document and validated it:
 
 ```console
 $ proxmox-auto-install-assistant validate-answer answer.toml
 ```
 
 Once an answer is assembled from a group chain plus a machine document plus a template
-fill, **the file the installer receives is one nobody has ever seen** — and a bad merge
+fill, **the document the installer receives is one nobody has ever seen** — and a bad merge
 surfaces as a failed unattended install at 3am. Two subcommands exist to close that gap,
 and any change to merging has to keep them working.
 
@@ -57,7 +57,7 @@ have returned 404) or when rendering failed.
 ```console
 $ rescriptum check
 checking files:examples
-  10 group(s), 8 machine file(s)
+  10 group(s), 8 machine document(s)
   group "rhel-compute" selects on serial=7ABC*
     (verify with: rescriptum render --query "...")
   group "ubuntu-web" selects on file=user-data product=PowerEdge R6*

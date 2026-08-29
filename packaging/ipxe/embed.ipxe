@@ -1,0 +1,20 @@
+#!ipxe
+# Embedded in every loader rescriptum ships, and this is the entry point of the whole
+# chain. It answers the one question DHCP cannot: how does iPXE end up talking to *us*
+# rather than to itself or to the internet?
+#
+#   - A plain undionly.kpxe from ipxe.org does DHCP, is told to load iPXE, and loads
+#     itself forever. That is iPXE's documented chainloading loop.
+#   - A stock netboot.xyz binary chains to the public boot.netboot.xyz. No loop, but our
+#     menu and our answers are never consulted.
+#
+# The indirection through ${next-server} is ours rather than upstream's — its own
+# chainloading example names a fixed URL — and it is what lets one generic build serve
+# every deployment: option 66 is how this loader arrived in the first place.
+#
+# The port is a contract. This script can read no configuration; it is baked in before
+# any deployment exists, so 8001 is as fixed here as an answer URL baked into an ISO.
+# Moving RESCRIPTUM_MEDIA_ADDR is allowed and survivable — see the guide — but every
+# loader already shipped assumes this.
+dhcp
+isset ${next-server} && chain http://${next-server}:8001/ipxe/bootstrap || chain ../ipxe/bootstrap

@@ -1,0 +1,55 @@
+# The whole rig in one container: loaders, server, DHCP and a QEMU machine, on a bridge
+# that exists nowhere else.
+#
+# ## Why one container rather than four
+#
+# The four-service shape is the honest one and it works on a Linux host. It does **not**
+# work on Docker Desktop, and the reason is worth recording because it is not obvious:
+# a QEMU guest bridged into a container has a MAC of its own, and Docker Desktop's
+# virtual switch does not forward frames from a MAC it did not assign. Measured here:
+# container-to-container TCP works, and a DHCP broadcast from the guest never reaches the
+# next container — tcpdump on the receiving side captures nothing at all.
+#
+# So this variant puts everything in one network namespace, on a **private** bridge with
+# no uplink. Nothing crosses Docker's network, which means nothing can be filtered by it,
+# and the rig's network really is its whole world — a stronger version of the
+# `internal: true` the four-service file asks for.
+#
+# What is under test is unchanged: the DHCP configuration still comes from
+# `boot dhcp-snippet`, the loader is still ours, and the two markers are the same.
+
+FROM --platform=linux/amd64 debian:bookworm-slim AS loaders
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      build-essential liblzma-dev git perl mtools xorriso ca-certificates \
+      gcc-aarch64-linux-gnu \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /ipxe
+COPY packaging/ipxe/ /ipxe/
+RUN chmod +x build.sh && ./build.sh --out /loaders
+
+# **amd64 here too, and not as a detail.** The runtime stage below is amd64 because
+# iPXE's BIOS targets are 32-bit x86; a server binary built for the host's architecture
+# lands in it and fails with `cannot execute: required file not found`, which reads as a
+# missing file rather than as a wrong ELF.
+FROM --platform=linux/amd64 rust:1-bookworm AS server
+WORKDIR /src
+COPY . .
+RUN cargo build --release --locked
+
+FROM --platform=linux/amd64 debian:bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      qemu-system-x86 nasm ovmf iproute2 dnsmasq tcpdump \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=server /src/target/release/rescriptum /usr/local/bin/rescriptum
+COPY --from=loaders /loaders/ /srv/boot/
+COPY packaging/boot-rig/local-disk.asm /rig/local-disk.asm
+COPY packaging/boot-rig/answers/ /srv/answers/
+COPY packaging/boot-rig/rig-in-one.sh /rig/rig-in-one.sh
+
+RUN nasm -f bin /rig/local-disk.asm -o /rig/local-disk.img \
+    && test "$(stat -c%s /rig/local-disk.img)" = 512 \
+    && chmod +x /rig/rig-in-one.sh \
+    && mkdir -p /srv/media /out
+
+ENTRYPOINT ["/rig/rig-in-one.sh"]

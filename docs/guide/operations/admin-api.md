@@ -131,9 +131,11 @@ $ curl -s -H "$AUTH" -X PUT --data-binary 'x = = 1' http://127.0.0.1:8001/machin
 
 ## Identifiers
 
-Letters, digits and `- _ . :` only. They are written out as **filenames** by `export`, so
-anything that could traverse a directory is rejected — at the API boundary *and* in both
-stores.
+Letters, digits and `- _ . :` only. They become **directory names** under `export` and in
+the file store, so anything that could traverse a directory is rejected — at the API boundary
+*and* in both stores. `groups` and `default` are reserved as machine ids for the same reason:
+those are the directories the layout keeps for itself, and a database that accepted one would
+export into a directory that cannot hold it.
 
 ## Status codes
 

@@ -133,9 +133,12 @@ $ curl -s -H "$AUTH" -X PUT --data-binary 'x = = 1' http://127.0.0.1:8001/machin
 
 ## Identifiants
 
-Lettres, chiffres et `- _ . :` uniquement. Ils sont écrits comme **noms de fichiers** par
-`export`, donc tout ce qui pourrait traverser un répertoire est rejeté — à la frontière de
-l'API *et* dans les deux stores.
+Lettres, chiffres et `- _ . :` uniquement. Ils deviennent des **noms de répertoires** sous
+`export` et dans le store fichiers, donc tout ce qui pourrait traverser un répertoire est
+rejeté — à la frontière de l'API *et* dans les deux stores. `groups` et `default` sont
+réservés comme identifiants de machine pour la même raison : ce sont les répertoires que
+l'agencement garde pour lui, et une base qui en accepterait un exporterait vers un répertoire
+incapable de le contenir.
 
 ## Codes de statut
 

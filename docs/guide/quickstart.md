@@ -15,16 +15,17 @@ answer right before any machine boots.
 ## 1. A directory and one document
 
 ```console
-$ mkdir -p answers/groups
+$ mkdir -p answers/groups/rack-a
 ```
 
-The answers directory is flat. Documents at the top level belong to one machine each;
-`groups/` holds the shared ones. Start with a group, since that is the shape almost every
-real deployment ends up with — a rack of machines that agree about everything except
+**One directory per identity.** A directory at the top level is one machine, named after
+it; `groups/` holds the shared ones. Inside either, the extension names the format and the
+rest of the filename is just a label. Start with a group, since that is the shape almost
+every real deployment ends up with — a rack of machines that agree about everything except
 which disks they have:
 
 ```toml
-# answers/groups/rack-a.toml
+# answers/groups/rack-a/proxmox.toml
 members = ["98:fa:9b:50:d8:10", "98:fa:9b:50:d8:11"]
 
 [global]
@@ -70,15 +71,15 @@ disk-list = ["sda", "sdb"]
 
 The first line goes to stderr and says how the answer was reached — the format family,
 which machine document matched, which group applied. The document itself goes to stdout,
-so `render … > answer.toml` gives you just the file.
+so `render … > answer.toml` gives you just the document.
 
 ## 3. One machine that differs
 
-The second node in the rack has four disks. It gets a file containing **only the
-difference**, named after its MAC:
+The second node in the rack has four disks. It gets a directory named after its MAC,
+holding a document with **only the difference** in it:
 
 ```toml
-# answers/98-fa-9b-50-d8-10.toml
+# answers/98-fa-9b-50-d8-10/proxmox.toml
 [global]
 fqdn = "node01.example.com"
 
@@ -107,7 +108,7 @@ zfs.raid = "raid10"
 disk-list = ["sda", "sdb", "sdc", "sdd"]
 ```
 
-The group came first, the machine file on top, and **the machine won** wherever the two
+The group came first, the machine's own document on top, and **the machine won** wherever the two
 disagreed. Tables merged key by key; `disk-list` was **replaced**, not appended — a list
 that could only grow could never be shortened from a higher layer.
 
@@ -116,7 +117,7 @@ that could only grow could never be shortened from a higher layer.
 ```console
 $ RESCRIPTUM_ANSWERS_DIR=answers rescriptum check
 checking files:answers
-  1 group(s), 1 machine file(s)
+  1 group(s), 1 machine document(s)
   note: toml answers not schema-checked — proxmox-auto-install-assistant is not on PATH
   ok — everything renders
 ```
@@ -151,7 +152,9 @@ and watch the server say what it did:
 That line is the whole diagnostic story when a rollout misbehaves: who asked, how big
 their body was, what they got, and what it was built from.
 
-New files are picked up as you add them — no restart, no reload signal.
+New documents are picked up as you add them — no restart, no reload signal. A machine's
+whole directory appearing or leaving is noticed at once; a document added or edited *inside*
+one is picked up within a second.
 
 ## What to read next
 
@@ -160,5 +163,5 @@ New files are picked up as you add them — no restart, no reload signal.
 - **[One document per operating system](./answers/formats.md)** — the same machine as
   Proxmox, as Debian, as Ubuntu, side by side.
 - **[Templating](./answers/templating.md)** — `fqdn = "node-{{ serial }}.example.com"`,
-  so one group covers a rack without a file per machine.
+  so one group covers a rack without a directory per machine.
 - **[Preparing installer media](./iso.md)** — the URL to bake into the ISO, per OS.

@@ -19,6 +19,10 @@ categories = ["network-programming", "command-line-utilities"]
 http-body-util = "0.1.5"
 hyper = { version = "1.11.0", features = ["server", "http1"] }
 hyper-util = { version = "0.1.20", features = ["tokio", "server"] }
+# Already in the lock file by way of tokio, so promoting it from transitive to direct
+# costs zero new crates. It is here for exactly one thing: dropping privileges after
+# binding TFTP's privileged port, which needs setgid/setuid/initgroups.
+libc = "0.2.189"
 quick-xml = "0.41.0"
 rusqlite = { version = "0.40.2", features = ["bundled"], optional = true }
 serde_json = "1.0.151"
@@ -27,10 +31,22 @@ tokio = { version = "1.53.1", features = ["rt-multi-thread", "net", "time", "io-
 toml_edit = "0.25.13"
 
 [features]
-default = ["sqlite"]
+default = ["sqlite", "boot"]
 # SQLite backs the admin API. Turn it off for the smallest possible binary when the
 # answers directory is all you need: `cargo build --no-default-features`.
 sqlite = ["dep:rusqlite"]
+# Boot media: the catalogue, the ISO reader and the media listener. On by default,
+# because an appliance that cannot serve the installer is half a product — but off in
+# one flag, so `--no-default-features` still produces the smallest possible answer
+# server. One feature and not two: media and TFTP share the catalogue and the address
+# logic, and splitting them would buy kilobytes at the cost of a seam.
+boot = []
+# Compiles `boot::iso::build`, which writes ISO9660 images in memory for tests. There is
+# deliberately **no binary ISO fixture in this repository**: a checked-in image is a blob
+# nobody can review and nobody can vary. The builder is the alternative, and it has no
+# business in a release binary — the resolver keeps it out of one, because nothing but
+# the dev-dependency below asks for it.
+test-support = []
 
 [profile.release]
 opt-level = "z"
@@ -40,6 +56,14 @@ strip = true
 
 [dev-dependencies]
 rusqlite = { version = "0.40.2", features = ["bundled"] }
+# The crate itself, so an integration test can build an ISO to serve. This is what turns
+# `test-support` on for a test build and leaves it off for every other one.
+#
+# `default-features = false` is load-bearing: without it this line re-enables `sqlite`
+# and `boot` for every test build, so `cargo test --no-default-features` would quietly
+# test the full binary and report coverage that does not exist. Features are a union, so
+# an ordinary `cargo test` still gets the defaults from the normal build.
+rescriptum = { path = ".", default-features = false, features = ["test-support"] }
 
 # `panic = "abort"` is deliberately ABSENT. With one thread per connection, unwinding
 # means a panic kills only the connection that caused it; aborting would take down the

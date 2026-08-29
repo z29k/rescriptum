@@ -66,6 +66,17 @@ abi_target() {
 
 ABI=""
 BIN=""
+# The branded iPXE loaders, which **ship inside the package**. A TFTP server with nothing
+# to hand out boots nothing, and telling somebody to go and download a second archive is
+# how a working appliance becomes a support thread. They are iPXE and iPXE is GPLv2: they
+# are separate files here, never linked into our binary, which is mere aggregation — and
+# the NOTICE beside them, naming the pinned commit and packaging/ipxe/, is the written
+# offer that has to travel with them.
+#
+# Empty is allowed and only means a package whose boot folder starts empty; check-spk.sh
+# says so rather than failing, because a developer wrapping a local build should not need
+# a C toolchain first.
+LOADERS="${RESCRIPTUM_LOADERS:-$REPO/packaging/ipxe/out}"
 VERSION=""
 SPK_BUILD=1
 OUT="$REPO/dist"
@@ -74,6 +85,7 @@ while [ $# -gt 0 ]; do
     case "$1" in
     -h | --help) usage 0 ;;
     --bin) BIN="$2"; shift 2 ;;
+    --loaders) LOADERS="$2"; shift 2 ;;
     --version) VERSION="$2"; shift 2 ;;
     --spk-build) SPK_BUILD="$2"; shift 2 ;;
     --out) OUT="$2"; shift 2 ;;
@@ -119,6 +131,17 @@ mkdir -p "$PAYLOAD/bin"
 cp "$BIN" "$PAYLOAD/bin/rescriptum"
 chmod 755 "$PAYLOAD/bin/rescriptum"
 cp -R "$HERE/payload/." "$PAYLOAD/"
+
+# The loaders, if there are any to carry. `start` seeds the share's boot folder from here.
+if [ -d "$LOADERS" ] && [ -f "$LOADERS/ipxe-undionly.kpxe" ]; then
+    mkdir -p "$PAYLOAD/boot"
+    cp "$LOADERS"/* "$PAYLOAD/boot/"
+    chmod 644 "$PAYLOAD/boot"/*
+    echo "  loaders: $(ls "$PAYLOAD/boot" | wc -l | tr -d ' ') file(s) from $LOADERS"
+else
+    echo "  loaders: none in $LOADERS — the package will install with an empty boot folder" >&2
+    echo "           build them with packaging/ipxe/build.sh --out $REPO/packaging/ipxe/out" >&2
+fi
 chmod 755 "$PAYLOAD/bin/rescriptum-cli"
 # The desktop application's backend. Said explicitly rather than trusted to survive a
 # checkout, an archive and a copy: a CGI that arrives without its execute bit is served to

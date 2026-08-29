@@ -4,6 +4,8 @@
 //! this project actually has to avoid — an unattended install that hangs at 3am —
 //! lives in the wiring, not in the pure functions.
 
+mod common;
+
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
@@ -42,12 +44,9 @@ impl Server {
         ));
         fs::create_dir_all(&dir).expect("create answers dir");
         for (name, contents) in files {
-            let path = dir.join(name);
-            // Names may be nested, e.g. "groups/rack-a.toml".
-            if let Some(parent) = path.parent() {
-                fs::create_dir_all(parent).expect("create answer subdirectory");
-            }
-            fs::write(&path, contents).expect("write answer file");
+            // Named the way an operator thinks of them — "98fa9b50d810.toml",
+            // "groups/rack-a.toml" — and put where the layout keeps them.
+            common::seed(&dir, name, contents);
         }
 
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_rescriptum"));
@@ -122,6 +121,19 @@ impl Server {
         let mut out = String::new();
         sock.read_to_string(&mut out).expect("read response");
         out
+    }
+
+    /// A POST to a specific path, which is what the install-finished webhook needs: the
+    /// answer endpoint takes any path, so only a test that names one can tell a reserved
+    /// route from an ordinary answer request.
+    fn post_to(&self, path: &str, body: &str) -> String {
+        self.raw(
+            format!(
+                "POST {path} HTTP/1.1\r\nHost: nas\r\nContent-Length: {}\r\n\r\n{body}",
+                body.len()
+            )
+            .as_bytes(),
+        )
     }
 
     fn post(&self, body: &str) -> String {
@@ -208,11 +220,14 @@ fn a_file_dropped_in_later_is_picked_up_without_a_restart() {
     let body = installer_body("98:fa:9b:50:d8:10");
     assert!(status_line(&s.post(&body)).starts_with("HTTP/1.1 404"));
 
-    fs::write(
-        s.dir().join("98fa9b50d810.toml"),
+    // A machine that was not there at all, so its directory arrives too — which is what
+    // moves the answers directory's mtime and makes this immediate rather than a wait
+    // for the backstop.
+    common::seed(
+        s.dir(),
+        "98fa9b50d810.toml",
         "marker = \"added-at-runtime\"\n",
-    )
-    .unwrap();
+    );
     let r = s.post(&body);
     assert!(status_line(&r).starts_with("HTTP/1.1 200"), "{r}");
     assert!(body_of(&r).contains("added-at-runtime"), "{r}");
@@ -541,7 +556,7 @@ fn a_group_edited_in_place_is_picked_up_without_a_restart() {
     assert!(body_of(&r).contains("\"fr\""), "{r}");
 
     fs::write(
-        s.dir().join("groups/rack-a.toml"),
+        common::document_path(s.dir(), "groups/rack-a.toml"),
         "members = [\"98:fa:9b:50:d8:10\"]\n[global]\nkeyboard = \"us\"\n",
     )
     .unwrap();
@@ -558,7 +573,7 @@ fn a_broken_answer_file_is_a_500_not_a_wrong_install() {
     assert!(status_line(&r).starts_with("HTTP/1.1 500"), "{r}");
 
     // And the server keeps serving everyone else.
-    fs::write(s.dir().join("default.toml"), "marker = \"ok\"\n").unwrap();
+    common::seed(s.dir(), "default.toml", "marker = \"ok\"\n");
     let r = s.post(&installer_body("11:22:33:44:55:66"));
     assert!(status_line(&r).starts_with("HTTP/1.1 200"), "{r}");
 }
@@ -1149,4 +1164,141 @@ fn a_request_that_never_reached_a_status_counts_as_a_problem() {
 
     let log = s.startup_log();
     assert!(log.contains("connection timed out"), "{log}");
+}
+
+/// **A machine reporting that it installed, and its claim being dropped.**
+///
+/// The loop this closes: a machine claimed by an `.ipxe` answer installs, reboots, is
+/// claimed again, and installs again — wiping its disk every time. Proxmox's
+/// `[post-installation-webhook]` fires after a successful install and before that reboot,
+/// with the interfaces in its body, so the machine is the one that knows.
+///
+/// Everything below is against the real binary over a real socket, because the parts that
+/// can be wrong here are wiring: which guard runs first, whether the body is read before
+/// answering, and whether the endpoint exists at all.
+#[test]
+fn a_machine_can_report_that_it_is_installed_and_stop_being_claimed() {
+    let s = Server::start_env(
+        &[
+            ("98-fa-9b-50-d8-10.ipxe", "#!ipxe\nchain installer\n"),
+            ("98-fa-9b-50-d8-10.toml", "[global]\nkeyboard = \"fr\"\n"),
+        ],
+        "5",
+        &[
+            ("RESCRIPTUM_INSTALLED_TOKEN", "nas:s3cr3t"),
+            // Set deliberately: the webhook's credential is in the body, so the bearer
+            // guard must not be what answers it. Without the route running first, every
+            // webhook would 401 the moment somebody protected their answers.
+            ("RESCRIPTUM_ANSWER_TOKEN", "nas:answer-token-long-enough"),
+        ],
+    );
+
+    let body = r#"{"token":"nas:s3cr3t","fqdn":"node01.z29k.fr",
+        "network_interfaces":[{"name":"eno1","mac":"98:fa:9b:50:d8:10"}]}"#;
+
+    // A wrong token is refused, and refused *without* disarming anything.
+    let bad = body.replace("s3cr3t", "s3cr3x");
+    let response = s.post_to("/installed", &bad);
+    assert!(response.starts_with("HTTP/1.1 401"), "{response}");
+
+    let response = s.post_to("/installed", body);
+    assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+    assert!(
+        response.contains("installed-98-fa-9b-50-d8-10"),
+        "{response}"
+    );
+
+    // The claim is gone…
+    assert!(!common::document_path(s.dir(), "98-fa-9b-50-d8-10.ipxe").exists());
+    // …the document is not, so re-arming is a rename…
+    assert!(common::document_path(s.dir(), "installed-98-fa-9b-50-d8-10.ipxe").exists());
+    // …and the machine's own answer, which the installer reads, is untouched.
+    assert!(common::document_path(s.dir(), "98-fa-9b-50-d8-10.toml").exists());
+
+    // Twice is not an error: the webhook may be retried, and a machine installed from the
+    // menu was never claimed at all.
+    let response = s.post_to("/installed", body);
+    assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+    assert!(response.contains("nothing was claiming it"), "{response}");
+
+    // And the server still answers, which is the assertion that matters in this file.
+    // With its own credential — the bearer the *installer* presents, which is a different
+    // one from the webhook's and is the whole reason these two guards are separate.
+    let payload = r#"{"mac":"98:fa:9b:50:d8:10"}"#;
+    let answer = s.raw(
+        format!(
+            "POST /proxmox/answer HTTP/1.1\r\nHost: nas\r\n\
+             Authorization: Bearer nas:answer-token-long-enough\r\n\
+             Content-Length: {}\r\n\r\n{payload}",
+            payload.len()
+        )
+        .as_bytes(),
+    );
+    assert!(
+        answer.contains("keyboard"),
+        "the answer endpoint stopped working: {answer}"
+    );
+}
+
+/// Without the token there is no endpoint — not an open one, **absent**. So `/installed`
+/// is an ordinary answer request like any other path, which is what keeps "POST on any
+/// path is an answer request" true for everybody who does not use this.
+#[test]
+fn without_a_token_installed_is_just_another_answer_path() {
+    let s = Server::start(&[("default.toml", "[global]\nkeyboard = \"fr\"\n")]);
+    let response = s.post_to("/installed", r#"{"token":"anything"}"#);
+    assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+    assert!(
+        response.contains("keyboard"),
+        "it answered as an endpoint rather than serving the default: {response}"
+    );
+}
+
+/// **Every other family reports back from a shell script, not from a webhook.** A
+/// kickstart `%post`, a preseed `late_command`, an autoinstall `late-commands`, an
+/// AutoYaST chroot script — all of them can run one `curl`, and none of them will compose
+/// Proxmox's JSON body. So the endpoint takes the machine's identity from the query string
+/// and its credential from an ordinary bearer header, which is what that one line can send.
+#[test]
+fn a_kickstart_or_a_preseed_can_report_installed_with_one_curl() {
+    let s = Server::start_env(
+        &[
+            ("98-fa-9b-50-d8-10.ipxe", "#!ipxe\nchain installer\n"),
+            ("98-fa-9b-50-d8-10.ks", "%post\n"),
+        ],
+        "5",
+        &[("RESCRIPTUM_INSTALLED_TOKEN", "nas:s3cr3t")],
+    );
+
+    // Exactly what a `%post` writes:
+    //   curl -X POST -H "Authorization: Bearer nas:s3cr3t" \
+    //        "http://server:8000/installed?mac=$(cat /sys/class/net/eth0/address)"
+    // No body at all — there is nothing it needs to say beyond who it is.
+    let response = s.raw(
+        concat!(
+            "POST /installed?mac=98:fa:9b:50:d8:10 HTTP/1.1\r\nHost: nas\r\n",
+            "Authorization: Bearer nas:s3cr3t\r\n",
+            "Content-Length: 0\r\n\r\n",
+        )
+        .as_bytes(),
+    );
+    assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+    assert!(
+        response.contains("installed-98-fa-9b-50-d8-10"),
+        "{response}"
+    );
+    assert!(!common::document_path(s.dir(), "98-fa-9b-50-d8-10.ipxe").exists());
+    // The kickstart itself is not an `.ipxe` and is left exactly where it was.
+    assert!(common::document_path(s.dir(), "98-fa-9b-50-d8-10.ks").exists());
+
+    // And a wrong bearer is refused, with nothing left to disarm anyway.
+    let response = s.raw(
+        concat!(
+            "POST /installed?mac=aa:bb:cc:dd:ee:ff HTTP/1.1\r\nHost: nas\r\n",
+            "Authorization: Bearer nas:wrong\r\n",
+            "Content-Length: 0\r\n\r\n",
+        )
+        .as_bytes(),
+    );
+    assert!(response.starts_with("HTTP/1.1 401"), "{response}");
 }

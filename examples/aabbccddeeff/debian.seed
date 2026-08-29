@@ -1,4 +1,4 @@
-# The same machine as examples/aabbccddeeff.yaml — that one as Ubuntu, this one as
+# The same machine as `ubuntu.yaml` beside it — that one as Ubuntu, this one as
 # Debian. A document is keyed by (identifier, format), so both exist at once and the URL
 # decides which is served.
 #
@@ -6,7 +6,7 @@
 # serve either. The two extensions exist because `seed` is deliberately NOT an endpoint
 # alias — `s=http://server/seed/` is an ordinary NoCloud seed URL, and it serves YAML.
 #
-# Prefer `.preseed` for new files; this one is here to show the alias is real.
+# Prefer `.preseed` for new documents; this one is here to show the alias is real.
 
 d-i debian-installer/locale string fr_FR.UTF-8
 d-i keyboard-configuration/xkb-keymap select fr

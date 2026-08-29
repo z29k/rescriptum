@@ -120,6 +120,33 @@ pub fn endpoint_formats(segment: &str) -> Option<&'static [&'static str]> {
     })
 }
 
+/// The filename to write a new document under, before the extension.
+///
+/// **The stem decides nothing.** A document's format is its extension, and its identity
+/// is the directory it sits in; `proxmox.toml` and `answer.toml` are the same document
+/// to this server. This only picks a readable name for one nobody has named themselves
+/// — a document already on disk keeps whatever it is called.
+///
+/// The names are the endpoint aliases wherever there is one, so a directory listing
+/// reads the way the URLs do. `boot` is the exception and deliberately not an alias: an
+/// `.ipxe` document is what boots the installer, not an operating system.
+pub fn canonical_stem(ext: &str) -> &'static str {
+    match ext.to_ascii_lowercase().as_str() {
+        "toml" => "proxmox",
+        "yaml" | "yml" => "ubuntu",
+        "ign" => "flatcar",
+        "autoyast" => "suse",
+        "unattend" => "windows",
+        "ks" => "rhel",
+        "preseed" | "seed" => "debian",
+        "ipxe" => "boot",
+        // Nothing more specific to say: `json` is Ignition *or* a plain document, and
+        // `xml`/`cfg` name no single installer. `answer.json` beats `json.json`, and an
+        // extension we do not serve never reaches a write but is still owed a name.
+        _ => "answer",
+    }
+}
+
 #[derive(Debug, Clone)]
 enum Inner {
     Toml(toml_edit::DocumentMut),
@@ -720,6 +747,30 @@ mod tests {
                 .filter_map(|segment| endpoint_formats(segment))
                 .any(|formats| formats.contains(&ext));
             assert!(reachable, "no endpoint ever asks for .{ext}");
+        }
+    }
+
+    /// A canonical stem must never be an endpoint alias for a *different* format.
+    ///
+    /// The stem means nothing to this server — but somebody reading `ubuntu.yaml` in a
+    /// directory will read it as "this machine as Ubuntu", and a table that wrote
+    /// `debian.yaml` would be lying to them in the one place they look. Either the name
+    /// is an alias that resolves to this very extension, or it is not an alias at all.
+    #[test]
+    fn a_canonical_stem_never_names_another_format() {
+        for ext in [
+            "toml", "yaml", "yml", "json", "ign", "xml", "autoyast", "unattend", "ks", "preseed",
+            "seed", "cfg", "ipxe",
+        ] {
+            let stem = canonical_stem(ext);
+            assert!(!stem.is_empty(), "{ext} has no name to be written under");
+            if let Some(formats) = endpoint_formats(stem) {
+                assert!(
+                    formats.contains(&ext),
+                    ".{ext} would be written as {stem}.{ext}, and {stem:?} is the endpoint \
+                     for {formats:?}"
+                );
+            }
         }
     }
 

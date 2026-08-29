@@ -13,7 +13,7 @@ kickstart veut du kickstart et s'étranglerait avec du TOML. C'est le protocole,
 convention que quelqu'un aurait choisie. Donc :
 
 - **l'endpoint déclare le format** — `/rhel/ks` demande du kickstart ;
-- **le document le porte comme extension** — `rhel-compute.ks` ;
+- **le document le porte comme extension** — `groups/rhel-compute/rhel.ks` ;
 - **seuls les documents de ce format peuvent répondre.**
 
 ## La conséquence qui fait comprendre
@@ -23,8 +23,9 @@ destinée.** Donc ceci n'est pas une machine et deux fichiers :
 
 ```
 answers/
-├── 98fa9b50d810.toml       « cette machine, en tant que Proxmox »
-└── 98fa9b50d810.preseed    « cette machine, en tant que Debian »
+└── 98fa9b50d810/
+    ├── proxmox.toml        « cette machine, en tant que Proxmox »
+    └── debian.preseed      « cette machine, en tant que Debian »
 ```
 
 C'est un même matériel avec deux réponses, et les deux peuvent exister en même temps. Celle
@@ -33,15 +34,20 @@ obtient le TOML, `/debian/preseed` obtient le preseed. Aucune n'est plus « la �
 l'autre.
 
 En interne, c'est pourquoi un document est indexé par **(identifiant, format)** plutôt que
-par identifiant seul.
+par identifiant seul — et pourquoi un répertoire contient un document par format, pas
+davantage.
 
 ## Le stockage n'est pas l'URL
 
-Tout vit dans un seul répertoire plat, et c'est délibéré. **Répertoires et lignes de base
-sont un espace de recherche** — ils doivent rester libres d'être réorganisés. **Une URL est
-un contrat public gravé dans une ISO** — elle ne doit pas bouger parce que quelqu'un a
-renommé un dossier. Une conception antérieure faisait du nom de répertoire *le* segment
-d'URL et a été écartée pour exactement cette raison.
+Les documents sont regroupés par *identité*, jamais par format, et c'est délibéré.
+**Répertoires et lignes de base sont un espace de recherche** — ils doivent rester libres
+d'être réorganisés. **Une URL est un contrat public gravé dans une ISO** — elle ne doit pas
+bouger parce que quelqu'un a renommé un dossier. Une conception antérieure faisait du nom de
+répertoire *le* segment d'URL et a été écartée pour exactement cette raison.
+
+La même règle explique pourquoi le nom de fichier dans le répertoire d'une machine ne porte
+aucun sens : `proxmox.toml` se lit bien et fait écho à l'endpoint `/proxmox/`, mais seul le
+`.toml` est porteur. Renommez-le `answer.toml` et rien ne change.
 
 Quel alias sert quelle extension est dans la
 [référence des formats](../reference/formats.md) ; comment en choisir un pour votre média
@@ -172,5 +178,5 @@ aucun sens.
 Le groupement n'est par ailleurs pas affecté par tout cela : une baie partage un groupe *par
 format*, et une machine qui existe en deux systèmes d'exploitation rejoint deux d'entre eux.
 
-`default` suit la même règle — `default.toml` répond à une requête qui a demandé du TOML, et
-jamais à une qui a demandé du kickstart.
+`default` suit la même règle — un `.toml` dans `default/` répond à une requête qui a demandé
+du TOML, et jamais à une qui a demandé du kickstart.

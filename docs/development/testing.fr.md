@@ -8,7 +8,14 @@ sidebar:
 
 # Tests
 
-333 tests. `cargo test` les fait tous tourner en quelques secondes.
+582 tests. `cargo test` les fait tous tourner en une vingtaine de secondes — dont
+l'essentiel dans `tests/tftp.rs`, qui attend de vrais délais UDP parce que c'est
+précisément ce qu'il teste.
+
+**`cargo test` ne lance pas les bancs qui comptent le plus** : le banc de démarrage, les
+trois du paquet DSM, et la construction des chargeurs. Voir [Le paquet aussi est
+testé](#le-paquet-aussi-est-testé-à-trois-endroits) et [le banc de
+démarrage](#la-chaîne-de-démarrage-a-sa-place-dans-le-banc).
 
 ```bash
 cargo test                                # tout
@@ -21,20 +28,39 @@ cargo test --all-features                 # ce que lance la CI
 
 | Suite | Cas | Pour |
 |---|---|---|
-| `tests/stores.rs` | 39 | **chaque comportement, contre les deux stores** |
-| `tests/integration.rs` | 45 | le vrai binaire sur une vraie socket |
-| `src/select.rs` | 27 | normalisation, scoring, superposition, remplissage de templates |
-| `src/format/mod.rs` | 27 | parsing, fusion, clés de contrôle, alias d'endpoint |
-| `src/facts.rs` | 22 | parsing de query, aplatissement JSON, globbing |
+| `tests/integration.rs` | 48 | le vrai binaire sur une vraie socket |
+| `tests/cli.rs` | 50 | `render`, `check`, `import`, `export`, `config` et le fichier d'environnement — contre le vrai binaire |
+| `tests/media.rs` | 45 | les médias de démarrage contre le vrai binaire, les deux listeners debout |
+| `src/config.rs` | 42 | l'environnement, ce qui refuse de démarrer, et qui l'emporte du fichier ou de l'environnement |
+| `tests/stores.rs` | 45 | **chaque comportement, contre les deux stores** |
+| `tests/tftp.rs` | 30 | le TFTP sur de l'UDP réel : les tours de parole, et ce qu'une liaison ratée ne doit pas coûter |
+| `src/select.rs` | 28 | normalisation, scoring, superposition, remplissage de templates |
+| `src/format/mod.rs` | 28 | parsing, fusion, clés de contrôle, alias d'endpoint |
 | `tests/admin.rs` | 26 | l'API d'administration de bout en bout, formats compris |
-| `tests/cli.rs` | 39 | `render`, `check`, `import`, `export`, `config` et le fichier d'environnement — contre le vrai binaire |
-| `src/log.rs` | 4 | lecture des niveaux, et l'arithmétique d'horodatage |
+| `src/envfile.rs` | 23 | le parseur et l'écrivain du fichier d'environnement, et ce que chacun refuse |
+| `src/facts.rs` | 22 | parsing de query, aplatissement JSON, globbing |
 | `src/format/xml.rs` | 18 | l'arbre XML — appariement, entités, fidélité |
-| `src/config.rs` | 24 | l'environnement, ce qui refuse de démarrer, et qui l'emporte du fichier ou de l'environnement |
 | `src/merge.rs` | 11 | la fusion profonde TOML |
 | `tests/guards.rs` | 7 | le jeton de réponse, et le verrouillage qui délibérément n'existe pas |
-| `src/envfile.rs` | 23 | le parseur et l'écrivain du fichier d'environnement, et ce que chacun refuse |
+| `src/installed.rs` | 6 | une machine qui signale son installation, et ce qu'il ne faut jamais désarmer |
+| `src/log.rs` | 4 | lecture des niveaux, et l'arithmétique d'horodatage |
+| `src/boot/*.rs` | 128 | le lecteur ISO, le repérage, le catalogue, les sources d'images, les plans de patch, le menu, la table des chargeurs, les extraits DHCP, cpio et SHA-256 |
 | `src/admin.rs`, `src/capture.rs`, `src/store/mod.rs` | 21 | comportement unitaire |
+
+## `tests/common/mod.rs` — les fixtures que toutes les suites partagent
+
+Les réponses sont stockées à raison d'**un répertoire par identité**, donc une fixture ne
+peut plus être un simple nom de fichier. `seed()` prend le nom dans lequel un test pense —
+`98fa9b50d810.toml`, `groups/rack-a.toml`, `default.toml` — et l'écrit **via `StoreWrite`**,
+si bien qu'elle atterrit exactement là où une écriture de l'API d'administration la mettrait
+et ne peut pas diverger de l'agencement. Un nom que le store refuserait (une extension que
+personne ne sert) est écrit littéralement, parce que ces fixtures existent justement pour
+prouver qu'un fichier égaré ne répond à rien.
+
+Une seule copie, pas une par suite — le même raisonnement qui fait de `loaders.rs` une table
+unique lue par TFTP *et* par l'extrait DHCP. Quatre copies d'une correspondance sont quatre
+occasions qu'une fixture atterrisse là où le serveur ne regarde pas, et un test qui ne sème
+rien passe pour la mauvaise raison.
 
 ## `tests/stores.rs` — la suite de conformité
 
@@ -81,6 +107,49 @@ Explicitement couverts :
 > **`cargo test` ne reconstruit pas `target/debug/rescriptum`.** Une vérification manuelle
 > contre un binaire périmé a un jour « reproduit » un bug déjà corrigé. Reconstruisez avant de
 > triturer le binaire à la main.
+
+## `tests/tftp.rs` — un transfert est une conversation
+
+Rien ici ne se prouve depuis l'intérieur d'une fonction. Les blocs, les acquittements, la
+retransmission, le paquet vide qui termine un transfert — chaque bug qui vaut d'être
+attrapé vit dans les tours de parole, et la première exécution en a trouvé deux, du genre
+« marche à la main, jamais après un redémarrage ». **Un fichier dont la longueur est un
+multiple exact de la taille de bloc doit se terminer par un paquet de données vide** ;
+sans lui le client attend éternellement un dernier bloc qui ne vient jamais.
+
+Cette suite porte aussi le seul écouteur de ce serveur dont l'échec n'est *pas* fatal. Un
+port TFTP qu'on ne peut pas lier ne doit pas emporter les réponses et les médias avec lui
+— mesuré sur DSM, où la capacité est accordée hors du paquet et où une mise à jour la perd
+— donc le test squatte le port, puis vérifie trois choses d'un coup : le serveur est monté,
+il a averti en disant ce qui marche encore, et `boot check` sort toujours en non-zéro.
+
+Cette dernière assertion est d'abord passée pour la mauvaise raison : trois chargeurs
+manquants faisaient déjà échouer la commande. Le montage écrit maintenant tous les
+chargeurs que la table nomme, et une exécution témoin avec le TFTP coupé prouve que le
+répertoire est propre par ailleurs.
+
+## `tests/media.rs` — les médias de démarrage contre le vrai binaire
+
+Les deux listeners debout, et chaque cas d'abus se termine en prouvant que le serveur
+répond toujours. Un cas prouve la propriété pour laquelle la socket séparée existe : **les
+réponses continuent d'aboutir pendant que quatre transferts d'image sont en cours.**
+
+Il n'y a délibérément **aucune ISO binaire dans ce dépôt**. `boot::iso::build` écrit des
+images en mémoire, derrière la fonctionnalité `test-support`, pour qu'elle n'atteigne
+jamais un binaire de release.
+
+## La chaîne de démarrage a sa place dans le banc
+
+`packaging/boot-rig/run.sh` n'est pas du Rust et `cargo test` ne le lance pas. Il démarre
+une machine revendiquée et une non revendiquée dans QEMU sous TCG, sur un pont privé sans
+lien montant, et vérifie quatre marqueurs : la passe DHCP a répondu depuis notre propre
+extrait généré, un chargeur a été récupéré en TFTP, la machine non revendiquée est
+retombée sur son disque local, et la machine revendiquée a atteint sa propre réponse. La
+CI fait la même chose plus une casse délibérée.
+
+**Un invité QEMU ponté dans un conteneur a une MAC à lui, et le commutateur virtuel de
+Docker Desktop ne transmet pas les trames d'une MAC qu'il n'a pas attribuée** — mesuré,
+d'où un banc principal en un seul conteneur plutôt qu'en quatre sur un réseau Docker.
 
 ## Vérifier qu'un test peut échouer
 
@@ -131,7 +200,7 @@ harnais s'en chargent, et chacun prouve ce que les autres ne peuvent pas.
 |---|---|---|
 | [`packaging/dsm/check-spk.sh`](https://github.com/z29k/rescriptum/blob/main/packaging/dsm/check-spk.sh) | l'archive est structurellement ce que DSM attend — tar externe non compressé, les six champs d'`INFO`, une version tout en segments numériques, `os_min_ver` au moins 7.1, icônes 64×64 et 256×256, scripts exécutables sans CRLF, **le `--version` du binaire empaqueté**, et l'application de bureau : un `dsmappname` nommant une classe que son `ui/config` déclare vraiment, un nom de fichier JavaScript qui porte la version, et un backend qui vérifie toujours la session DSM et `administrators` | des secondes, **à chaque push** |
 | [`packaging/dsm/lifecycle-test.sh`](https://github.com/z29k/rescriptum/blob/main/packaging/dsm/lifecycle-test.sh) | tout ce que les *scripts* du paquet décident, contre un faux arbre `/var/packages` : le fichier d'environnement écrit une fois et une seule, les valeurs de l'assistant **et leur absence**, le service qui survit à son propre script de démarrage et répond à `/health`, les codes de sortie que lit Package Center, une mise à jour qui ne doit pas toucher une configuration éditée à la main, une désinstallation qui ne doit pas toucher aux réponses — **et le backend de l'application de bureau**, piloté avec un authentificateur bouchonné : refuser l'absence de session, refuser un non-administrateur, refuser une écriture sans en-tête d'intention, refuser celle qui empêcherait le serveur de démarrer, et ne jamais livrer un jeton au navigateur | des secondes, **à chaque push** |
-| [`packaging/dsm/vm/on-dsm.sh`](https://github.com/z29k/rescriptum/blob/main/packaging/dsm/vm/on-dsm.sh) | la machinerie propre à DSM — le worker `data-share` et son ACL, le worker `port-config`, l'unité systemd générée, logrotate contre un descripteur vivant, si Package Center accepte l'archive — **et qu'une machine qui demande sa configuration en reçoit une** : un POST avec le matériel dans le corps, auquel répond le fichier de cette machine fusionné par-dessus le groupe qui la revendique | des minutes, sur une VM DSM 7 — puis sur le DS416j |
+| [`packaging/dsm/vm/on-dsm.sh`](https://github.com/z29k/rescriptum/blob/main/packaging/dsm/vm/on-dsm.sh) | la machinerie propre à DSM — le worker `data-share` et son ACL, le worker `port-config`, l'unité systemd générée, logrotate contre un descripteur vivant, si Package Center accepte l'archive — **et qu'une machine qui demande sa configuration en reçoit une** : un POST avec le matériel dans le corps, auquel répond le fichier de cette machine fusionné par-dessus le groupe qui la revendique. Elle porte aussi **la seule route vers le port 69** et la capacité de ce NAS à atteindre l'index d'un éditeur : que `69/udp` survive dans l'entrée de pare-feu acquise, que le paquet réponde encore sans la capacité, et que `setcap cap_net_bind_service=+ep` puis un redémarrage lient `udp/69` sous le processus non privilégié du paquet | des minutes, sur une VM DSM 7 — puis sur le DS416j |
 
 ```bash
 packaging/dsm/lifecycle-test.sh                     # le premier .spk de dist/ qui tourne ici
@@ -157,7 +226,11 @@ La même règle que partout ailleurs vaut pour eux : **cassez ce qu'ils gardent 
 regardez-les virer au rouge.** Annuler la garde de `postinst` à la mise à jour, faire
 supprimer le partage par `postuninst`, renvoyer `1` pour un paquet arrêté et refuser
 `prestart` transforme 33 vérifications vertes en 25 vertes et 8 rouges — c'est ainsi qu'on
-sait que le harnais teste quelque chose.
+sait que le harnais teste quelque chose. Aujourd'hui c'est **85** vérifications dans
+`lifecycle-test.sh`, **28** dans `check-spk.sh` et **52** sur la machine ; les trois dernières
+ajoutées ont chacune été vues rouges de la même façon — en remettant
+`RESCRIPTUM_TFTP_ADDR=off`, en supprimant le rapport du panneau sur l'état du TFTP, et en
+lui faisant prétendre qu'il livre alors que rien n'est lié.
 
 ## CI
 

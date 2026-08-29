@@ -16,28 +16,55 @@ asking and hand it back, assembled from however many layers you wrote.
 
 ## The layout
 
-Everything lives in one flat directory. There is no per-OS folder, because storage layout
-and URL are deliberately kept apart — see [formats](./formats.md#storage-is-not-the-url).
+**One directory per identity.** A machine is a directory named after it, holding one
+document per operating system:
 
 ```
 answers/
-├── 98fa9b50d810.toml       this machine, as Proxmox
-├── 98fa9b50d810.preseed    …and the same machine, as Debian
-├── aabbccddeeff.yaml       another machine, Ubuntu
-├── default.toml            when nothing else matches
+├── 98fa9b50d810/           one machine
+│   ├── proxmox.toml            as Proxmox
+│   └── debian.preseed          …and the same hardware as Debian
+├── aabbccddeeff/           another machine
+│   └── ubuntu.yaml             as Ubuntu
+├── default/                when nothing else matches
+│   └── proxmox.toml
 └── groups/
-    ├── rack-a.toml         shared by a rack, claims its members
-    ├── base.preseed
-    └── rhel-compute.ks     claims machines by what they are
+    ├── rack-a/             shared by a rack, claims its members
+    │   ├── proxmox.toml
+    │   └── debian.preseed
+    └── rhel-compute/       claims machines by what they are
+        └── rhel.ks
 ```
 
-- **A machine document** is named after the machine — a MAC address, in any separator
-  style — and holds that machine's own configuration, or only the part of it that differs
-  from its group.
-- **A group** lives in `groups/` and is shared. It claims machines by listing them in
-  `members`, or by a `match` block tested against the request.
-- **`default.<ext>`** answers when nothing else does. One per format: a TOML default must
-  not answer a client that asked for kickstart.
+- **A machine** is a directory named after it — a MAC address, in any separator style —
+  holding that machine's own configuration, or only the part of it that differs from its
+  group.
+- **A group** is a directory under `groups/` and is shared. It claims machines by listing
+  them in `members`, or by a `match` block tested against the request.
+- **`default/`** answers when nothing else does. One document per format: a TOML default
+  must not answer a client that asked for kickstart.
+
+### The extension decides; the name does not
+
+Inside a directory, **the extension is the format and the part before it means nothing**.
+`proxmox.toml` and `answer.toml` are the same document to the server; the name is there
+for whoever opens the folder. `rescriptum` writes readable ones — `proxmox.toml`,
+`ubuntu.yaml`, `debian.preseed`, `boot.ipxe` — and never renames yours.
+
+The one rule that follows: **a directory holds at most one document per format**. Two
+`.toml` in one directory is reported as a problem rather than resolved, because nothing
+could pick between them that you would have predicted. Two *different* formats are not a
+duplicate at all — that is the whole point of the directory.
+
+Storage layout and URL are still deliberately kept apart: a folder can be reorganised, a
+URL baked into an ISO cannot. See [formats](./formats.md#storage-is-not-the-url).
+
+:::note[Upgrading from a flat directory]
+Answers used to be files at the top of the directory: `98fa9b50d810.toml` beside
+`98fa9b50d810.preseed`. Those are **no longer served**, and each one is reported by name
+with its new path. `rescriptum migrate` shows what it would move; `rescriptum migrate
+--apply` moves them.
+:::
 
 ## The five things to know
 
@@ -68,8 +95,8 @@ per-format spelling is in [formats](./formats.md#where-the-control-keys-live).
 
 The repository's [`examples/`](https://github.com/z29k/rescriptum/tree/main/examples)
 directory carries a commented example of **every** supported format, all selected
-differently — by hardware, by member list, by filename — and they are exercised by the
-test suite:
+differently — by hardware, by member list, by directory name — and they are exercised by
+the test suite:
 
 ```console
 $ RESCRIPTUM_ANSWERS_DIR=examples rescriptum check

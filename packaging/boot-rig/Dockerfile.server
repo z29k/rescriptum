@@ -1,0 +1,17 @@
+# The real binary, built for Linux and run as the rig's server.
+#
+# Built here rather than copied in, so the rig always tests the working tree rather than
+# whatever happened to be lying in ./target.
+FROM rust:1-bookworm AS build
+WORKDIR /src
+COPY . .
+RUN cargo build --release --locked
+
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=build /src/target/release/rescriptum /usr/local/bin/rescriptum
+RUN mkdir -p /srv/answers /srv/media /srv/boot
+# Root, because TFTP wants port 69 and the rig is not where privilege dropping is proved
+# — `tests/` covers that, and dropping here would only obscure a bind failure.
+ENTRYPOINT ["/usr/local/bin/rescriptum"]

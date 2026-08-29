@@ -29,6 +29,22 @@ pas de *format* de configuration à apprendre ni de ligne de commande à se trom
 | `RESCRIPTUM_CAPTURE_DIR` | non défini | Enregistre les corps de requête ici. Non défini = pas de capture |
 | `RESCRIPTUM_LOG` | `all` | `all`, `problems` ou `off` — voir [plus bas](#journalisation) |
 | `RESCRIPTUM_LOG_FILE` | non défini | Un fichier où ajouter, ou `stdout` / `stderr`. Non défini = stderr |
+| `RESCRIPTUM_MEDIA_DIR` | non défini | Images d'installation. **Non défini = pas de média et pas de listener média** |
+| `RESCRIPTUM_MEDIA_ADDR` | `0.0.0.0:8001` | Le listener média, quand un répertoire de médias existe |
+| `RESCRIPTUM_MEDIA_TIMEOUT_SECS` | `600` | Échéance du transfert entier. Volontairement pas les 10 s du point de réponse |
+| `RESCRIPTUM_MEDIA_MAX_CONNECTIONS` | `16` | Transferts simultanés. Bas exprès : chacun retient son jeton des minutes durant |
+| `RESCRIPTUM_PUBLIC_HOST` | déduit | L'hôte que nomment les URL générées. **Un hôte, jamais une URL** |
+| `RESCRIPTUM_BOOT_ALLOW` | non défini | CIDR clients autorisés à récupérer les médias. Non défini = quiconque atteint le port |
+| `RESCRIPTUM_BOOT_DIR` | non défini | Chargeurs et menus, distribués en TFTP. **Non défini = pas de TFTP du tout** |
+| `RESCRIPTUM_TFTP_ADDR` | `0.0.0.0:69` | Le listener TFTP, ou **`off`** pour aucun. Le port 69 est privilégié ; voir `RESCRIPTUM_USER` |
+| `RESCRIPTUM_TFTP_PORT_RANGE` | non défini | Les ports depuis lesquels un transfert répond, en `premier-dernier`. **Un transfert TFTP quitte le port 69 aussitôt** — le serveur répond depuis un port neuf et le client acquitte vers celui-là — donc un pare-feu n'autorisant que 69 jette l'acquittement, et la machine semble s'être désintéressée. Épinglez la plage pour pouvoir l'ouvrir. Non définie, le noyau choisit |
+| `RESCRIPTUM_TFTP_BLKSIZE` | `1468` | Le plus grand bloc TFTP accepté. 1468 remplit **exactement** un chemin de 1500 octets — 1468 de charge, 4 TFTP, 8 UDP, 20 IP — donc un tag VLAN ou un tunnel rend la trame trop grande et une ROM PXE s'arrête en général sans rien dire. À baisser (1400, ou 512) quand un démarrage cale au premier bloc |
+| `RESCRIPTUM_BOOT_TIMEOUT_SECS` | `15` | Secondes avant que le menu ne retombe sur le disque local |
+| `RESCRIPTUM_BOOT_UNCLAIMED` | `menu` | Ce que reçoit une machine qu'aucune réponse ne revendique. `local` la rend à son firmware, ce qui inverse le sens d'un fichier de réponse : présent veut dire *installe celle-ci* plutôt que *laisse celle-ci tranquille* |
+| `RESCRIPTUM_INSTALLED_TOKEN` | non défini | Le jeton du `[post-installation-webhook]` de Proxmox. Défini, `POST /installed` existe et retire la revendication d'installation d'une machine quand elle signale sa réussite. **Non défini, il n'y a pas d'endpoint** |
+| `RESCRIPTUM_BOOT_LOGO` | intégré | Un PNG à afficher derrière le menu |
+| `RESCRIPTUM_BOOT_TITLE` | intégré | La barre de titre du menu |
+| `RESCRIPTUM_USER` / `_GROUP` | non défini | Basculer dessus **après** avoir lié. L'ordre inverse échoue au déploiement |
 
 `/srv` est l'endroit où la norme de hiérarchie des fichiers range les données servies par le
 système, ce qu'est précisément un répertoire de réponses. Les deux valeurs par défaut y vivent,
@@ -158,6 +174,12 @@ Celles-ci arrêtent le serveur au lieu d'avertir, parce que démarrer quand mêm
 | `RESCRIPTUM_ADMIN_TOKEN` de moins de 16 caractères | assez court pour être deviné |
 | L'adresse d'écoute ne peut pas être bindée | rien à faire |
 | Le store ne peut pas être ouvert | rien à servir |
+| `RESCRIPTUM_MEDIA_ADDR` défini sans `RESCRIPTUM_MEDIA_DIR` | un listener sans rien à servir |
+| `RESCRIPTUM_MEDIA_ADDR` égal à l'adresse de réponse ou d'administration | le second bind perd, et lequel dépend de l'ordre de démarrage |
+| `RESCRIPTUM_PUBLIC_HOST` portant un schéma, un port ou un chemin | il est écrit dans les URL de deux listeners ; un port dans la valeur épingle chaque script généré sur l'un d'eux |
+| `RESCRIPTUM_TFTP_ADDR` défini sans `RESCRIPTUM_BOOT_DIR` | un listener sans chargeur à distribuer |
+| Le répertoire de démarrage ne peut pas être résolu | chaque contrôle de chemin s'y compare |
+| `RESCRIPTUM_USER` nomme un compte inexistant | rien à devenir |
 
 ## Avertissements de démarrage
 
@@ -171,12 +193,26 @@ Ceux-ci sont affichés et le serveur continue :
 | API d'administration hors boucle locale | `warning: the admin API is not bound to loopback — …` |
 | `RESCRIPTUM_ANSWER_TOKEN` de moins de 16 caractères | un avertissement, **pas** une erreur — refuser de démarrer laisserait un parc incapable de s'installer |
 | Tout problème dans le jeu de réponses | une ligne `warning:` chacun, le même jeu que signale `check` |
+| `RESCRIPTUM_PUBLIC_HOST` non défini | La réponse de la table de routage, ou l'unique adresse d'interface s'il n'y a pas de route par défaut. Journalisé dans les deux cas, en avertissement **nommant les autres adresses** s'il y en a. Un hôte derrière du NAT se trompe toujours en silence |
+| TFTP ne peut pas se lier | `warning: cannot bind TFTP on … ` — **le seul listener dont l'échec de liaison n'est pas fatal.** Le port 69 est le seul port privilégié de la conception, donc le seul bind qui puisse échouer pour quelque chose que personne n'a configuré ; les réponses sont le produit, et mourir ferait échouer toutes les installations en cours pour signaler qu'un second port n'a pas pu être ouvert. `boot check` sort en non-zéro et le message nomme les façons d'obtenir le port |
+| Répertoire de médias absent ou illisible | une ligne `warning: media: …` — un parc ne doit jamais être incapable de s'installer parce qu'une image est bizarre |
 
 ## Options de compilation
 
 | Feature | Défaut | Effet |
 |---|---|---|
-| `sqlite` | activée | Le store SQLite et l'API d'administration. `cargo build --no-default-features` retire les deux — 944 928 octets au lieu de 2 103 456 sur ARMv7 |
+| `sqlite` | activée | Le store SQLite et l'API d'administration |
+| `boot` | activée | Le catalogue de médias, le lecteur ISO et le listener média |
+
+Mesuré sur ARMv7 (gnueabihf, plancher glibc 2.17). Remesurez plutôt que de citer ces
+chiffres : ils ont bougé d'environ 375 Ko quand cette cible est passée de musl à glibc.
+
+| Build | Octets |
+|---|---|
+| les deux (défaut) | 2 602 056 |
+| `sqlite` seule | 2 482 000 |
+| `boot` seule | 1 436 704 |
+| aucune | 1 316 648 |
 
 ## Limites fixes
 

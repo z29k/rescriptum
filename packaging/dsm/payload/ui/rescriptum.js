@@ -122,10 +122,19 @@ Ext.ns('SYNO.SDS.App.Rescriptum');
                 bodyStyle: 'padding: 12px 16px',
                 html: ''
             });
+            /* Plain, not a form: this one is a list with buttons rather than labelled
+             * fields, so the form layout that `statusPanel` needs would buy nothing. */
+            this.mediaPanel = new Ext.Panel({
+                border: false,
+                autoScroll: true,
+                bodyStyle: 'padding: 12px 16px',
+                items: []
+            });
 
             this.tabButtons = {
                 settings: new SYNO.ux.Button({ text: 'Settings', toggleGroup: 'rescriptum-tabs', allowDepress: false, pressed: true, handler: function () { self.showView('settings'); } }),
                 status: new SYNO.ux.Button({ text: 'Status', toggleGroup: 'rescriptum-tabs', allowDepress: false, handler: function () { self.showView('status'); } }),
+                media: new SYNO.ux.Button({ text: 'Images', toggleGroup: 'rescriptum-tabs', allowDepress: false, handler: function () { self.showView('media'); } }),
                 log: new SYNO.ux.Button({ text: 'Log', toggleGroup: 'rescriptum-tabs', allowDepress: false, handler: function () { self.showView('log'); } })
             };
             this.saveButton = new SYNO.ux.Button({ text: 'Save', handler: function () { self.save(); } });
@@ -141,7 +150,7 @@ Ext.ns('SYNO.SDS.App.Rescriptum');
                 border: false,
                 layout: 'card',
                 activeItem: 0,
-                items: [this.settingsPanel, this.statusPanel, this.logPanel]
+                items: [this.settingsPanel, this.statusPanel, this.mediaPanel, this.logPanel]
             });
 
             config = Ext.apply({
@@ -156,7 +165,7 @@ Ext.ns('SYNO.SDS.App.Rescriptum');
                 maximizable: true,
                 minimizable: true,
                 layout: 'fit',
-                tbar: [this.tabButtons.settings, this.tabButtons.status, this.tabButtons.log],
+                tbar: [this.tabButtons.settings, this.tabButtons.status, this.tabButtons.media, this.tabButtons.log],
                 items: [this.deck],
                 buttons: [this.saveButton, this.reloadButton, this.closeButton]
             }, config);
@@ -220,6 +229,7 @@ Ext.ns('SYNO.SDS.App.Rescriptum');
         relabel: function () {
             this.tabButtons.settings.setText(this.t('settings'));
             this.tabButtons.status.setText(this.t('status'));
+            this.tabButtons.media.setText(this.t('media'));
             this.tabButtons.log.setText(this.t('log'));
             this.saveButton.setText(this.t('save'));
             this.reloadButton.setText(this.t('reload'));
@@ -492,6 +502,242 @@ Ext.ns('SYNO.SDS.App.Rescriptum');
 
         // ---- the three views ---------------------------------------------------
 
+        // ---- images ----------------------------------------------------------
+
+        /* Three sections, and the order is the order somebody works in: what is held,
+         * what can be fetched, and the manual way in that must never disappear. */
+        loadMedia: function () {
+            var self = this;
+            var panel = this.mediaPanel;
+            panel.removeAll(true);
+            panel.add(new Ext.Panel({ border: false, html: '<div class="rescriptum-pre">' + self.t('loading') + '</div>' }));
+            panel.doLayout();
+
+            this.call('media', {
+                success: function (text) {
+                    panel.removeAll(true);
+                    panel.add(self.section(self.t('held'), text));
+
+                    /* **Preparing is what turns an image into an unattended install**, and
+                     * it is the step nobody guesses at — so it sits directly under the list
+                     * it acts on rather than behind a menu. The ids come from that same
+                     * listing, parsed here for the same reason the source list is: the
+                     * panel and the command line must not disagree about what is held. */
+                    var ids = [];
+                    Ext.each(String(text).split('\n'), function (line) {
+                        var m = /^([A-Za-z0-9][A-Za-z0-9._:-]*)\s\s+\S/.exec(line);
+                        if (m && m[1] !== 'ID') { ids.push([m[1]]); }
+                    });
+                    self.prepareCombo = new SYNO.ux.ComboBox({
+                        fieldLabel: self.t('image'),
+                        width: 420,
+                        editable: false,
+                        triggerAction: 'all',
+                        mode: 'local',
+                        valueField: 'id',
+                        displayField: 'id',
+                        store: new Ext.data.ArrayStore({ fields: ['id'], data: ids })
+                    });
+                    panel.add(new SYNO.ux.FormPanel({
+                        border: false, labelWidth: 120, bodyStyle: 'padding: 4px 0 12px 0',
+                        items: [
+                            new Ext.Panel({ border: false, html: '<b>' + Ext.util.Format.htmlEncode(self.t('prepare')) + '</b><div style="margin:2px 0 8px 0">' + Ext.util.Format.htmlEncode(self.t('prepare_hint')) + '</div>' }),
+                            self.prepareCombo,
+                            new SYNO.ux.Button({ text: self.t('prepare_do'), handler: function () { self.prepareImage(); } })
+                        ]
+                    }));
+                    self.prepareResult = new Ext.Panel({ border: false, html: '' });
+                    panel.add(self.prepareResult);
+
+                    /* The catalogue picker. The source list is local and instant; asking
+                     * one what it offers goes over the network to the vendor, so it is a
+                     * second click rather than something done for every source on open. */
+                    self.sourceCombo = new SYNO.ux.ComboBox({
+                        fieldLabel: self.t('source'),
+                        width: 260,
+                        editable: false,
+                        triggerAction: 'all',
+                        mode: 'local',
+                        valueField: 'id',
+                        displayField: 'label',
+                        store: new Ext.data.ArrayStore({ fields: ['id', 'label'], data: [] })
+                    });
+                    self.offerCombo = new SYNO.ux.ComboBox({
+                        fieldLabel: self.t('image'),
+                        width: 420,
+                        editable: false,
+                        triggerAction: 'all',
+                        mode: 'local',
+                        valueField: 'name',
+                        displayField: 'name',
+                        store: new Ext.data.ArrayStore({ fields: ['name'], data: [] })
+                    });
+                    self.sourceCombo.on('select', function (c, rec) { self.loadOffers(rec.get('id')); });
+
+                    var fetchBtn = new SYNO.ux.Button({
+                        text: self.t('fetch'),
+                        handler: function () { self.fetchImage(); }
+                    });
+                    var urlField = new SYNO.ux.TextField({ fieldLabel: self.t('url'), width: 420 });
+                    var digestField = new SYNO.ux.TextField({ fieldLabel: self.t('digest'), width: 420 });
+                    self.urlField = urlField;
+                    self.digestField = digestField;
+
+                    panel.add(new SYNO.ux.FormPanel({
+                        border: false, labelWidth: 120, bodyStyle: 'padding: 4px 0 12px 0',
+                        items: [
+                            new Ext.Panel({ border: false, html: '<b>' + Ext.util.Format.htmlEncode(self.t('catalogue')) + '</b><div style="margin:2px 0 8px 0">' + Ext.util.Format.htmlEncode(self.t('catalogue_hint')) + '</div>' }),
+                            self.sourceCombo, self.offerCombo, fetchBtn
+                        ]
+                    }));
+
+                    /* **The manual way in, and it is not a lesser path.** A digest somebody
+                     * obtained out of band is stronger evidence than one read from the same
+                     * host as the image — so this stays in front of people rather than being
+                     * documented as an escape hatch for the command line. */
+                    panel.add(new SYNO.ux.FormPanel({
+                        border: false, labelWidth: 120, bodyStyle: 'padding: 4px 0 12px 0',
+                        items: [
+                            new Ext.Panel({ border: false, html: '<b>' + Ext.util.Format.htmlEncode(self.t('manual')) + '</b><div style="margin:2px 0 8px 0">' + Ext.util.Format.htmlEncode(self.t('manual_hint')) + '</div>' }),
+                            urlField, digestField,
+                            new SYNO.ux.Button({ text: self.t('add'), handler: function () { self.addByUrl(); } })
+                        ]
+                    }));
+
+                    self.progressPanel = new Ext.Panel({ border: false, html: '' });
+                    panel.add(self.progressPanel);
+                    panel.doLayout();
+                    self.fillSources();
+                    self.pollProgress();
+                }
+            });
+        },
+
+        section: function (title, text) {
+            return new Ext.Panel({
+                border: false,
+                html: '<b>' + Ext.util.Format.htmlEncode(title) + '</b>' +
+                      '<pre class="rescriptum-pre">' + Ext.util.Format.htmlEncode(text) + '</pre>'
+            });
+        },
+
+        /* `media sources` prints a table; the ids are its first column. Parsed here
+         * rather than served as JSON so the panel and the command line stay the same
+         * text — the rule the `config` action already follows. */
+        fillSources: function () {
+            var self = this;
+            this.call('sources', {
+                success: function (text) {
+                    var rows = [];
+                    Ext.each(String(text).split('\n'), function (line) {
+                        var m = /^([a-z0-9][a-z0-9._-]*)\s\s+(\S.*?)\s\s+/.exec(line);
+                        if (m && m[1] !== 'SOURCE') { rows.push([m[1], m[2]]); }
+                    });
+                    if (self.sourceCombo) { self.sourceCombo.getStore().loadData(rows); }
+                }
+            });
+        },
+
+        loadOffers: function (id) {
+            var self = this;
+            this.offerCombo.getStore().loadData([]);
+            this.offerCombo.setValue('');
+            this.banner(this.t('reading_index'));
+            this.call('sources', {
+                query: '&source=' + encodeURIComponent(id),
+                success: function (text) {
+                    var rows = [];
+                    Ext.each(String(text).split('\n'), function (line) {
+                        var m = /^ {2}(\S+\.(?:iso|img))\s*$/i.exec(line);
+                        if (m) { rows.push([m[1]]); }
+                    });
+                    self.offerCombo.getStore().loadData(rows);
+                    if (rows.length) { self.offerCombo.setValue(rows[0][0]); self.banner(''); }
+                    else { self.banner(text); }
+                }
+            });
+        },
+
+        fetchImage: function () {
+            var self = this;
+            var src = this.sourceCombo && this.sourceCombo.getValue();
+            var name = this.offerCombo && this.offerCombo.getValue();
+            if (!src || !name) { this.banner(this.t('pick_one')); return; }
+            this.call('fetch', {
+                query: '&source=' + encodeURIComponent(src) + '&name=' + encodeURIComponent(name),
+                body: '',
+                success: function () { self.banner(''); self.pollProgress(); }
+            });
+        },
+
+        /* Proxmox only, and **the CLI is what refuses the rest** — with the sentence that
+         * says why, shown here verbatim. Every other family takes its answer's URL on the
+         * kernel command line, where `media ipxe` already puts it, so injecting a file
+         * they never read would be a no-op that looks like a step. Deciding that here as
+         * well would be a second implementation to keep honest. */
+        prepareImage: function () {
+            var self = this;
+            var id = this.prepareCombo && this.prepareCombo.getValue();
+            if (!id) { this.banner(this.t('pick_image')); return; }
+            this.prepareResult.update('<pre class="rescriptum-pre">' + Ext.util.Format.htmlEncode(this.t('loading')) + '</pre>');
+            this.call('prepare', {
+                query: '&id=' + encodeURIComponent(id),
+                body: '',
+                success: function (text) {
+                    self.prepareResult.update('<pre class="rescriptum-pre">' + Ext.util.Format.htmlEncode(text) + '</pre>');
+                    /* A prepared entry is a new row in the listing above, so re-read it —
+                     * leaving a stale table in front of somebody who just changed it is
+                     * how a working step looks like it did nothing. */
+                    if (/--- exit 0\s*$/.test(text)) { self.loadMedia(); }
+                }
+            });
+        },
+
+        addByUrl: function () {
+            var self = this;
+            var url = (this.urlField && this.urlField.getValue() || '').replace(/^\s+|\s+$/g, '');
+            var digest = (this.digestField && this.digestField.getValue() || '').replace(/^\s+|\s+$/g, '');
+            if (!url) { this.banner(this.t('need_url')); return; }
+            this.call('fetch', {
+                query: '&url=' + encodeURIComponent(url) + '&sha256=' + encodeURIComponent(digest),
+                body: '',
+                success: function () { self.banner(''); self.pollProgress(); }
+            });
+        },
+
+        /* Progress is the partial file's size, which `media add` is already writing —
+         * nothing had to be invented for the browser, and nothing here can disagree with
+         * what the CLI actually did. */
+        pollProgress: function () {
+            var self = this;
+            this.stopPolling();
+            var tick = function () {
+                self.call('progress', {
+                    success: function (text) {
+                        if (!self.progressPanel) { return; }
+                        self.progressPanel.update('<pre class="rescriptum-pre">' + Ext.util.Format.htmlEncode(text) + '</pre>');
+                        if (/^state: running/m.test(text)) {
+                            self.pollTimer = setTimeout(tick, 2000);
+                        } else {
+                            self.pollTimer = null;
+                            /* Finished: the held list has changed, so re-read it once
+                             * rather than leaving a stale table in front of somebody. */
+                            if (self.active === 'media' && self.sawRunning) {
+                                self.sawRunning = false;
+                                self.loadMedia();
+                            }
+                        }
+                        if (/^state: running/m.test(text)) { self.sawRunning = true; }
+                    }
+                });
+            };
+            tick();
+        },
+
+        stopPolling: function () {
+            if (this.pollTimer) { clearTimeout(this.pollTimer); this.pollTimer = null; }
+        },
+
         /* **Not `show`.** `Ext.Window.prototype.show()` is what DSM calls to display the
          * window, and defining a method of that name here silently overrode it: the window
          * was built, laid out and even rendered its taskbar preview, and then never
@@ -499,17 +745,25 @@ Ext.ns('SYNO.SDS.App.Rescriptum');
          * either DSM version. Anything added to this prototype shares a namespace with
          * every method of `Ext.Window`, and that is a large namespace. */
         showView: function (which) {
-            var panel = which === 'status' ? this.statusPanel : (which === 'log' ? this.logPanel : this.settingsPanel);
+            var panel = this.settingsPanel;
+            if (which === 'status') { panel = this.statusPanel; }
+            if (which === 'log') { panel = this.logPanel; }
+            if (which === 'media') { panel = this.mediaPanel; }
             this.deck.getLayout().setActiveItem(panel);
             this.active = which;
             this.saveButton.setDisabled(which !== 'settings' || !this.writable);
             if (which === 'status') { this.loadStatus(); }
             if (which === 'log') { this.loadLog(); }
+            if (which === 'media') { this.loadMedia(); }
+            /* Polling only while the tab is in front. A timer left running behind a
+             * closed window is a request every two seconds, forever, on a NAS. */
+            if (which !== 'media') { this.stopPolling(); }
         },
 
         reload: function () {
             if (this.active === 'status') { this.loadStatus(); return; }
             if (this.active === 'log') { this.loadLog(); return; }
+            if (this.active === 'media') { this.loadMedia(); return; }
             this.loadConfig();
         }
     });

@@ -60,8 +60,13 @@ puis le paquet :
 
 ## Ce que le paquet ne fait pas
 
-Quatre choses à savoir avant qu'elles ne vous surprennent.
+Cinq choses à savoir avant qu'elles ne vous surprennent.
 
+- **Il ne peut pas ouvrir le port 69 tout seul.** DSM 7 n'autorise pas un paquet non signé
+  à tourner en root, donc le TFTP vous demande une commande root, une seule fois — voir
+  [Le TFTP demande une commande root](#le-tftp-demande-une-commande-root). Tant qu'elle
+  n'est pas donnée, le serveur avertit, continue de répondre et de servir les images, et
+  seule la livraison du chargeur est coupée.
 - **Il n'ouvre pas le pare-feu.** Enregistrer le port fait apparaître *rescriptum* par son
   nom dans l'éditeur de règles au lieu d'un numéro à taper. Si votre pare-feu est actif avec
   une règle par défaut qui refuse, il faut toujours créer la règle.
@@ -225,6 +230,150 @@ d'environnement puis déplacez l'entrée du pare-feu, qui ne suit pas toute seul
 ```console
 $ sudo /usr/syno/sbin/synopkghelper update rescriptum port-config
 ```
+
+## Servir les médias d'installation, et le PXE
+
+Le paquet sait aussi servir l'installeur lui-même — noyaux, initrds et images — depuis le
+NAS qui décide déjà la réponse. C'est éteint jusqu'à ce que vous l'allumiez :
+
+1. Décommentez `RESCRIPTUM_MEDIA_DIR` dans le fichier d'environnement et redémarrez le
+   paquet.
+2. Posez une ISO dans le dossier `media` du partage `rescriptum`, via File Station ou SMB.
+3. Enregistrez-la, pour qu'elle soit vérifiée et analysée une fois plutôt qu'à chaque
+   requête :
+
+```console
+$ rescriptum-cli media add /volume1/rescriptum/media/proxmox-ve_8.4-1.iso \
+    --sha256 9f86d081884c7d65…
+$ rescriptum-cli media list
+```
+
+Le listener média est sur le **port 8001**, déjà déclaré au pare-feu à côté du port de
+réponse — il reste à créer la règle.
+
+**Aucune image n'est livrée avec le paquet**, et aucune ne le sera jamais : une ISO est
+l'artefact de quelqu'un d'autre, elle pèse des gigaoctets, et elle évolue à son rythme. Ce
+dossier est là où vous les gardez, et c'est **l'archive** — rien ici ne modifie une image
+après son arrivée. Préparer une image Proxmox produit un fichier compagnon de deux cents
+octets et une injection appliquée au fil de l'eau, donc les octets sur disque restent
+exactement ce que Proxmox a publié et leur somme reste vérifiable contre celle de Proxmox.
+Voir [Servir les médias de démarrage](./media.md).
+
+### Le TFTP demande une commande root
+
+**C'est rescriptum le serveur TFTP ici, pas DSM.** Le port 69 est privilégié et DSM 7
+refuse qu'un paquet non signé tourne en root : le paquet ne peut donc pas s'accorder le
+port lui-même — mais il n'a pas besoin de root pour s'en *servir*, seulement qu'on l'y
+autorise une fois :
+
+```console
+$ sudo setcap cap_net_bind_service=+ep /volume1/@appstore/rescriptum/bin/rescriptum
+$ sudo synopkg restart rescriptum
+```
+
+Après quoi le paquet ouvre `udp/69` sous son propre utilisateur non privilégié
+`rescriptum`, à côté de 8000 et 8001. Les trois sont enregistrés auprès du pare-feu.
+
+**Rendez-la durable, car une mise à jour la perd.** Installer une nouvelle version remplace
+le binaire, et les capacités de fichier appartiennent au fichier — elles partent donc avec
+l'ancien. Panneau de configuration → **Planificateur de tâches** → Créer → Tâche déclenchée
+→ Script défini par l'utilisateur, utilisateur `root`, événement **Démarrage**, avec la
+ligne `setcap` comme script. Relancez-la depuis cette page après chaque mise à jour, ou
+redémarrez.
+
+**Rien d'autre ne casse pendant ce temps.** Un port TFTP qu'on ne peut pas ouvrir est le
+seul écouteur de ce serveur dont l'échec n'est pas fatal, et c'est délibéré : les réponses
+sont le produit, et une mise à jour ne doit pas couper les installations d'une flotte pour
+signaler qu'un second port n'a pas pu être ouvert. Ce que vous obtenez à la place, c'est un
+avertissement dans le journal, une ligne `tftp:` dans l'onglet **État** du panneau de
+réglages, et :
+
+```console
+$ rescriptum-cli boot check
+  BROKEN nothing answers on 0.0.0.0:69 and it cannot be bound either: Permission denied.
+  Port 69 is privileged: run as root and set RESCRIPTUM_USER to drop afterwards, or grant
+  the binary cap_net_bind_service with setcap — the server still answers and still serves
+  media, but a machine sent here by DHCP asks for a loader and gets nothing
+```
+
+Notez qu'il demande un chargeur au port plutôt que d'essayer de l'ouvrir. Ouvrir le port
+prouve le contraire de ce qu'on croit : une ouverture qui *réussit* signifie que personne
+n'écoute.
+
+**Les chargeurs sont dans le paquet.** Le dossier `boot` du partage arrive rempli au
+premier démarrage, et une mise à jour les rafraîchit — il n'y a pas de second
+téléchargement. C'est iPXE, en GPLv2, des fichiers séparés servis à côté plutôt que soudés
+dans quoi que ce soit, et le `NOTICE` posé avec eux nomme le commit amont exact dont ils
+sont issus.
+
+```console
+$ rescriptum-cli boot check
+  ok   0.0.0.0:69 handed over ipxe-undionly.kpxe
+```
+
+Les remplacer est possible, mais pas en modifiant ce dossier : une mise à jour réécrit les
+noms de fichiers que ce paquet fournit. Pointez plutôt `RESCRIPTUM_BOOT_DIR` ailleurs, et
+rien ici n'y écrira jamais.
+
+Puis faites pointer le DHCP vers ce NAS — **Panneau de configuration → Serveur DHCP → PXE**
+si le NAS sert le DHCP, ou votre propre serveur avec ce qu'imprime :
+
+```console
+$ rescriptum-cli boot dhcp-snippet --format dnsmasq
+```
+
+#### Si vous préférez éviter setcap
+
+`RESCRIPTUM_TFTP_ADDR` accepte un port non privilégié, qui ne demande aucune capacité — il
+faut alors le dire à votre serveur DHCP, puisqu'une ROM PXE a 69 gravé dedans et que seul
+un premier étage de chaînage peut être redirigé. Ou mettez-le à `off` et laissez un autre
+service de ce NAS livrer le chargeur ; DSM a son propre serveur TFTP sous Panneau de
+configuration → Services de fichiers → Avancé, pointé sur le dossier `boot` du partage. Ce
+sont deux contournements pour un déploiement qui les veut, pas ce que le paquet attend.
+
+### L'onglet Images
+
+L'application a un quatrième onglet, et c'est là que les images d'installation se gèrent
+sans toucher à un terminal : ce qui est présent, un catalogue où piocher, et un champ URL
+pour ce que le catalogue ne propose pas.
+
+**Le catalogue n'est pas une liste livrée par ce paquet.** Chaque entrée nomme l'index de
+sommes que l'éditeur publie déjà à côté de ses propres images ; en choisir un lit cet index
+par le réseau, donc les versions proposées sont celles que l'éditeur a aujourd'hui et
+l'empreinte vérifiée est la sienne. Cela veut dire aussi que cet onglet a besoin que le NAS
+atteigne Internet — la seule partie de ce paquet qui en a besoin.
+
+Le téléchargement d'une image de 1,5 Go ne peut pas être tenu par une requête web : l'onglet
+le lance et le suit. `media add` écrit dans un fichier `.part` à côté de sa destination et
+ne le renomme qu'une fois l'empreinte vérifiée — la taille du fichier partiel *est* donc
+l'avancement, et sa disparition *est* la fin. Fermer la fenêtre n'arrête pas le
+téléchargement.
+
+**Préparer une image Proxmox est aussi un bouton.** Toutes les autres familles prennent
+l'URL de leur réponse sur la ligne de commande du noyau : il n'y a rien à préparer, et
+l'onglet le dit plutôt que de proposer une étape sans effet.
+
+### Un réglage qui mérite d'être rempli
+
+```
+RESCRIPTUM_PUBLIC_HOST=192.168.1.10
+```
+
+Chaque script généré nomme cette adresse. Laissée vide, elle est déduite en interrogeant
+la table de routage, et le panneau de réglages affiche ce que cela a donné plutôt qu'une
+case vide — donc sur un NAS à une seule interface, il n'y a rien à remplir ici.
+
+**C'est le NAS à deux interfaces qui mérite la lecture.** La déduction en retient une, et
+le journal de démarrage nomme les autres à côté :
+
+```
+warning: RESCRIPTUM_PUBLIC_HOST is not set — derived 192.168.1.10, which is what every
+generated URL will name. This host also has 10.0.0.10. If the machines reach it on one of
+those instead, set it explicitly.
+```
+
+Se tromper produit une machine qui démarre, enchaîne, et se bloque sur une adresse qui
+n'existe pas — long à diagnostiquer depuis la machine.
 
 ## Le journal
 

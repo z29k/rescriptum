@@ -8,7 +8,7 @@ sidebar:
 
 # Valider ce qui sera servi
 
-Avant que les réponses ne se composent, un administrateur écrivait un fichier complet et le
+Avant que les réponses ne se composent, un administrateur écrivait un document complet et le
 validait :
 
 ```console
@@ -16,8 +16,8 @@ $ proxmox-auto-install-assistant validate-answer answer.toml
 ```
 
 Une fois qu'une réponse est assemblée à partir d'une chaîne de groupes, plus un document
-machine, plus un remplissage de template, **le fichier que reçoit l'installateur est un
-fichier que personne n'a jamais vu** — et une mauvaise fusion se manifeste par une
+machine, plus un remplissage de template, **le document que reçoit l'installateur est un
+document que personne n'a jamais vu** — et une mauvaise fusion se manifeste par une
 installation automatisée ratée à 3 h du matin. Deux sous-commandes existent pour combler ce
 manque, et tout changement de la fusion doit les garder fonctionnelles.
 
@@ -59,7 +59,7 @@ Le code de sortie est 0 quand quelque chose s'est résolu, non nul quand rien ne
 ```console
 $ rescriptum check
 checking files:examples
-  10 group(s), 8 machine file(s)
+  10 group(s), 8 machine document(s)
   group "rhel-compute" selects on serial=7ABC*
     (verify with: rescriptum render --query "...")
   group "ubuntu-web" selects on file=user-data product=PowerEdge R6*

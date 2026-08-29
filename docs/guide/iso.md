@@ -103,14 +103,14 @@ The path's last segment is available as the `file` fact, so the two are told apa
 selector:
 
 ```yaml
-# answers/groups/ubuntu-web.yaml
+# answers/groups/ubuntu-web/ubuntu.yaml
 match:
   file: "user-data"
   product: "PowerEdge R6*"
 ```
 
 ```yaml
-# answers/groups/ubuntu-meta.yaml
+# answers/groups/ubuntu-meta/ubuntu.yaml
 match:
   file: "meta-data"
 

@@ -13,9 +13,9 @@ résultat. Ce qu'une machine s'apprête à recevoir, vous pouvez le lire avant d
 flowchart LR
   M["N'importe quelle machine<br/>même image, même URL"]
   M -->|"MAC · numéro de série · DMI"| R["rescriptum"]
-  R --> B["groups/base.toml"]
-  R --> A["groups/rack-a.toml"]
-  R --> H["98fa9b50d810.toml"]
+  R --> B["groups/base/"]
+  R --> A["groups/rack-a/"]
+  R --> H["98fa9b50d810/"]
   B --> G["fusion<br/>la machine gagne toujours"]
   A --> G
   H --> G
@@ -47,8 +47,8 @@ que sur un hôte de datacenter encaissant une rafale de provisioning.
 ## Trente secondes
 
 ```console
-$ mkdir -p answers/groups
-$ cat > answers/groups/rack-a.toml <<'TOML'
+$ mkdir -p answers/groups/rack-a
+$ cat > answers/groups/rack-a/proxmox.toml <<'TOML'
 members = ["98:fa:9b:50:d8:10", "98:fa:9b:50:d8:11"]
 
 [global]
@@ -68,8 +68,9 @@ timezone = "Europe/Paris"
 …
 ```
 
-Voilà une baie **en tant que Proxmox**. Le même répertoire contient `groups/rack-a.ks` pour
-les nœuds RHEL et `groups/rack-a.preseed` pour les Debian — même idée, autre extension. Un
+Voilà une baie **en tant que Proxmox**. Le même répertoire contient `groups/rack-a/rhel.ks`
+pour les nœuds RHEL et `groups/rack-a/debian.preseed` pour les Debian — même répertoire, autre
+extension. Un
 document est indexé par *(machine, format)*, donc une machine peut être plusieurs systèmes
 d'exploitation à la fois et c'est l'URL qui tranche.
 
@@ -101,7 +102,7 @@ Puis pointez ce que vous installez sur **son URL** — un seul serveur leur rép
   membres, ou par ce que la machine *est*.
 - **[Un document par système d'exploitation](./guide/answers/formats.md)** — l'extension est
   le format, l'endpoint choisit entre eux.
-- **[Groupes et fusion](./guide/answers/grouping.md)** — une baie partage un fichier ; une
+- **[Groupes et fusion](./guide/answers/grouping.md)** — une baie partage un document ; une
   machine qui diffère ne porte que sa différence.
 - **[Templating](./guide/answers/templating.md)** — `{{ serial }}` dans un groupe couvre cinq
   cents machines.

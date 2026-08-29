@@ -119,6 +119,91 @@ $ ./build.sh armv7-unknown-linux-gnueabihf
 $ packaging/dsm/vm/on-dsm.sh admin@nas
 ```
 
+## Testing the real package on a real NAS
+
+The VM is for iterating; this is for the verdict. Written for the DS416j (ARMv7,
+`armada38x`, DSM 7.1.1) — swap `armv7` for `x86_64` on an Intel NAS.
+
+**Build the loaders once.** The package carries them, and `check-spk.sh` refuses one that
+does not. iPXE needs a Linux C toolchain, so on a Mac that is a container:
+
+```console
+$ docker run --rm --platform linux/amd64 -v "$PWD:/w" -w /w debian:bookworm-slim sh -c '
+    apt-get update -qq &&
+    apt-get install -y --no-install-recommends build-essential liblzma-dev mtools \
+      xorriso isolinux gcc-aarch64-linux-gnu git ca-certificates perl &&
+    packaging/ipxe/build.sh --out /w/packaging/ipxe/out'
+```
+
+**Build the package.**
+
+```console
+$ ./build.sh armv7-unknown-linux-gnueabihf
+$ packaging/dsm/make-spk.sh armv7
+  loaders: 13 file(s) from …/packaging/ipxe/out
+    rescriptum-0.2.0-1-armv7.spk           8084 KB installed   arch=armada38x
+$ packaging/dsm/check-spk.sh dist/rescriptum-0.2.0-1-armv7.spk
+```
+
+**Install it.** Package Center → *Manual Install* → the `.spk`. DSM warns that the
+publisher is unknown; that is expected, nothing here is signed by Synology. The wizard
+asks for the answer port.
+
+**Then the one root command.** Port 69 is privileged and DSM 7 will not let an unsigned
+package run as root — [and cannot be made
+to](../../../docs/development/traps.md#packaging-for-dsm), so this is the step that has no
+way around it. Over SSH, as an administrator:
+
+```console
+$ sudo setcap cap_net_bind_service=+ep "$(readlink -f /var/packages/rescriptum/target)/bin/rescriptum"
+$ sudo synopkg restart rescriptum
+```
+
+`readlink -f` rather than a literal `/volume1/…`: `target` is a symlink into
+`@appstore` on whichever volume the package landed on.
+
+**Check it from the NAS itself.**
+
+```console
+$ rescriptum-cli boot check
+  ok   ipxe-undionly.kpxe (96.6K)
+  …
+  ok   0.0.0.0:69 handed over ipxe-undionly.kpxe
+$ curl -fsS http://127.0.0.1:8000/health
+OK
+```
+
+The `handed over` line is the one that matters: it is a real TFTP read request answered
+with real data, not a port that merely opened. If it says `BROKEN`, the `setcap` did not
+take — and note the package is still serving answers and media, deliberately.
+
+**Make it survive an upgrade.** A new version is a new file, and a file capability goes
+with the old one. Control Panel → **Task Scheduler** → Create → Triggered Task →
+User-defined script, user `root`, event **Boot-up**, with the `setcap` line as the script.
+Run it once from that page after each upgrade, or reboot.
+
+**Then boot a machine**, which is the only thing that proves the chain:
+
+```console
+$ rescriptum-cli boot dhcp-snippet --format dnsmasq
+```
+
+Put that in the DHCP server, point a machine at the network, and watch it reach the menu.
+If the firewall is on, allow *rescriptum* — the entry now covers `8000/tcp 8001/tcp
+69/udp`, and a dropped UDP 69 looks exactly like a NAS that is not there.
+
+### The automated pass, which is destructive
+
+`on-dsm.sh` does install → start → answer a machine → upgrade → **uninstall**, so run it
+*before* setting a NAS up for real, never after:
+
+```console
+$ packaging/dsm/vm/on-dsm.sh admin@nas --abi armv7
+```
+
+It leaves the shared folder and its contents behind on purpose. Green on the VM is not
+green: the VM is x86_64 and says nothing about the ARMv7 binary.
+
 ## Changing the package? This is the procedure
 
 Anything under `packaging/dsm/` — a lifecycle script, `conf/resource`, the wizard, the env

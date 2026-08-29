@@ -68,7 +68,8 @@ esac
 # anything else from the share. Without it a stale canary or test answer makes the next
 # run fail for a reason that has nothing to do with the package.
 rm -rf /volume1/*/answers/canary.txt /volume1/*/answers/canary.toml \
-       /volume1/*/answers/default.toml /volume1/*/answers/98-fa-9b-50-d8-10.toml \
+       /volume1/*/answers/canary \
+       /volume1/*/answers/default /volume1/*/answers/98-fa-9b-50-d8-10 \
        /volume1/*/answers/groups 2>/dev/null
 
 # **etc/ and var/ survive an uninstall.** /var/packages/<pkg>/etc and /var/packages/<pkg>/var
@@ -115,6 +116,15 @@ PORT=$(sed -n 's/^RESCRIPTUM_LISTEN_ADDR=.*:\([0-9]*\)$/\1/p' "$ROOT/etc/$PKG.en
 [ -n "$PORT" ] || PORT=8000
 
 [ -d "$SHARE/answers" ] && ok "start created the answers directory inside the share" || bad "no $SHARE/answers"
+# The media and boot folders, made whether or not the env file names them yet: a folder
+# that only appears once a setting is enabled is one nobody discovers. The boot one is
+# what this package's own TFTP server hands loaders out of — see the setcap section below.
+for extra in media boot; do
+    [ -d "$SHARE/$extra" ] && ok "and the $extra folder, ready to be filled" || bad "no $SHARE/$extra"
+    sudo -u "$PKG" test -w "$SHARE/$extra" 2>/dev/null &&
+        ok "  which the package user can write" ||
+        bad "  but the package user cannot write it"
+done
 if sudo -u "$PKG" test -w "$SHARE/answers" 2>/dev/null; then
     ok "the package user can write it — the ACL landed on the right name"
 else
@@ -150,9 +160,152 @@ if [ -n "$SC" ]; then
         note "→ the worker acquired BEFORE postinst: the .sc ships 8000, and only"
         note "  'synopkghelper update $PKG port-config' moves it afterwards"
     fi
+    # **Did DSM keep 69/udp?** The protocol suffix on `dst.ports` is inferred from the
+    # form the tcp entries already use, not from documentation — so the question is
+    # whether the worker copies it through or quietly drops what it does not parse. A
+    # firewall entry missing the TFTP port produces a PXE client that retries and times
+    # out with nothing in any log on this side, which is the worst kind of failure here.
+    if grep -q '69/udp' "$SC"; then
+        ok "  and it kept 69/udp, so the TFTP port can be allowed by name"
+    else
+        bad "  but 69/udp did not survive into it — the suffix form is wrong for this DSM"
+    fi
 else
     bad "no $PKG.sc in /usr/local/etc/services.d or service.d — the firewall entry will never appear"
     note "what is there: $(ls /usr/local/etc/services.d 2>/dev/null | tr '\n' ' ')"
+fi
+
+# ── TFTP, and the one root command it takes ────────────────────────────────────
+section "TFTP: the port the package cannot grant itself"
+# **This is the section the whole `off` reversal rests on.** DSM 7 refuses `run-as: root`
+# (synopkg 319) and Package Center strips a security.capability xattr out of package.tgz,
+# so the only route to port 69 is a setcap applied after install — and the package cannot
+# apply it, because its lifecycle scripts are not root either. What is asserted here is
+# both halves: that the package is *useful* without it, and that it *works* with it.
+BIN="$ROOT/target/bin/$PKG"
+note "getcap before: $(getcap "$BIN" 2>/dev/null || echo '(none)')"
+
+# Half one. A fresh install has no capability, so the TFTP bind fails — and that must not
+# stop anything else. This is the measured reason a failed TFTP bind is a warning rather
+# than fatal: when it was fatal the whole package went to start_failed, taking answers and
+# media with it, and an upgrade drops the capability silently.
+[ "$(curl -fsS "http://127.0.0.1:$PORT/health" 2>/dev/null)" = OK ] &&
+    ok "without the capability the package still answers — a failed TFTP bind is not fatal" ||
+    bad "the package is down without the capability; a failed TFTP bind must never cost the answer endpoint"
+grep -qi "cannot bind TFTP" "$ROOT/var/$PKG.log" "$ROOT/var/startup.log" 2>/dev/null &&
+    ok "and said so in its log rather than failing silently" ||
+    note "no 'cannot bind TFTP' line — check whether something already holds 69 on this machine"
+
+# Half two. The one root command, and whether the port is really bound afterwards by the
+# unprivileged package user.
+if [ -x /usr/bin/setcap ]; then
+    run /usr/bin/setcap cap_net_bind_service=+ep "$BIN"
+    note "getcap after:  $(getcap "$BIN" 2>/dev/null || echo '(none)')"
+    run synopkg restart "$PKG"
+    sleep 4
+    if netstat -lnup 2>/dev/null | grep -q ':69 '; then
+        ok "with cap_net_bind_service the package binds udp/69"
+        note "$(netstat -lnup 2>/dev/null | grep ':69 ')"
+    else
+        bad "udp/69 is still not bound after setcap and a restart"
+        tail -n 5 "$ROOT/var/$PKG.log" 2>/dev/null | sed 's/^/    /'
+    fi
+    [ "$(curl -fsS "http://127.0.0.1:$PORT/health" 2>/dev/null)" = OK ] &&
+        ok "and answers are unaffected by gaining it" ||
+        bad "the package stopped answering after setcap"
+
+    # ── the only question that matters ─────────────────────────────────────────
+    # Binding a port proves nothing to a machine that is trying to boot. **Fetch the
+    # loader the way a PXE ROM does** — a real TFTP read of the whole file — and compare
+    # it byte for byte with what the package shipped. Everything above this line is
+    # scaffolding for this one check.
+    LOADER=ipxe-undionly.kpxe
+    if [ -f "$SHARE/boot/$LOADER" ]; then
+        ok "the loader is in the folder TFTP serves from"
+        # **The whole file, with a client that is not ours.** The server's probe reads one
+        # block, which proves the port, the root and the permissions — but a TFTP transfer
+        # answers from a *fresh source port*, so everything after block 1 depends on the
+        # machine's own firewall and routing. That is the half `tests/tftp.rs` cannot see,
+        # and it is a real DSM risk rather than a hypothetical one.
+        #
+        # curl on DSM is built without the tftp protocol, and there is no tftp, atftp,
+        # busybox or nc on the box — python3 is what is actually there. If it is missing
+        # too (the DS416j may not have it), this degrades to the probe rather than lying.
+        if command -v python3 >/dev/null 2>&1; then
+            cat >/tmp/tftpget.py <<'PYEOF'
+import socket, sys
+host, name, out = sys.argv[1], sys.argv[2], sys.argv[3]
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+s.settimeout(5)
+s.sendto(b"\x00\x01" + name.encode() + b"\x00octet\x00", (host, 69))
+data, expect, peer = b"", 1, None
+while True:
+    packet, addr = s.recvfrom(2048)
+    peer = peer or addr
+    op = int.from_bytes(packet[0:2], "big")
+    if op == 5:
+        sys.exit("tftp error: " + packet[4:].decode("utf-8", "replace"))
+    if op != 3:
+        sys.exit("unexpected opcode %d" % op)
+    block = int.from_bytes(packet[2:4], "big")
+    if block != expect:
+        sys.exit("out of order: wanted %d, got %d" % (expect, block))
+    body = packet[4:]
+    data += body
+    s.sendto(b"\x00\x04" + block.to_bytes(2, "big"), peer)
+    expect = (expect + 1) & 0xFFFF
+    # A transfer ends on a short block, and short includes empty.
+    if len(body) < 512:
+        break
+open(out, "wb").write(data)
+PYEOF
+            rm -f /tmp/fetched.bin
+            if python3 /tmp/tftpget.py 127.0.0.1 "$LOADER" /tmp/fetched.bin 2>/tmp/tftpget.err; then
+                want=$(md5sum "$SHARE/boot/$LOADER" | cut -d' ' -f1)
+                got=$(md5sum /tmp/fetched.bin 2>/dev/null | cut -d' ' -f1)
+                if [ "$got" = "$want" ]; then
+                    ok "**a full TFTP fetch of $LOADER returns it byte for byte** — the package serves iPXE"
+                    note "$(wc -c </tmp/fetched.bin | tr -d ' ') bytes, md5 $got"
+                else
+                    bad "the TFTP fetch returned something else (want $want, got ${got:-nothing})"
+                fi
+            else
+                bad "the TFTP fetch failed: $(cat /tmp/tftpget.err 2>/dev/null)"
+            fi
+            rm -f /tmp/tftpget.py /tmp/tftpget.err /tmp/fetched.bin
+        else
+            note "no python3 here to fetch with; falling back to the server's own probe"
+        fi
+        # The server's own probe, which is what `boot check` reports and the panel shows.
+        if "$ROOT/target/bin/$PKG-cli" boot check 2>/dev/null | grep -q "handed over"; then
+            ok "and boot check agrees a loader is handed over"
+        else
+            bad "boot check does not see a loader being handed over"
+            "$ROOT/target/bin/$PKG-cli" boot check 2>&1 | grep -E "BROKEN|MISSING" | sed 's/^/    /'
+        fi
+    else
+        bad "no $LOADER in $SHARE/boot — the package shipped none, so TFTP has nothing to hand out"
+    fi
+else
+    note "no /usr/bin/setcap on this machine — the only route to port 69 is closed here"
+fi
+
+# ── the image catalogue ────────────────────────────────────────────────────────
+section "the images tab, and whether this NAS can reach a vendor"
+# The catalogue is the one part of this package that talks to the internet, and it does it
+# by shelling out to curl because there is no TLS in the binary. Whether that works is a
+# property of the *machine* — its resolver, its uplink, its curl — so it cannot be settled
+# anywhere but here.
+if "$ROOT/target/bin/$PKG-cli" media sources 2>/dev/null | grep -q proxmox-ve; then
+    ok "the catalogues are listed"
+else
+    bad "media sources listed nothing"
+fi
+if out=$("$ROOT/target/bin/$PKG-cli" media sources proxmox-ve 2>&1) && echo "$out" | grep -q "proxmox-ve_"; then
+    ok "and this NAS can read a vendor's index over the network"
+    note "newest offered: $(echo "$out" | grep -m1 '^  proxmox-ve_')"
+else
+    bad "could not read the Proxmox index from this machine: $(echo "$out" | tail -2)"
 fi
 
 if [ -e /usr/local/bin/$PKG-cli ]; then
@@ -167,18 +320,20 @@ section "answering a machine, which is what the package exists to do"
 # configuration gets one — selection, group membership, merging and the format/endpoint
 # binding all sit between the two, and all of them read files from the share as the package
 # user. This is the assertion that covers the actual product on the actual machine.
-mkdir -p "$SHARE/answers/groups"
-cat >"$SHARE/answers/groups/rack.toml" <<'GROUP'
+# One directory per identity: the directory names the machine or the group, and the
+# extension inside it names the format.
+mkdir -p "$SHARE/answers/groups/rack" "$SHARE/answers/98-fa-9b-50-d8-10" "$SHARE/answers/default"
+cat >"$SHARE/answers/groups/rack/proxmox.toml" <<'GROUP'
 members = ["98:fa:9b:50:d8:10"]
 
 [global]
 keyboard = "fr"
 GROUP
-cat >"$SHARE/answers/98-fa-9b-50-d8-10.toml" <<'MACHINE'
+cat >"$SHARE/answers/98-fa-9b-50-d8-10/proxmox.toml" <<'MACHINE'
 [global]
 fqdn = "rig-machine.example.com"
 MACHINE
-cat >"$SHARE/answers/default.toml" <<'DEFAULT'
+cat >"$SHARE/answers/default/proxmox.toml" <<'DEFAULT'
 [global]
 fqdn = "should-not-be-served.example.com"
 DEFAULT
@@ -194,7 +349,7 @@ if [ -z "$ANSWER" ]; then
 else
     echo "$ANSWER" | sed 's/^/    | /'
     case "$ANSWER" in
-    *rig-machine.example.com*) ok "the machine's own file was chosen over default.toml" ;;
+    *rig-machine.example.com*) ok "the machine's own document was chosen over the default" ;;
     *) bad "the answer is not this machine's — selection did not work" ;;
     esac
     case "$ANSWER" in
@@ -202,7 +357,7 @@ else
     *) bad "the group's value is missing — members/merge did not work" ;;
     esac
     case "$ANSWER" in
-    *should-not-be-served*) bad "default.toml leaked into a machine's answer" ;;
+    *should-not-be-served*) bad "the default leaked into a machine's answer" ;;
     *members*) bad "the control key 'members' was served to the installer" ;;
     *) ok "no default fallback and no control keys in what the installer receives" ;;
     esac
@@ -216,10 +371,10 @@ case "$GET" in
 *) bad "the query-string route did not resolve the machine" ;;
 esac
 
-# An identity nobody claims must fall back to default.toml, not to nothing.
+# An identity nobody claims must fall back to the default, not to nothing.
 UNKNOWN=$(curl -fsS -m 20 "http://127.0.0.1:$PORT/answer?mac=00-00-00-00-00-01" 2>/dev/null)
 case "$UNKNOWN" in
-*should-not-be-served*) ok "an unknown machine falls back to default.toml" ;;
+*should-not-be-served*) ok "an unknown machine falls back to the default" ;;
 *) bad "an unknown machine got no default" ;;
 esac
 
@@ -277,8 +432,9 @@ fi
 
 # ── 4. the CLI, as the package user ────────────────────────────────────────────
 section "the CLI on PATH"
-echo 'global.keyboard = "fr"' >"$SHARE/answers/default.toml"
-chown "$PKG" "$SHARE/answers/default.toml" 2>/dev/null
+mkdir -p "$SHARE/answers/default"
+echo 'global.keyboard = "fr"' >"$SHARE/answers/default/proxmox.toml"
+chown -R "$PKG" "$SHARE/answers/default" 2>/dev/null
 run sudo -u "$PKG" /usr/local/bin/$PKG-cli check
 # Run as root it succeeds whatever the ACL says, which is what makes the sudo -u form the
 # real test.
@@ -286,6 +442,30 @@ if sudo -u "$PKG" /usr/local/bin/$PKG-cli check >/dev/null 2>&1; then
     ok "sudo -u $PKG rescriptum-cli check passes — the permissions are real"
 else
     bad "the package user cannot check its own answers"
+fi
+
+# **What the settings panel will show.** `api.cgi` answers `action=config` by shelling out
+# to exactly this, so the JSON here is the panel's data — asking the CGI itself would need
+# a DSM session, and would test the same values through a login.
+#
+# The address is the one field with no constant behind it: it is derived at startup from
+# this machine's own routing table. A blank one shipped once, because the table of known
+# variables had no default and the derivation lived only in the server — so the panel
+# showed an empty box while the server used an address, and the operator had no way to
+# see which. Only a real machine has interfaces to get this wrong on.
+json=$(sudo -u "$PKG" /usr/local/bin/$PKG-cli config --json 2>/dev/null)
+host=$(printf '%s' "$json" | tr '{' '\n' |
+    grep '"key":"RESCRIPTUM_PUBLIC_HOST"' |
+    sed -n 's/.*"value":"\([^"]*\)".*/\1/p')
+if [ -n "$host" ]; then
+    ok "the panel would show an address for this NAS: $host"
+    if ip -4 -o addr show 2>/dev/null | grep -qw "$host"; then
+        ok "  and it is one this machine actually has"
+    else
+        bad "  but no interface here has it — the derivation picked something imaginary"
+    fi
+else
+    bad "RESCRIPTUM_PUBLIC_HOST came back empty — the panel shows a blank the server does not have"
 fi
 
 # ── 5. logrotate, and the descriptor that must not move ────────────────────────

@@ -47,16 +47,31 @@ fermait aussitôt, si bien que l'installateur à qui il essayait de dire *« ré
 recevait un reset. Il draine maintenant brièvement d'abord, comme le faisait déjà le
 `put()` de l'API d'administration. Un test au plafond de connexions l'épingle.
 
+- **macOS autorise un processus non privilégié à lier le port UDP 69 ; Linux non.** Un test
+  qui atteint l'adresse TFTP *par défaut* prend donc une branche différente sur chaque
+  plateforme — `boot check` traite un port libre mais silencieux comme une note, et un port
+  non liable comme un problème, ce qui est la bonne règle et exactement ce qui rend le test
+  dépendant de la plateforme. Il passait en local et échouait en CI pour une raison sans
+  rapport avec le changement. Tout test qui définit `RESCRIPTUM_BOOT_DIR` doit aussi définir
+  `RESCRIPTUM_TFTP_ADDR=off`, sauf si la sonde *est* le sujet ; `tests/tftp.rs` couvre le
+  port non liable sur un port haut.
+- **Une branche développée entièrement hors ligne n'a jamais rencontré la CI.** Celle-ci a
+  accumulé 57 commits avant son premier push, et le premier run a échoué sur deux choses
+  qu'aucune exécution locale ne pouvait voir : un clippy cinq versions plus récent que la
+  toolchain locale épinglée, et une permission de port propre à Linux. Poussez assez tôt
+  pour le découvrir, ou attendez-vous à le découvrir tard.
+
 ## Sélection et formats
 
 **Un Mac qui édite le répertoire de réponses en SMB peut détourner la réponse d'une
 machine.** macOS écrit un fichier AppleDouble `._<nom>` à côté d'un fichier dont le système
-n'accepte pas les attributs étendus — `._98-fa-9b-50-d8-10.toml` a une extension *présente*
-dans la liste, et la normalisation retire le `._` de tête : il revendique donc la même
-identité que le vrai fichier, avec un contenu binaire. La machine qu'on configurait reçoit
-une erreur d'analyse au lieu de sa réponse, et `check` fait échouer le *groupe* avec elle.
-`.DS_Store` n'est inoffensif que par chance (son extension n'est pas dans la liste). Le store
-fichiers ignore désormais toute entrée dont le nom commence par `.` ; trouvé sur un vrai NAS,
+n'accepte pas les attributs étendus — `._proxmox.toml` a une extension *présente* dans la
+liste. Avec un répertoire par identité, c'est pire que du temps des réponses à plat : c'est
+un **second `.toml` dans un répertoire qui n'en accepte qu'un**, et il se trie *avant* le
+vrai, si bien qu'une règle prenant le premier servirait un contenu binaire à toutes les
+requêtes. La machine qu'on configurait reçoit alors une erreur d'analyse au lieu de sa
+réponse. `.DS_Store` n'est inoffensif que par chance (son extension n'est pas dans la liste).
+Le store fichiers ignore toute entrée dont le nom commence par `.` ; trouvé sur un vrai NAS,
 pas en lisant quoi que ce soit.
 
 **Normaliser un motif de sélecteur retire `*` et `?`** à moins d'utiliser `normalize_pattern`
@@ -213,11 +228,123 @@ l'inode sous un serveur qui continue d'écrire dans un fichier sans nom.
 
 **Un `.spk` dont le tar externe est gzippé est rejeté** avec « invalid file format » et rien
 de plus. Idem pour un qui embarque des membres `._` de macOS. `check-spk.sh` vérifie les
+deux.
+
+**Il existe exactement une route vers le port 69 sur DSM 7, et c'est `setcap`.** Les quatre
+ont été essayées sur une machine 7.2.2 le 2026-08-27, parce que l'affirmation « DSM 7
+n'autorise pas un paquet non signé à tourner en root » traînait dans `CLAUDE.md` depuis un
+moment **sans mesure derrière** — vraie, mais par chance.
+
+| Route | Résultat |
+|---|---|
+| `"defaults": {"run-as": "root"}` dans `conf/privilege` | **refusée** — erreur `synopkg` **319**, `invalid package privilege content`, `stage: install_failed` |
+| `"ctrl-script": [{"action":"start","run-as":"root"}]` — la forme qu'utilisent les paquets *de Synology* (FileStation, QuickConnect et StorageManager tous les trois) | **refusée**, même erreur 319 |
+| `cap_net_bind_service` embarquée en attribut étendu `security.capability` dans `package.tgz` | s'installe très bien — le format pax interne est accepté — mais **Package Center supprime l'attribut**, et `getcap` revient vide |
+| `setcap cap_net_bind_service=+ep` sur le binaire installé, en root, après l'installation | **fonctionne** ; le paquet ouvre alors `udp/69` sous son propre utilisateur non privilégié, à côté de 8000 et 8001 |
+
+`net.ipv4.ip_unprivileged_port_start` n'existe pas sur ce noyau, donc cette route est
+fermée aussi. `/volume1` est en btrfs avec `nodev` mais **pas** `nosuid`, donc les capacités
+de fichier y fonctionnent bien, et `/usr/bin/setcap` existe en mode `0700`.
+
+**Le root sur DSM 7 est conditionné au fait d'être un paquet *Synology*, et
+`libsynopkg.so.1` le dit noir sur blanc.** Lire ses chaînes sur une machine 7.2.2 transforme
+la mesure ci-dessus en explication. Un paquet qui ne passe pas le contrôle de signature
+(`verifyPackageSignature` vit dans la même bibliothèque) se voit refuser tout ceci :
+
+```
+Failed to pass privilege check, ctrl-script and executable section should not exist
+Failed to pass privilege check, defaults should be provided and defaults.run-as should be package
+Failed to pass privilege check, join-groupname should not contains admin group
+Failed to pass privilege check, tool capabilities should not exist
+Failed to pass privilege check, tool user should be package
+Failed to pass privilege check, non-synology package should not use privilege migration
+```
+
+D'où le fait que FileStation, StorageManager, QuickConnect et SecureSignIn portent tous
+`"ctrl-script": [{"action": "start", "run-as": "root"}]` dans leur propre `conf/privilege`
+et que nous ne le pouvons pas : la forme est légale, c'est la signature qui la rend légale
+*pour eux*.
+
+**La ligne la plus importante est `tool capabilities should not exist`.** Le format de
+privilège de DSM a un champ `capabilities` natif — documenté comme
+`"capabilities": "cap_chown,cap_net_raw"` sur une entrée `tool` depuis 7.0-40656, et
+`SYNOPackageTool::Privilege::ChangeCapabilities` est bien là dans la bibliothèque. Un paquet
+signé déclare `cap_net_bind_service` et n'a jamais besoin de `setcap`. **Le mécanisme que
+nous voulons existe, est documenté, et nous est fermé.**
+
+Le guide développeur de Synology énonce la règle sans détour : *« If you are developing a
+package with root privilege, you are not able to install that package unless it is signed
+by synology. »* C'est donc **leur** signature, pas celle d'un éditeur tiers de confiance —
+ce qui tranche ce que la chaîne de la bibliothèque laissait ouvert. SynoCommunity a heurté
+le même mur ([spksrc#4170](https://github.com/SynoCommunity/spksrc/issues/4170),
+[#4215](https://github.com/SynoCommunity/spksrc/issues/4215)).
+
+Il existe un contournement documenté, et ce **n'est pas une voie de distribution** : un
+*jeton de développement*. On génère `debug.dat` depuis Centre d'assistance → Services
+d'assistance, on l'envoie à Synology, on reçoit un jeton signé, on le dépose dans
+`/var/packages/syno_dev_token`. Il n'est valable **que sur le NAS qui a produit le
+`debug.dat`** : livrer ainsi voudrait dire que chaque utilisateur fasse un aller-retour avec
+Synology avant de pouvoir installer. Un `setcap` est une commande locale, et c'est
+strictement mieux pour lui.
+
+Conclusion, tranchée et non provisoire : **le `setcap` manuel est le prix de ne pas être
+signé par Synology, et aucun changement d'empaquetage ne l'enlève.** Si le paquet est un
+jour signé, l'étape manuelle et la tâche au démarrage sont remplacées par trois lignes dans
+`conf/privilege`.
+
+**`setcap` fonctionne aussi sur un DS416j, et ce n'était pas acquis.** Les quatre routes
+vers le port 69 ont été mesurées sur une VM 7.2.2, qui est en x86_64 avec `/volume1` en
+btrfs monté `nodev` mais pas `nosuid` — or un volume monté `nosuid` fait ignorer les
+capacités de fichier par le noyau, ce qui aurait fermé la dernière route ouverte sur la
+seule machine pour laquelle ce projet existe. Mesuré sur le DS416j (ARMv7, `armada38x`) :
+la capacité tient, le paquet ouvre `udp/69` sous son utilisateur non privilégié, et
+`boot check` rapporte `0.0.0.0:69 handed over ipxe-arm64.efi` — une vraie requête de
+lecture à laquelle on a répondu avec de vraies données.
+
+**La capacité appartient au fichier, donc une mise à jour la perd.** Une nouvelle version
+remplace le binaire et la capacité part avec l'ancien — d'où la tâche au démarrage du
+Planificateur de tâches documentée par le paquet plutôt qu'une commande unique, et d'où le
+fait qu'un bind TFTP raté ne soit pas fatal : quand il l'était, cette mise à jour coupait
+aussi le point d'entrée des réponses.
+
+**Lier n'est pas un contrôle de santé, et cela prouve le contraire de ce qu'on croit.** Un
+bind qui *réussit* sur le port TFTP signifie que personne n'écoute — l'état dégradé, pas
+l'état sain — et un bind qui échoue ne distingue pas ce serveur d'un autre service qui
+squatterait le port, puisque les deux donnent `AddrInUse`. `boot check` envoie donc une
+vraie requête de lecture et rapporte ce qu'obtiendrait une machine. Sa première version
+annonçait « already in use — that is this server, if it is running » et un test avec un
+squatteur sur le port a montré tout de suite que c'était une supposition.
+
+**Un nouveau réglage n'atteint jamais une installation qui existe déjà**, sauf si quelque
+chose l'y met. Le fichier d'environnement vivant n'est écrit que s'il est absent — ce qui
+est correct, une mise à jour ne doit jamais remplacer le port et les jetons de quelqu'un
+par des valeurs par défaut — mais à lui seul cela rend une nouvelle fonctionnalité
+invisible pour toute installation antérieure. Le boot media est arrivé avec les dossiers
+créés, les chargeurs déposés et 69/udp enregistré au pare-feu, et `RESCRIPTUM_BOOT_DIR`
+jamais posé : `boot check` répondait *« boot assets are off »* sur un DS416j où tout le
+reste était en place. Comme `etc/` survit à une désinstallation, même désinstaller et
+réinstaller n'y change rien. Le `.env.example` n'aide pas : rien n'oblige personne à le
+lire.
+
+`postinst` ajoute désormais les clés dont le fichier vivant **n'a jamais entendu parler**,
+sans toucher à ce qui est présent. **Une clé commentée compte comme présente**, et c'est là
+la propriété de sûreté : c'est ainsi qu'un exploitant dit « celle-là je la connais et je
+n'en veux pas ». Supprimer une ligne veut dire « jamais entendu parler » et la fait
+revenir ; la commenter veut dire non, et c'est respecté.
 
 ## L'application de bureau DSM
 
-Sept choses, mesurées sur une machine virtuelle DSM 7.2.2 et sur un DS416j en 7.1.1, et
+Huit choses, mesurées sur une machine virtuelle DSM 7.2.2 et sur un DS416j en 7.1.1, et
 aucune dans le guide du développeur.
+
+**Un défaut calculé à l'exécution doit l'être aussi dans `settings()`.** Le panneau rend le
+défaut d'une variable comme valeur du champ ; un défaut qui n'existe que là où le serveur
+le consomme s'affiche donc en case vide — pendant que le serveur, lui, tourne sur une
+adresse qu'il a déduite et jamais montrée. `RESCRIPTUM_PUBLIC_HOST` est parti comme ça :
+l'exploitant n'avait aucun moyen de voir vers quelle adresse ses machines seraient
+envoyées, sinon en lisant le journal de démarrage. Deux entrées de `KNOWN` sont dans ce
+cas, et toutes deux ont leur branche dans `settings()` : le nombre de threads et l'hôte
+public. Une troisième demanderait le même traitement, et rien dans le typage ne le dit.
 
 **Un CGI sous `/webman/3rdparty/<pkg>/` tourne sous le propriétaire du script.** Pas en
 `http`, et pas en root — sous celui qui possède le fichier. DSM attribue l'arborescence d'un

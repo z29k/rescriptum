@@ -1,0 +1,17 @@
+# What a Docker build context must not carry.
+#
+# Without this the boot rig's build context was **6 GB** — `target/` alone is most of
+# it — and every `docker compose up` spent two minutes transferring build artefacts the
+# image then rebuilds from scratch anyway. A rig nobody waits for is a rig nobody runs.
+target/
+_site/
+node_modules/
+.git/
+plans/
+packaging/dsm/vm/storage/
+packaging/boot-rig/results/
+packaging/boot-rig/.work/
+packaging/ipxe/.work/
+packaging/ipxe/out/
+**/*.iso
+**/*.spk

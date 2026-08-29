@@ -61,7 +61,25 @@ est exactement là où se cache une divergence.
 
 ## Le store fichiers
 
-Un répertoire plat, plus `groups/`. `version()` est le mtime du répertoire :
+**Un répertoire par identité.** Une machine est un répertoire nommé d'après elle, qui
+contient un document par format ; `groups/` porte la même forme pour les groupes, et
+`default/` les réponses de repli. Les deux noms sont réservés, donc une machine ne peut pas
+les revendiquer — `valid_machine_id` les refuse dans les *deux* stores, parce qu'une base qui
+en accepterait un exporterait vers un répertoire incapable de le contenir.
+
+Dans un répertoire, **l'extension est le format et le radical n'est rien du tout**. C'est
+cette règle qui fait de deux documents d'un même format dans un même répertoire un problème
+*signalé* plutôt que tranché : il n'existe aucun départage qu'un administrateur aurait pu
+prévoir. L'ordre trié décide lequel des deux répond, pour que le choix ne dépende au moins pas
+de readdir — et le perdant est nommé dans `problems()`.
+
+Un document servable laissé à la racine du répertoire de réponses — l'agencement d'avant —
+est **signalé et non servi**, avec sa destination explicitée. Lire à moitié un ancien
+agencement signifierait une machine dont la réponse se déplace silencieusement entre deux
+fichiers. `pending_moves()` expose la même connaissance pour `migrate`, pour que la commande
+et le lecteur ne puissent pas diverger sur l'endroit où va un document.
+
+`version()` est le mtime du répertoire :
 
 ```rust
 fs::metadata(&self.dir).ok()
@@ -73,9 +91,19 @@ fs::metadata(&self.dir).ok()
 Un `stat` remplace tout un parcours de répertoire — voir
 [le cache du listing](./selection.md#le-cache-du-listing).
 
-> Le mtime du répertoire bouge quand un fichier est **ajouté ou supprimé**, pas quand un
-> fichier est **édité**. Le filet de rechargement d'une seconde est ce qui couvre l'édition,
-> et un test d'intégration couvre exactement cela.
+> Le mtime du répertoire bouge quand une entrée y est **ajoutée ou supprimée**, pas quand
+> l'une est **éditée**, ni quand quelque chose change un niveau plus bas. Le répertoire
+> entier d'une machine qui apparaît ou disparaît est donc vu immédiatement, tandis qu'un
+> document ajouté ou modifié *à l'intérieur* de l'un d'eux attend le filet de rechargement
+> d'une seconde — celui qui couvrait déjà un fichier édité sur place. Un test unitaire
+> épingle chacune des deux moitiés.
+
+> **Ce que l'agencement coûte à la lecture.** Un rechargement complet est désormais un
+> `readdir` par identité en plus du fichier qu'il ouvrait déjà. Mesuré à 2 000 machines sur
+> un M1 Pro : **28 ms à plat, 63 ms avec un répertoire chacune**. C'est amorti sur une
+> seconde de requêtes, et le débit de bout en bout n'a pas bougé de façon mesurable — mais
+> c'est un vrai facteur 2,2 sur la seule opération dont le filet garantit qu'elle tournera
+> chaque seconde, et c'est la raison de préférer un groupe à un répertoire par machine.
 
 **Les écritures passent par un fichier temporaire plus un `rename`**, atomique dans un
 répertoire sur POSIX, pour qu'un lecteur ne rencontre jamais une réponse à moitié écrite. Le
@@ -130,13 +158,15 @@ $ rescriptum export <dir>    # store configuré → répertoire
 
 Les deux passent par `Snapshot`, donc ils partagent toutes les règles. **L'aller-retour est
 identique octet pour octet** — importez un répertoire, réexportez-le, `diff -r` ne signale
-rien. C'est ce qui rend la base sûre à adopter *et* sûre à quitter, et cela vaut la peine de
-rester vrai.
+rien, chemins compris. Un test compare les deux côtés au même chemin pour exactement cette
+raison : `export` écrivant un document là où `import` n'irait pas le chercher est ce qui
+rendrait la base dangereuse à quitter.
 
-## Les identifiants deviennent des noms de fichiers
+## Les identifiants deviennent des noms de répertoires
 
 ```rust
-pub fn valid_id(id: &str) -> bool   // lettres, chiffres, - _ . : et aucun séparateur de chemin
+pub fn valid_id(id: &str) -> bool           // lettres, chiffres, - _ . : et aucun séparateur
+pub fn valid_machine_id(id: &str) -> bool   // …et ni `groups` ni `default`
 ```
 
 Imposé à la frontière de l'API d'administration **et** dans les deux stores. Le store est la

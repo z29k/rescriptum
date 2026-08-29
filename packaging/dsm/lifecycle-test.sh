@@ -32,6 +32,7 @@ bad() {
     echo "  ✗ $*"
     fails=$((fails + 1))
 }
+note() { echo "  · $*"; }
 section() { echo; echo "$*"; }
 
 # ── the package under test ─────────────────────────────────────────────────────
@@ -107,7 +108,86 @@ mode=$(file_mode "$ENV_FILE")
 [ "$(value_of RESCRIPTUM_LISTEN_ADDR)" = "0.0.0.0:$PORT" ] && ok "the wizard's port reached the env file" || bad "listen addr is $(value_of RESCRIPTUM_LISTEN_ADDR)"
 [ "$(value_of RESCRIPTUM_ANSWERS_DIR)" = "$SHARE/answers" ] && ok "the answers default to the share" || bad "answers dir is $(value_of RESCRIPTUM_ANSWERS_DIR)"
 grep -q "^RESCRIPTUM_DB_PATH=$SHARE/answers.db\$" "$ENV_FILE" && ok "the database path is pre-set in the share" || bad "RESCRIPTUM_DB_PATH is not pre-set — switching stores would be a fatal start"
-grep -q "dst.ports=\"$PORT/tcp\"" "$ROOT/target/port_conf/rescriptum.sc" && ok "the .sc file carries the chosen port" || bad ".sc file: $(tail -1 "$ROOT/target/port_conf/rescriptum.sc")"
+# All three listeners, registered whether or not each is currently enabled: registering
+# a port does not open it, and the alternative is an operator who turns media or TFTP on
+# and then cannot find rescriptum in the firewall list. **69/udp is the one that matters
+# most** — a PXE ROM asks over UDP, and a firewall that drops it produces a client which
+# retries and times out with nothing in any log on this side.
+grep -q "dst.ports=\"$PORT/tcp 8001/tcp 69/udp 30000:30063/udp\"" "$ROOT/target/port_conf/rescriptum.sc" && ok "the .sc file carries the answer port, the media one, TFTP and its data range" || bad ".sc file: $(tail -1 "$ROOT/target/port_conf/rescriptum.sc")"
+# **The data range is not decoration.** A TFTP transfer leaves port 69 at once and answers
+# from a fresh port; a firewall that allows only 69 drops the acknowledgement, and the
+# machine looks like it lost interest. Pinned so it can be opened, and opened above.
+grep -q "^RESCRIPTUM_TFTP_PORT_RANGE=30000-30063\$" "$ENV_FILE" && ok "and the server is pinned to that same range" || bad "RESCRIPTUM_TFTP_PORT_RANGE is $(value_of RESCRIPTUM_TFTP_PORT_RANGE), which the firewall entry does not cover"
+
+# **The package must not ship a configuration that refuses to start.** Naming a media
+# address with no media directory is a startup error, and the first version of this
+# wrote exactly that — the harness caught a package that could not start at all.
+# The folders the start script creates are *named* in the file, not left blank for an
+# operator to guess at in a settings panel with no hint of what to type.
+grep -q "^RESCRIPTUM_MEDIA_DIR=$SHARE/media\$" "$ENV_FILE" && ok "the media folder is named, not left to be guessed" || bad "RESCRIPTUM_MEDIA_DIR is not set to $SHARE/media"
+grep -q "^RESCRIPTUM_BOOT_DIR=$SHARE/boot\$" "$ENV_FILE" && ok "and the boot folder too" || bad "RESCRIPTUM_BOOT_DIR is not set to $SHARE/boot"
+
+# **rescriptum is the TFTP server, and the package must not ship a file that says
+# otherwise.** A previous version wrote `RESCRIPTUM_TFTP_ADDR=off` here, trading the
+# product's first principle for a packaging constraint; port 69 is reachable on DSM with
+# one `setcap`, measured on a 7.2.2 machine. Left unset, the default is 0.0.0.0:69 —
+# which is what the generated DHCP snippet and every loader we ship expect.
+# **A secret nobody has to invent.** The webhook only works when the token in a machine's
+# answer and the one the server checks are the same string; two blank fields that must
+# agree is a thing people get wrong once and then debug as "the machine reinstalls
+# itself". Generated here so the server half is already right.
+tok=$(value_of RESCRIPTUM_INSTALLED_TOKEN)
+[ -n "$tok" ] && ok "an install-finished token was generated" || bad "RESCRIPTUM_INSTALLED_TOKEN is empty — the webhook would need one invented by hand"
+[ "${#tok}" -ge 32 ] && ok "and it is long enough to be worth having" || bad "the generated token is only ${#tok} characters"
+case "$tok" in *[!0-9a-f]*) bad "the token is not the hex it should be: $tok" ;; *) ok "and is hex, so it survives being pasted into TOML" ;; esac
+
+grep -q "^RESCRIPTUM_TFTP_ADDR=" "$ENV_FILE" && bad "RESCRIPTUM_TFTP_ADDR is live in the file — the default 0.0.0.0:69 is what the snippet and the loaders expect" || ok "TFTP is left at its default, so the package is the TFTP server"
+grep -q "setcap cap_net_bind_service" "$ENV_FILE" && ok "and the file says what one root command makes it bind" || bad "nothing in the file explains how port 69 gets bound"
+grep -q "Task Scheduler" "$ENV_FILE" && ok "and how to survive an upgrade, which drops the capability" || bad "nothing says the capability does not survive an upgrade"
+
+section "a setting this version introduced must reach a file that predates it"
+# **The trap this closes, found on a real DS416j.** The live env file is written only when
+# absent — right, because an upgrade must never replace somebody's port and tokens with
+# defaults — but taken alone it means a new feature is invisible to every installation that
+# predates it. Boot media shipped with the folders created, the loaders seeded and the
+# firewall port registered, and RESCRIPTUM_BOOT_DIR never arriving: `boot check` answered
+# "boot assets are off" on a NAS that had everything else in place.
+saved=$(cat "$ENV_FILE")
+
+# A file from before boot media existed: the four settings that version wrote, and no more.
+grep -E '^(RESCRIPTUM_LISTEN_ADDR|RESCRIPTUM_ANSWERS_DIR|RESCRIPTUM_DB_PATH|RESCRIPTUM_LOG_FILE)=' "$ENV_FILE" >"$ENV_FILE.old"
+echo "RESCRIPTUM_ANSWER_TOKEN=keep-me-untouched-0123456789" >>"$ENV_FILE.old"
+# And one the operator turned off on purpose. Commented is a decision, not an absence.
+echo "# RESCRIPTUM_MEDIA_DIR=$SHARE/media" >>"$ENV_FILE.old"
+mv "$ENV_FILE.old" "$ENV_FILE"
+chmod 600 "$ENV_FILE"
+before=$(cat "$ENV_FILE")
+
+SYNOPKG_PKG_STATUS=UPGRADE SYNOPKG_PKGVER=9.9.9-9 sh "$ROOT/scripts/postinst" >/dev/null 2>&1
+
+grep -q "^RESCRIPTUM_BOOT_DIR=$SHARE/boot\$" "$ENV_FILE" && ok "a setting the file had never heard of was added" || bad "RESCRIPTUM_BOOT_DIR never reached the upgraded file — the feature would be invisible"
+# **And a token already in the file is never replaced.** Regenerating it on upgrade would
+# silently orphan every answer document carrying the old one, and the symptom would be a
+# fleet quietly reinstalling itself.
+grep -q "^RESCRIPTUM_ANSWER_TOKEN=keep-me-untouched-0123456789\$" "$ENV_FILE" && ok "and a secret already present is left alone" || bad "the top-up replaced a token that was already there"
+grep -q "^RESCRIPTUM_ANSWER_TOKEN=keep-me-untouched-0123456789\$" "$ENV_FILE" && ok "and everything already there is untouched" || bad "the top-up changed a setting that was already present"
+# The safety property: commenting a key out is how an operator says no, and it has to hold.
+[ "$(grep -c "^RESCRIPTUM_MEDIA_DIR=" "$ENV_FILE")" = 0 ] && ok "a commented-out setting is respected rather than re-enabled" || bad "the top-up re-enabled a setting the operator had commented out"
+# Every line the file had before must still be there, in order, at the top. The top-up
+# only ever appends, so anything else means it rewrote somebody's configuration.
+printf '%s\n' "$before" >"$WORK/before.txt"
+head -n "$(wc -l <"$WORK/before.txt")" "$ENV_FILE" >"$WORK/after-head.txt"
+cmp -s "$WORK/before.txt" "$WORK/after-head.txt" && ok "the original lines survive verbatim, in order" || bad "the top-up rewrote the existing content: $(diff "$WORK/before.txt" "$WORK/after-head.txt" | head -3)"
+mode=$(stat -c '%a' "$ENV_FILE" 2>/dev/null || stat -f '%Lp' "$ENV_FILE")
+[ "$mode" = "600" ] && ok "and it is still mode 600 afterwards" || bad "the top-up left it mode $mode"
+
+# Running it twice must not append a second copy — postinst runs on every upgrade.
+SYNOPKG_PKG_STATUS=UPGRADE sh "$ROOT/scripts/postinst" >/dev/null 2>&1
+n=$(grep -c "^RESCRIPTUM_BOOT_DIR=" "$ENV_FILE")
+[ "$n" = 1 ] && ok "and a second upgrade does not append it again" || bad "RESCRIPTUM_BOOT_DIR appears $n times after two upgrades, not once"
+
+printf '%s\n' "$saved" >"$ENV_FILE"
+chmod 600 "$ENV_FILE"
 
 section "install without a wizard (silent_install, or a reinstall that shows none)"
 saved=$(cat "$ENV_FILE")
@@ -145,6 +225,29 @@ out=$(sss start 2>&1)
 rc=$?
 [ $rc -eq 0 ] && ok "start returns 0" || bad "start returned $rc: $out"
 [ -d "$SHARE/answers" ] && ok "start created the answers directory inside the share" || bad "no answers directory — DSM creates the share, not this"
+# Made whether or not the env file names them yet: a folder that only appears once a
+# setting is enabled is one nobody discovers.
+[ -d "$SHARE/media" ] && ok "and the media folder, ready for an ISO" || bad "no $SHARE/media"
+[ -d "$SHARE/boot" ] && ok "and the boot folder, which is what TFTP hands loaders out of" || bad "no $SHARE/boot"
+
+# **The package has to arrive with loaders in it.** A TFTP server with nothing to hand out
+# boots nothing, and an install that leaves this folder empty is an appliance that does not
+# work until somebody finds a second download. They are iPXE, GPLv2, separate files never
+# linked into our binary — mere aggregation, with the NOTICE as the written offer.
+if [ -f "$ROOT/target/boot/ipxe-undionly.kpxe" ]; then
+    ok "the package carries the loaders"
+    [ -f "$SHARE/boot/ipxe-undionly.kpxe" ] && ok "and start put them where TFTP serves from" || bad "start did not seed $SHARE/boot"
+    [ -f "$SHARE/boot/NOTICE" ] && ok "with the GPLv2 notice beside them" || bad "no NOTICE in $SHARE/boot — the written offer has to travel with the binaries"
+    # The server's own opinion, which is the one that matters: does this directory satisfy
+    # the table `boot dhcp-snippet` writes into somebody's DHCP server?
+    if RESCRIPTUM_BOOT_DIR="$SHARE/boot" RESCRIPTUM_TFTP_ADDR=off "$ROOT/target/bin/rescriptum" boot check >/dev/null 2>&1; then
+        ok "and the server agrees the set is complete"
+    else
+        bad "boot check refuses the seeded folder: $(RESCRIPTUM_BOOT_DIR="$SHARE/boot" RESCRIPTUM_TFTP_ADDR=off "$ROOT/target/bin/rescriptum" boot check 2>&1 | grep -E 'MISSING|BROKEN' | head -2)"
+    fi
+else
+    note "this .spk carries no loaders — build them with packaging/ipxe/build.sh and repack to test the seeding"
+fi
 
 answered=no
 for _ in 1 2 3 4 5 6 7 8 9 10; do
@@ -191,7 +294,8 @@ cp "$WORK/env.good" "$ENV_FILE"
 section "an upgrade must not touch a hand-edited configuration"
 printf 'RESCRIPTUM_LOG=problems\nRESCRIPTUM_ANSWER_TOKEN=a-token-nobody-should-lose\n' >>"$ENV_FILE"
 cp "$ENV_FILE" "$WORK/env.handedited"
-echo "do not delete me" >"$SHARE/answers/canary.toml"
+mkdir -p "$SHARE/answers/canary"
+echo "do not delete me" >"$SHARE/answers/canary/proxmox.toml"
 UPG="$WORK/upgrade"
 export SYNOPKG_TEMP_UPGRADE_FOLDER="$UPG"
 
@@ -211,7 +315,7 @@ upgrade() { # <wipe-etc yes|no>
 
 upgrade no
 diff -q "$WORK/env.handedited" "$ENV_FILE" >/dev/null && ok "etc/ survives: the file is untouched, wizard values and all" || bad "the upgrade rewrote the user's env file"
-[ -f "$SHARE/answers/canary.toml" ] && ok "the canary in the share survived" || bad "the upgrade destroyed a file in the share"
+[ -f "$SHARE/answers/canary/proxmox.toml" ] && ok "the canary in the share survived" || bad "the upgrade destroyed a file in the share"
 
 upgrade yes
 diff -q "$WORK/env.handedited" "$ENV_FILE" >/dev/null && ok "etc/ wiped: postinst restored it from the upgrade folder rather than writing defaults" || bad "the user's configuration was replaced by defaults — postinst runs BEFORE postupgrade"
@@ -309,6 +413,48 @@ out=$(cgi POST "action=save" "RESCRIPTUM_ADMIN_ADDR=127.0.0.1:8001" "1")
 [ "$(http_status "$out")" = "409" ] && ok "a write that would stop the server starting is refused" || bad "an unauthenticated admin API was accepted with $(http_status "$out")"
 [ "$(cat "$ENV_FILE")" = "$before" ] && ok "and the file is untouched" || bad "the refused write still changed the file"
 
+# ── the images tab ─────────────────────────────────────────────────────────────
+# **Everything here is a door, not a feature.** These actions start downloads and write
+# into the media directory, so each one has to refuse what it should refuse. The
+# catalogue itself is not exercised over the network — that would make this harness
+# depend on five vendors being up — but the local half is, and so is every guard.
+out=$(cgi GET "action=media" "" "")
+[ "$(http_status "$out")" = "200" ] && ok "the images tab can read what is held" || bad "action=media got $(http_status "$out")"
+
+out=$(cgi GET "action=sources" "" "")
+grep -q "proxmox-ve" <<<"$out" && ok "and the catalogues it can fetch from" || bad "action=sources listed nothing: $out"
+
+# A download writes to disk, so it is a write and needs the header a cross-origin page
+# cannot make a browser send.
+out=$(cgi GET "action=fetch&source=proxmox-ve&name=x.iso" "" "")
+[ "$(http_status "$out")" = "405" ] && ok "a download refuses to be a GET" || bad "action=fetch as GET got $(http_status "$out")"
+out=$(cgi POST "action=fetch&source=proxmox-ve&name=x.iso" "" "")
+[ "$(http_status "$out")" = "403" ] && ok "and refuses a POST without X-Rescriptum" || bad "action=fetch without intent got $(http_status "$out")"
+
+# **A URL without its digest is refused before anything is downloaded.** That rule is the
+# reason `media add` exists in the shape it does: this decides what every machine on the
+# network installs.
+out=$(cgi POST "action=fetch&url=https://example.invalid/x.iso" "" "1")
+[ "$(http_status "$out")" = "400" ] && ok "a URL with no SHA-256 is refused" || bad "a URL with no digest got $(http_status "$out")"
+out=$(cgi POST "action=fetch&url=https://example.invalid/x.iso&sha256=nothex" "" "1")
+[ "$(http_status "$out")" = "400" ] && ok "and so is one that is not a digest" || bad "a bad digest got $(http_status "$out")"
+out=$(cgi POST "action=fetch&url=ftp://example.invalid/x.iso&sha256=$(printf 'a%.0s' $(seq 64))" "" "1")
+[ "$(http_status "$out")" = "400" ] && ok "and a scheme nothing here can fetch" || bad "an ftp URL got $(http_status "$out")"
+# Names become part of a command line and of a path.
+out=$(cgi POST "action=fetch&source=proxmox-ve&name=../../etc/passwd" "" "1")
+[ "$(http_status "$out")" = "400" ] && ok "an image name that is a path is refused" || bad "a traversing name got $(http_status "$out")"
+
+out=$(cgi GET "action=progress" "" "")
+grep -qE "^state: (idle|running)$" <<<"$out" && ok "progress answers even when nothing is running" || bad "action=progress said: $out"
+
+out=$(cgi POST "action=prepare&id=../escape" "" "1")
+[ "$(http_status "$out")" = "400" ] && ok "prepare refuses an id that is a path" || bad "prepare took a traversing id: $(http_status "$out")"
+# A well-formed id for an image that is not here: the action has to reach the CLI and
+# report its refusal, rather than crashing or claiming success. That is the whole wiring.
+out=$(cgi POST "action=prepare&id=not-here" "" "1")
+[ "$(http_status "$out")" = "200" ] && grep -q -- "--- exit" <<<"$out" && ok "prepare reaches the CLI and reports what it said" || bad "prepare did not reach the CLI: $out"
+grep -q -- "--- exit 0" <<<"$out" && bad "prepare claimed success for an image that is not there" || ok "and does not claim success for an image that is not there"
+
 out=$(cgi GET "action=nonsense" "" "")
 [ "$(http_status "$out")" = "400" ] && ok "an unknown action is refused" || bad "an unknown action got $(http_status "$out")"
 
@@ -318,13 +464,19 @@ grep -q '^version: rescriptum' <<<"$out" && ok "status reports the version" || b
 # service's user, which read the CGI's stdin and waited on it forever. The CGI already
 # *is* that user, so a plain test is both possible and correct.
 grep -q '^answers_readable: yes' <<<"$out" && ok "and can tell that the answers folder is readable" || bad "status says the answers folder is unreadable: $out"
+# **A TFTP port that cannot be bound does not stop the server**, so this line is the only
+# place an operator sees it after the startup warning has scrolled away. In this harness
+# nothing has bound port 69 and nothing could, so the honest answer is one of the two
+# not-working states — what must never happen is silence or a claim that it is fine.
+grep -qE '^tftp: (serving|broken|silent|off)$' <<<"$out" && ok "and says whether a loader can actually be handed over" || bad "status has no usable tftp line: $out"
+grep -q '^tftp: serving' <<<"$out" && bad "status claims TFTP is serving, with nothing bound to port 69" || ok "and does not claim to be serving when nothing is bound"
 
 # ── 5. uninstall ───────────────────────────────────────────────────────────────
 section "uninstall must leave the answers alone"
 unset SYNOPKG_TEMP_UPGRADE_FOLDER
 SYNOPKG_PKG_STATUS=UNINSTALL sh "$ROOT/scripts/preuninst" >/dev/null 2>&1
 SYNOPKG_PKG_STATUS=UNINSTALL sh "$ROOT/scripts/postuninst" >/dev/null 2>&1
-[ -f "$SHARE/answers/canary.toml" ] && ok "the share and everything in it survived the uninstall" || bad "the uninstall took the user's answers with it"
+[ -f "$SHARE/answers/canary/proxmox.toml" ] && ok "the share and everything in it survived the uninstall" || bad "the uninstall took the user's answers with it"
 [ -d "$SHARE" ] && ok "the shared folder itself is still there" || bad "the shared folder was removed"
 
 echo
