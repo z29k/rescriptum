@@ -19,3 +19,4 @@ pub mod log;
 pub mod merge;
 pub mod select;
 pub mod store;
+pub mod tomlconfig;

@@ -146,12 +146,33 @@ impl Config {
     /// silent failure the file exists to remove. Warnings about it are logged here, the
     /// way `Capture::new` reports its own.
     pub fn from_env() -> Result<Config, String> {
-        let named = std::env::var(crate::envfile::ENV_FILE)
-            .ok()
-            .map(|v| v.trim().to_string())
-            .filter(|v| !v.is_empty());
+        let named = |var: &str| {
+            std::env::var(var)
+                .ok()
+                .map(|v| v.trim().to_string())
+                .filter(|v| !v.is_empty())
+        };
 
-        let file = match named {
+        // Loaded before the env file because it wins over it, and reported the same way:
+        // one line saying where the defaults came from and how many there are, then
+        // anything the file itself deserves to be told about.
+        let toml = match named(crate::tomlconfig::CONFIG_FILE) {
+            Some(path) => {
+                let file = crate::tomlconfig::TomlFile::load(path)?;
+                crate::log::server(&format!(
+                    "reading configuration defaults from {} ({} set)",
+                    file.path.display(),
+                    file.len()
+                ));
+                for warning in &file.warnings {
+                    crate::log::server(&format!("warning: {warning}"));
+                }
+                Some(file)
+            }
+            None => None,
+        };
+
+        let file = match named(crate::envfile::ENV_FILE) {
             Some(path) => {
                 let file = crate::envfile::EnvFile::load(path)?;
                 crate::log::server(&format!(
@@ -167,12 +188,26 @@ impl Config {
             None => None,
         };
 
+        // Two configuration files is a transition, not a steady state — a deployment
+        // moving to TOML, most likely mid-upgrade. Saying which one wins costs one line
+        // and removes the only question an operator could not answer by reading either
+        // file.
+        if toml.is_some() && file.is_some() {
+            crate::log::server(&format!(
+                "note: {} and {} are both named — the TOML file wins where they set the \
+                 same thing, and the environment wins over both",
+                crate::tomlconfig::CONFIG_FILE,
+                crate::envfile::ENV_FILE
+            ));
+        }
+
         Ok(Config::from_lookup(|key| {
             std::env::var(key)
                 .ok()
                 // An exported-but-empty variable is a mistake, not an instruction — so it
-                // does not count as "set in the environment" and the file still applies.
+                // does not count as "set in the environment" and the files still apply.
                 .filter(|v| !v.trim().is_empty())
+                .or_else(|| toml.as_ref().and_then(|f| f.get(key)))
                 .or_else(|| file.as_ref().and_then(|f| f.get(key)))
         }))
     }
@@ -911,22 +946,28 @@ pub const KNOWN: [Known; 30] = [
     },
 ];
 
-/// Which of the three places a value came from.
+/// Which of the four places a value came from, in the order they win.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Source {
-    /// The process environment, which **wins over the file**.
+    /// The process environment, which **wins over both files**.
     Environment,
+    /// The file `RESCRIPTUM_CONFIG` names, which wins over the env file.
+    TomlFile,
     /// The file `RESCRIPTUM_ENV_FILE` names.
-    File,
+    EnvFile,
     /// Nothing set it.
     Default,
 }
 
 impl Source {
+    /// **These strings are a contract**: `config --json` emits them, and the DSM panel
+    /// decides whether a field is editable by comparing against `environment` — a value
+    /// the environment sets cannot be changed by writing a file.
     pub fn label(self) -> &'static str {
         match self {
             Source::Environment => "environment",
-            Source::File => "file",
+            Source::TomlFile => "toml file",
+            Source::EnvFile => "env file",
             Source::Default => "default",
         }
     }
@@ -946,8 +987,8 @@ pub struct Setting {
     pub help: &'static str,
 }
 
-/// Describe every variable: what is in force, and **which of the file and the environment
-/// put it there**.
+/// Describe every variable: what is in force, and **which of the two files and the
+/// environment put it there**.
 ///
 /// That distinction is the entire reason this returns a source rather than a map. The
 /// file supplies defaults and the real environment wins, so anything offering to edit the
@@ -958,6 +999,7 @@ pub struct Setting {
 /// exported-but-empty variable is a mistake, not an instruction.
 pub fn settings(
     file: Option<&crate::envfile::EnvFile>,
+    toml: Option<&crate::tomlconfig::TomlFile>,
     env: impl Fn(&str) -> Option<String>,
 ) -> Vec<Setting> {
     let useful = |v: String| -> Option<String> {
@@ -969,12 +1011,15 @@ pub fn settings(
         .iter()
         .map(|known| {
             let from_env = env(known.key).and_then(useful);
+            let from_toml = toml.and_then(|f| f.get(known.key)).and_then(useful);
             let from_file = file.and_then(|f| f.get(known.key)).and_then(useful);
 
             let source = if from_env.is_some() {
                 Source::Environment
+            } else if from_toml.is_some() {
+                Source::TomlFile
             } else if from_file.is_some() {
-                Source::File
+                Source::EnvFile
             } else {
                 Source::Default
             };
@@ -988,7 +1033,10 @@ pub fn settings(
                 "RESCRIPTUM_PUBLIC_HOST" => derive_public_host(),
                 _ => known.default.map(str::to_string),
             };
-            let value = from_env.or(from_file).or_else(|| default.clone());
+            let value = from_env
+                .or(from_toml)
+                .or(from_file)
+                .or_else(|| default.clone());
 
             Setting {
                 key: known.key,
@@ -1364,7 +1412,7 @@ mod tests {
         // **A panel with an empty field here is showing something other than what the
         // server does.** The value is derived at startup, so the table has to derive it
         // too — the same treatment the CPU count already gets, and for the same reason.
-        let s = settings(None, |_| None);
+        let s = settings(None, None, |_| None);
         let host = setting(&s, "RESCRIPTUM_PUBLIC_HOST");
         assert!(host.set, "a derived value is still a value in force");
         assert_eq!(
@@ -1514,7 +1562,7 @@ mod tests {
             "override",
             "RESCRIPTUM_LISTEN_ADDR=0.0.0.0:8000\nRESCRIPTUM_LOG=problems\n",
         );
-        let s = settings(Some(&file), |k| {
+        let s = settings(Some(&file), None, |k| {
             (k == "RESCRIPTUM_LISTEN_ADDR").then(|| "127.0.0.1:9999".to_string())
         });
 
@@ -1523,7 +1571,7 @@ mod tests {
         assert_eq!(addr.value.as_deref(), Some("127.0.0.1:9999"));
 
         let log = setting(&s, "RESCRIPTUM_LOG");
-        assert_eq!(log.source, Source::File);
+        assert_eq!(log.source, Source::EnvFile);
         assert_eq!(log.value.as_deref(), Some("problems"));
 
         let store = setting(&s, "RESCRIPTUM_STORE");
@@ -1538,13 +1586,13 @@ mod tests {
         // This is the whole reason `value` is separate from `set`: a settings panel has
         // to show that a token exists without ever being handed one.
         let (dir, file) = env_file("secret", "RESCRIPTUM_ADMIN_TOKEN=0123456789abcdef0\n");
-        let s = settings(Some(&file), |_| None);
+        let s = settings(Some(&file), None, |_| None);
 
         let token = setting(&s, "RESCRIPTUM_ADMIN_TOKEN");
         assert!(token.secret);
         assert!(token.set, "it is set");
         assert_eq!(token.value, None, "a secret's value must never be carried");
-        assert_eq!(token.source, Source::File);
+        assert_eq!(token.source, Source::EnvFile);
 
         let unset = setting(&s, "RESCRIPTUM_ANSWER_TOKEN");
         assert!(!unset.set);
@@ -1559,7 +1607,7 @@ mod tests {
         // rather than an instruction — otherwise the panel and the server would disagree
         // about what is in force.
         let (dir, file) = env_file("empty", "RESCRIPTUM_LOG=\n");
-        let s = settings(Some(&file), |k| {
+        let s = settings(Some(&file), None, |k| {
             (k == "RESCRIPTUM_STORE").then(|| "   ".to_string())
         });
 
@@ -1574,7 +1622,7 @@ mod tests {
     fn the_one_default_that_is_not_a_constant_is_filled_in() {
         // The CPU count is this machine's, so the table cannot hold it and `settings`
         // has to. A panel showing "default: (none)" for workers would be wrong.
-        let s = settings(None, |_| None);
+        let s = settings(None, None, |_| None);
         let workers = setting(&s, "RESCRIPTUM_WORKERS");
         assert_eq!(workers.default, Some(default_workers().to_string()));
         assert_eq!(workers.value, Some(default_workers().to_string()));

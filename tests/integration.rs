@@ -879,6 +879,75 @@ fn a_running_server_takes_its_configuration_from_the_env_file() {
 }
 
 #[test]
+fn a_running_server_takes_its_configuration_from_the_toml_file() {
+    // The same proof as the env file's, over the format a person edits by hand. What it
+    // pins is that the document reaches the *running server* and not only the CLI — the
+    // token below is in force on a socket, or it is not.
+    static N: AtomicUsize = AtomicUsize::new(0);
+    let path = std::env::temp_dir().join(format!(
+        "rescriptum-tomlconfig-{}-{}.toml",
+        std::process::id(),
+        N.fetch_add(1, Ordering::Relaxed)
+    ));
+    fs::write(
+        &path,
+        "# guarded by a token nothing else knows about\n[answer]\ntoken = \"from-the-toml-file-0123\"\n",
+    )
+    .expect("write toml file");
+
+    let s = Server::start_env(
+        &[("default.toml", "marker = \"served\"\n")],
+        "5",
+        &[("RESCRIPTUM_CONFIG", path.to_str().unwrap())],
+    );
+
+    let body = installer_body("98:fa:9b:50:d8:10");
+    let unauthenticated = s.post(&body);
+    assert!(
+        status_line(&unauthenticated).starts_with("HTTP/1.1 401"),
+        "the file's token must be in force\n{unauthenticated}"
+    );
+
+    let authenticated = s.raw(
+        format!(
+            "POST /answer HTTP/1.1\r\nHost: nas\r\nAuthorization: Bearer from-the-toml-file-0123\r\n\
+             Content-Length: {}\r\n\r\n{body}",
+            body.len()
+        )
+        .as_bytes(),
+    );
+    assert!(
+        status_line(&authenticated).starts_with("HTTP/1.1 200"),
+        "{authenticated}"
+    );
+    assert!(
+        body_of(&authenticated).contains("served"),
+        "{authenticated}"
+    );
+
+    let _ = fs::remove_file(&path);
+}
+
+#[test]
+fn a_server_told_to_read_a_toml_file_that_is_not_there_does_not_come_up() {
+    // Fatal for the same reason the env file's absence is: coming up on defaults would
+    // mean the wrong answers directory and no token, silently.
+    let out = Command::new(env!("CARGO_BIN_EXE_rescriptum"))
+        .env("RESCRIPTUM_LISTEN_ADDR", "127.0.0.1:0")
+        .env("RESCRIPTUM_CONFIG", "/nonexistent/rescriptum.toml")
+        .output()
+        .expect("run server");
+    assert!(!out.status.success(), "it must refuse to start");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("RESCRIPTUM_CONFIG"), "{stderr}");
+    assert!(stderr.contains("cannot be read"), "{stderr}");
+    assert!(
+        !stderr.contains("listening on"),
+        "it must not bind before giving up\n{stderr}"
+    );
+}
+
+#[test]
 fn a_server_told_to_read_a_file_that_is_not_there_does_not_come_up() {
     // Starting on defaults instead — wrong answers directory, no admin token, no word in
     // the log — is the failure the env file exists to remove. It must be fatal.

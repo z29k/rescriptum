@@ -132,14 +132,14 @@ impl EnvFile {
 /// `0o600` and friends return `None`; anything a group or the world can read returns the
 /// mode, so it can be named in the warning.
 #[cfg(unix)]
-fn readable_by_others(path: &Path) -> Option<u32> {
+pub(crate) fn readable_by_others(path: &Path) -> Option<u32> {
     use std::os::unix::fs::PermissionsExt;
     let mode = std::fs::metadata(path).ok()?.permissions().mode() & 0o777;
     (mode & 0o077 != 0).then_some(mode)
 }
 
 #[cfg(not(unix))]
-fn readable_by_others(_path: &Path) -> Option<u32> {
+pub(crate) fn readable_by_others(_path: &Path) -> Option<u32> {
     None
 }
 
