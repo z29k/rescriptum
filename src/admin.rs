@@ -521,6 +521,12 @@ fn guarded(
     format: &str,
     body: Option<&str>,
 ) -> Response<Body> {
+    // **Both reads go back to the store.** The listing is cached behind the store's
+    // `version`, and over files that version is the answers directory's mtime — which does
+    // not move when a document is written inside an existing identity's directory. Without
+    // this the guard would compare a write against itself and keep it. See
+    // `Answers::invalidate`.
+    admin.answers.invalidate();
     let before = match admin.answers.problems() {
         Ok(p) => p,
         Err(e) => return error(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
@@ -565,6 +571,7 @@ fn guarded(
         return error(StatusCode::NOT_FOUND, "not found");
     }
 
+    admin.answers.invalidate();
     let after = admin.answers.problems().unwrap_or_default();
     let introduced: Vec<String> = after
         .iter()

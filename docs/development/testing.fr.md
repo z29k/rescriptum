@@ -8,7 +8,7 @@ sidebar:
 
 # Tests
 
-582 tests. `cargo test` les fait tous tourner en une vingtaine de secondes — dont
+619 tests. `cargo test` les fait tous tourner en une vingtaine de secondes — dont
 l'essentiel dans `tests/tftp.rs`, qui attend de vrais délais UDP parce que c'est
 précisément ce qu'il teste.
 
@@ -28,13 +28,13 @@ cargo test --all-features                 # ce que lance la CI
 
 | Suite | Cas | Pour |
 |---|---|---|
-| `tests/integration.rs` | 48 | le vrai binaire sur une vraie socket |
-| `tests/cli.rs` | 50 | `render`, `check`, `import`, `export`, `config` et le fichier d'environnement — contre le vrai binaire |
+| `tests/integration.rs` | 52 | le vrai binaire sur une vraie socket |
+| `tests/cli.rs` | 65 | `render`, `check`, `import`, `export`, `config` et le fichier d'environnement — contre le vrai binaire |
 | `tests/media.rs` | 45 | les médias de démarrage contre le vrai binaire, les deux listeners debout |
-| `src/config.rs` | 42 | l'environnement, ce qui refuse de démarrer, et qui l'emporte du fichier ou de l'environnement |
-| `tests/stores.rs` | 45 | **chaque comportement, contre les deux stores** |
+| `src/config.rs` | 56 | l'environnement, ce qui refuse de démarrer, et qui l'emporte du fichier ou de l'environnement |
+| `tests/stores.rs` | 48 | **chaque comportement, contre les deux stores** |
 | `tests/tftp.rs` | 30 | le TFTP sur de l'UDP réel : les tours de parole, et ce qu'une liaison ratée ne doit pas coûter |
-| `src/select.rs` | 28 | normalisation, scoring, superposition, remplissage de templates |
+| `src/select.rs` | 29 | normalisation, scoring, superposition, remplissage de templates |
 | `src/format/mod.rs` | 28 | parsing, fusion, clés de contrôle, alias d'endpoint |
 | `tests/admin.rs` | 26 | l'API d'administration de bout en bout, formats compris |
 | `src/envfile.rs` | 23 | le parseur et l'écrivain du fichier d'environnement, et ce que chacun refuse |
@@ -43,7 +43,7 @@ cargo test --all-features                 # ce que lance la CI
 | `src/merge.rs` | 11 | la fusion profonde TOML |
 | `tests/guards.rs` | 7 | le jeton de réponse, et le verrouillage qui délibérément n'existe pas |
 | `src/installed.rs` | 6 | une machine qui signale son installation, et ce qu'il ne faut jamais désarmer |
-| `src/log.rs` | 4 | lecture des niveaux, et l'arithmétique d'horodatage |
+| `src/log.rs` | 15 | lecture des niveaux, et l'arithmétique d'horodatage |
 | `src/boot/*.rs` | 128 | le lecteur ISO, le repérage, le catalogue, les sources d'images, les plans de patch, le menu, la table des chargeurs, les extraits DHCP, cpio et SHA-256 |
 | `src/admin.rs`, `src/capture.rs`, `src/store/mod.rs` | 21 | comportement unitaire |
 

@@ -38,6 +38,7 @@ use crate::format::{Kind, canonical_stem};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// Subdirectory holding the groups. A subdirectory precisely so that a group is never
 /// mistaken for a machine, and reserved so that a machine cannot claim the name.
@@ -73,10 +74,27 @@ impl FileStore {
         if !valid_format(format) {
             return Err(invalid_format(format));
         }
-        fs::create_dir_all(dir)?;
+        self.create_identity_dir(dir)?;
         let path = existing(dir, format)
             .unwrap_or_else(|| dir.join(format!("{}.{format}", canonical_stem(format))));
         write_atomic(&path, body)
+    }
+
+    /// Create an identity's directory so that whoever owns the answers directory can
+    /// still reach what lands inside it.
+    ///
+    /// `create_dir_all` alone uses the caller's umask, which is wrong for the same reason
+    /// `write_atomic` preserving nothing was wrong: the process doing the writing is not
+    /// necessarily the user the service runs as. A `0600` document is no use inside a
+    /// directory the service cannot traverse — that is the same outage, arriving one
+    /// restart later and looking like something else.
+    fn create_identity_dir(&self, dir: &Path) -> io::Result<()> {
+        if dir.is_dir() {
+            return Ok(());
+        }
+        fs::create_dir_all(dir)?;
+        inherit(dir, &self.dir);
+        Ok(())
     }
 
     fn remove(&self, dir: &Path, format: &str) -> io::Result<bool> {
@@ -107,14 +125,29 @@ impl FileStore {
     }
 }
 
+/// Counter behind the temporary name. The process id alone disambiguates processes and
+/// not threads, so two concurrent writes to one `(id, format)` in one process shared a
+/// path.
+static TMP_SEQ: AtomicUsize = AtomicUsize::new(0);
+
 /// Write via a temporary file and rename, so a reader never sees a half-written answer.
 /// `rename` within a directory is atomic on POSIX.
 fn write_atomic(path: &Path, body: &str) -> io::Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    let tmp = path.with_extension(format!("tmp.{}", std::process::id()));
+    let tmp = path.with_extension(format!(
+        "tmp.{}.{}",
+        std::process::id(),
+        TMP_SEQ.fetch_add(1, Ordering::Relaxed)
+    ));
+
+    let existing = fs::metadata(path).ok();
     fs::write(&tmp, body)?;
+    if let Err(e) = preserve(&tmp, existing.as_ref(), path.parent()) {
+        let _ = fs::remove_file(&tmp);
+        return Err(e);
+    }
     match fs::rename(&tmp, path) {
         Ok(()) => Ok(()),
         Err(e) => {
@@ -123,6 +156,61 @@ fn write_atomic(path: &Path, body: &str) -> io::Result<()> {
         }
     }
 }
+
+/// Carry the old document's mode and ownership onto the new one.
+///
+/// `envfile::write_atomic` learned this first, and the reason is the same here only
+/// sharper: **an answer document holds a root password hash and SSH keys.** A `0600`
+/// document rewritten under a default umask comes back `0644`, and the thing that widened
+/// it was a convenience. A document that did not exist gets `0600`, with the *containing
+/// directory's* owner rather than the writer's — so a command run by hand as root still
+/// leaves a document the service can read.
+#[cfg(unix)]
+fn preserve(tmp: &Path, existing: Option<&fs::Metadata>, parent: Option<&Path>) -> io::Result<()> {
+    use std::os::unix::fs::MetadataExt;
+    use std::os::unix::fs::PermissionsExt;
+
+    let mode = existing.map_or(0o600, |m| m.permissions().mode() & 0o7777);
+    fs::set_permissions(tmp, fs::Permissions::from_mode(mode))?;
+
+    // Only root can give a file away, and only root needs to: anyone else is already
+    // writing as the owner. A refusal here is therefore not an error.
+    let owner = existing.map(|m| (m.uid(), m.gid())).or_else(|| {
+        parent
+            .and_then(|p| fs::metadata(p).ok())
+            .map(|m| (m.uid(), m.gid()))
+    });
+    if let Some((uid, gid)) = owner {
+        let _ = std::os::unix::fs::chown(tmp, Some(uid), Some(gid));
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn preserve(
+    _tmp: &Path,
+    _existing: Option<&fs::Metadata>,
+    _parent: Option<&Path>,
+) -> io::Result<()> {
+    Ok(())
+}
+
+/// Give a freshly created path the mode and ownership of one that is already right.
+#[cfg(unix)]
+fn inherit(path: &Path, model: &Path) {
+    use std::os::unix::fs::MetadataExt;
+    use std::os::unix::fs::PermissionsExt;
+
+    let Ok(meta) = fs::metadata(model) else {
+        return;
+    };
+    let mode = meta.permissions().mode() & 0o7777;
+    let _ = fs::set_permissions(path, fs::Permissions::from_mode(mode));
+    let _ = std::os::unix::fs::chown(path, Some(meta.uid()), Some(meta.gid()));
+}
+
+#[cfg(not(unix))]
+fn inherit(_path: &Path, _model: &Path) {}
 
 fn remove_if_present(path: &Path) -> io::Result<bool> {
     match fs::remove_file(path) {

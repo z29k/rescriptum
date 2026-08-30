@@ -1160,6 +1160,88 @@ fn a_log_file_that_cannot_be_opened_stops_the_server() {
     );
 }
 
+/// An answers directory with no server in front of it — for the subcommand tests, which
+/// are about the binary's startup rather than about anything on a socket.
+fn answers_only(files: &[(&str, &str)]) -> PathBuf {
+    static N: AtomicUsize = AtomicUsize::new(0);
+    let dir = std::env::temp_dir().join(format!(
+        "rescriptum-cmd-{}-{}",
+        std::process::id(),
+        N.fetch_add(1, Ordering::Relaxed)
+    ));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).expect("create answers dir");
+    for (name, contents) in files {
+        common::seed(&dir, name, contents);
+    }
+    dir
+}
+
+/// A subcommand must not be stopped by the *server's* log file, and must not write into
+/// it either.
+///
+/// On a packaged deployment `RESCRIPTUM_LOG_FILE` belongs to the service user, and
+/// opening it is fatal. So `rescriptum check` run over SSH by anybody else used to die on
+/// `cannot be opened` before its subcommand was looked at — the commands you reach for
+/// when something is wrong, stopped by the thing that is wrong.
+///
+/// **Watched failing:** hand `cfg.log_file` to `log::init` unconditionally in `main` and
+/// this goes red on the exit status.
+#[test]
+fn a_subcommand_neither_opens_nor_writes_the_servers_log_file() {
+    let dir = answers_only(&[("98fa9b50d810.toml", "marker = \"x\"\n")]);
+    let log = dir.join("unwritable").join("rescriptum.log");
+
+    // A directory that cannot be created, which is what an unreadable log path looks like
+    // to this process: `log::init` creates the parent, then opens the file.
+    let out = Command::new(env!("CARGO_BIN_EXE_rescriptum"))
+        .env("RESCRIPTUM_ANSWERS_DIR", &dir)
+        .env("RESCRIPTUM_TFTP_ADDR", "off")
+        .env("RESCRIPTUM_LOG_FILE", "/nonexistent-root/rescriptum.log")
+        .arg("check")
+        .output()
+        .expect("run check");
+
+    assert!(
+        out.status.success(),
+        "check must not die on the server's log file\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(!log.exists(), "a subcommand must not create the log file");
+}
+
+/// And when the file *is* openable, a subcommand still leaves it alone: a reloading
+/// screen writing a `warning:` line per problem per reload would bury the log an operator
+/// uses to diagnose installs.
+#[test]
+fn a_subcommand_leaves_an_openable_log_file_untouched() {
+    // One problem in the answer set, so there is something `Answers::listing` would log.
+    let dir = answers_only(&[("98fa9b50d810.toml", "extends = \"nowhere\"\n")]);
+    let log = dir.join("rescriptum.log");
+
+    let out = Command::new(env!("CARGO_BIN_EXE_rescriptum"))
+        .env("RESCRIPTUM_ANSWERS_DIR", &dir)
+        .env("RESCRIPTUM_TFTP_ADDR", "off")
+        .env("RESCRIPTUM_LOG_FILE", &log)
+        .arg("check")
+        .output()
+        .expect("run check");
+
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !log.exists(),
+        "check wrote into the server's log file: {:?}",
+        std::fs::read_to_string(&log).unwrap_or_default()
+    );
+    // The problem still has to be reported — to stderr, where a person can see it.
+    assert!(
+        stderr.contains("nowhere") || String::from_utf8_lossy(&out.stdout).contains("nowhere"),
+        "the problem must still be reported\nstdout: {}\nstderr: {stderr}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+}
+
 /// Run a server briefly and collect what it said on each stream.
 fn quiet_run(dir: &Path, env: &[(&str, &str)]) -> (String, String) {
     let mut child = spawn_quiet(dir, env);

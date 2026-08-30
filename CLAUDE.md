@@ -680,6 +680,28 @@ could not check. Note it needs `Resolution::format_name` (the extension), not
 - **`git checkout <file>` to undo a deliberately-broken test also undoes the work.** Copy
   the file aside before breaking it to watch a test fail; a `git checkout` here silently
   reverted a whole feature and its test, and only a `grep` afterwards caught it.
+- **The listing cache made `admin::guarded` blind over the file store.** `version()` there
+  is the answers directory's mtime, which does not move when a document is written *inside*
+  an existing identity's directory — so the guard compared a write against itself, found no
+  difference, and kept something that broke the answer set. It forces both reads through
+  `Answers::invalidate` now. Note which side matters: a stale `after` is a rollback that
+  never runs and fails **open**; a stale `before` merely blames this write for a
+  pre-existing problem and fails closed.
+- **A `pid`-only temporary filename disambiguates processes and not threads.** Two writes
+  to one document inside one process share the path, and one silently takes the other's
+  content. `store::file::write_atomic` has a counter for this.
+- **`log::init` ran before subcommand dispatch, and an unopenable log file is fatal.** On a
+  packaged deployment `RESCRIPTUM_LOG_FILE` belongs to the service user, so any subcommand
+  run by anybody else died on `cannot be opened` before its subcommand was looked at. The
+  destination is now a property of *what is being run*: a server logs where the variable
+  says, a subcommand logs to stderr. `Config::validate` deliberately stayed fatal for
+  both — `tests/tftp.rs` pins that.
+- **A group's `.ipxe` arms machines that can never be disarmed.** `installed::disarm` moves
+  a *machine's* own document and never a group's, so a machine armed only by its group
+  installs, reports success, is not disarmed, and installs again on its next network boot —
+  while the webhook logs `nothing was claiming it`, which reads like it worked. The
+  project's own `examples/groups/edge-router/boot.ipxe` did this and `check` called it
+  green; `check` reports it now.
 
 ## Layout on disk, and the core algorithm
 
@@ -917,7 +939,7 @@ is the procedure*), which `AGENTS.md` also points at.
 
 ## Testing expectations
 
-613 tests, plus the package's own harnesses (see *The DSM package*, and note that
+619 tests, plus the package's own harnesses (see *The DSM package*, and note that
 `cargo test` does not run those). `docs/development/testing.md` has the per-suite table;
 the rules that decide where a test goes:
 

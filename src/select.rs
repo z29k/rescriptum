@@ -293,6 +293,24 @@ impl Answers {
             .collect())
     }
 
+    /// Drop the cached listing, so the next read goes back to the store.
+    ///
+    /// **This exists for `admin::guarded`, and the rollback depends on it.** The guard
+    /// compares `problems()` before and after a write, but over the file store `version()`
+    /// is the answers directory's mtime — which does not move when a document is written
+    /// *inside* an existing identity's directory, and which a coarse-granularity
+    /// filesystem may not move even for a new one within the same second. Either way the
+    /// listing is served from cache for up to `RELOAD_BACKSTOP`, so a write that broke the
+    /// answer set would compare equal to itself, pass the guard, and be kept.
+    ///
+    /// Which side is forced matters, and only one of them has to be: a stale `after` is a
+    /// rollback that never runs and fails **open**, while a stale `before` blames this
+    /// write for a pre-existing problem and fails **closed**. The guard forces both, since
+    /// the safe direction is cheap to buy twice.
+    pub fn invalidate(&self) {
+        let mut guard = self.cache.lock().unwrap_or_else(|e| e.into_inner());
+        *guard = None;
+    }
     /// A group's selector criteria, if it has any.
     pub fn group_matchers(&self, name: &str) -> io::Result<Vec<(String, String)>> {
         Ok(self
@@ -1202,6 +1220,49 @@ mod tests {
             std::thread::sleep(Duration::from_millis(50));
         }
         panic!("the removed document was still being served after the backstop");
+    }
+
+    /// The cache hides a write made *inside* an existing machine's directory — which is
+    /// exactly what `admin::guarded` compares across.
+    ///
+    /// Without the invalidation the guard snapshots `problems()`, writes, reads the same
+    /// cached answer back, sees no difference and keeps a write that broke the answer set.
+    /// Over SQLite that cannot happen (its `version` is an atomic bumped by every write);
+    /// over files the version is the answers directory's mtime, and nothing was added or
+    /// removed *in it*.
+    ///
+    /// **Watched failing:** empty the body of `Answers::invalidate` and the last assertion
+    /// goes red while the middle one stays green.
+    #[test]
+    fn a_write_inside_an_identity_directory_is_invisible_until_the_cache_is_dropped() {
+        let dir = TempDir::new();
+        let answers = Answers::from_dir(dir.path());
+        dir.write("98fa9b50d810.toml", "[global]\nkeyboard = \"fr\"\n");
+
+        // Populates the cache, and is the state `guarded` would keep as `before`.
+        assert!(answers.problems().expect("problems").is_empty());
+
+        // A second document of the same format in the same directory is a reported
+        // problem — and one level down, so the mtime the cache watches does not move.
+        fs::write(
+            dir.path().join("98fa9b50d810").join("second.toml"),
+            "[global]\nkeyboard = \"us\"\n",
+        )
+        .expect("write the conflicting document");
+
+        // Asserted rather than assumed: if the cache ever stops hiding this, the
+        // invalidation below is dead weight and someone should find that out here.
+        assert!(
+            answers.problems().expect("problems").is_empty(),
+            "expected the cached listing to hide a write one level down"
+        );
+
+        answers.invalidate();
+        let problems = answers.problems().expect("problems");
+        assert!(
+            !problems.is_empty(),
+            "dropping the cache must reveal the conflict, got {problems:?}"
+        );
     }
 
     #[test]
