@@ -1453,3 +1453,38 @@ fn a_kickstart_or_a_preseed_can_report_installed_with_one_curl() {
     );
     assert!(response.starts_with("HTTP/1.1 401"), "{response}");
 }
+
+/// **The single most valuable thing a dashboard could show** — *these machines are asking
+/// and I have no answer for them* — was underivable, because a 404 named no machine. For
+/// a GET the identity is in the target already; for a Proxmox POST it is only in the body,
+/// and the body is not logged.
+///
+/// Logging, not instrumentation: no counter, no state, one `format!` on a path that is
+/// already failing.
+#[test]
+fn a_404_names_the_machine_that_asked_even_when_it_only_said_so_in_the_body() {
+    let s = Server::start(&[("98fa9b50d810.toml", "marker = \"x\"\n")]);
+    // A body the shape Proxmox sends, for a machine nothing answers.
+    let body = r#"{"network_interfaces":[{"name":"eno1","mac":"11:22:33:44:55:66"}]}"#;
+    let r = s.post(body);
+    assert!(status_line(&r).starts_with("HTTP/1.1 404"), "{r}");
+
+    // stderr is drained by a background thread, so poll rather than sleeping once — a
+    // slow machine must not make this flaky and a fast one must not make it slow.
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let logged = s.startup_log();
+        if let Some(line) = logged.lines().find(|l| l.contains("404")) {
+            assert!(
+                line.contains("11:22:33:44:55:66"),
+                "the 404 must name who asked: {line}"
+            );
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "no 404 line appeared in:\n{logged}"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}

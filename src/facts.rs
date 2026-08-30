@@ -144,6 +144,30 @@ impl Facts {
     }
 
     /// Every label known, for diagnostics.
+    /// Whatever this request said about which machine it is, for a log line.
+    ///
+    /// **This exists because a 404 named no machine**, and that made the single most
+    /// valuable thing a dashboard could show — *these machines are asking and I have no
+    /// answer for them* — impossible to derive. For a GET the identity is in the query
+    /// string, which is already in the logged target; for a **Proxmox POST it is only in
+    /// the body**, and the body is not logged.
+    ///
+    /// It is logging, not instrumentation: no counter, no state, no memory, one `format!`
+    /// on a path that is already failing.
+    pub fn identity(&self) -> Option<String> {
+        // In the order a person would want them, and only the labels that actually name a
+        // machine — never the whole flattened body, which would put a password hash in
+        // the log.
+        for key in ["mac", "macaddress", "serial", "uuid", "product", "fqdn"] {
+            if let Some(values) = self.labels.get(key)
+                && let Some(first) = values.iter().find(|v| !v.is_empty())
+            {
+                return Some(format!("{key}={first}"));
+            }
+        }
+        None
+    }
+
     pub fn labels(&self) -> impl Iterator<Item = (&String, &Vec<String>)> {
         self.labels.iter()
     }

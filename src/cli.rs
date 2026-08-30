@@ -20,7 +20,11 @@ USAGE:
     rescriptum render <mac>       print the answer a machine would receive
     rescriptum render --body FILE print the answer for a captured request body
     rescriptum render --query Q   ...for labels, e.g. \"mac=aa:bb&serial=7ABC1\"
+    rescriptum render <id> --format <ext>   that machine's answer in one format
     rescriptum check              validate the configured store
+    rescriptum status [--json]    one screen: counts, problems, listeners
+    rescriptum machines [--json]  every machine, what answers it, and how
+    rescriptum groups [--json]    members, extends chain, what each one claims
     rescriptum import <dir>       load a directory of TOML into the store
     rescriptum export <dir>       write the store out as a directory of TOML
     rescriptum migrate            show what a flat answers directory would become
@@ -30,6 +34,15 @@ USAGE:
     rescriptum config --value K   one value, for a script (never a credential)
     rescriptum config set K=V     edit the configuration file, whichever one is named
     rescriptum config unset K     take a setting back out of it
+    rescriptum power list         out-of-band controllers, joined to the answer set
+    rescriptum power list --state ...and ask each one whether it is on (slow)
+    rescriptum power status <id>  one machine's power state
+    rescriptum power on <id>      power it on
+    rescriptum power off <id>     graceful shutdown; --hard forces it off
+    rescriptum power pxe <id>     arm a one-time network boot, where supported
+    rescriptum install <id>       check, arm, pxe, power on — the whole gesture
+    rescriptum tui                the fleet on one screen (builds with --features tui)
+    rescriptum tui --remote URL   ...of a deployment's admin API, read-only
     rescriptum media list         the installer images this server holds
     rescriptum media add FILE     register one already in the media directory
     rescriptum media add URL      fetch one into it, then register it
@@ -57,6 +70,9 @@ ENVIRONMENT:
 ADMIN API (requires RESCRIPTUM_STORE=sqlite; off unless RESCRIPTUM_ADMIN_ADDR is set):
     RESCRIPTUM_ADMIN_ADDR         admin listener, e.g. 127.0.0.1:9000
     RESCRIPTUM_ADMIN_TOKEN        bearer token, 16 characters or more (required)
+
+OUT-OF-BAND CONTROL (off unless RESCRIPTUM_CONTROLLERS_FILE is set):
+    RESCRIPTUM_CONTROLLERS_FILE   BMCs, PiKVMs and PDUs. The server never reads it
 
 BOOT MEDIA (off unless RESCRIPTUM_MEDIA_DIR is set):
     RESCRIPTUM_MEDIA_DIR          directory of installer images
@@ -90,12 +106,27 @@ pub fn render(cfg: &Config, args: &[String]) -> ExitCode {
             let path = query.split('&').find_map(|p| p.strip_prefix("path="));
             Facts::from_request(path, Some(query), b"")
         }
-        // A bare identifier claims nothing about what kind of identifier it is.
+        // A bare identifier claims nothing about what kind of identifier it is, so the
+        // format is unconstrained and whichever document resolves is the one you get.
         [id] if !id.starts_with('-') => Facts::from_identity(id),
+        // **Naming the format is the only way to ask for one**, and there was no
+        // first-class way to do it: `check` reaches a specific one internally through a
+        // synthesised path, and `--query "path=/proxmox&mac=…"` worked but was documented
+        // nowhere. A machine holding `proxmox.toml` and `debian.preseed` is the case the
+        // layout exists for, so asking for one of them should not be a trick.
+        [id, flag, format] if flag == "--format" && !id.starts_with('-') => {
+            if crate::format::Kind::for_extension(format).is_none() {
+                eprintln!("{format:?} is not a format this program serves");
+                return ExitCode::FAILURE;
+            }
+            let path = fleet::path_for(format, id);
+            Facts::from_request(Some(&path), None, id.as_bytes())
+        }
         _ => {
             eprintln!(
                 "usage: rescriptum render <mac>\n\
                  \x20      rescriptum render --body FILE\n\
+                 \x20      rescriptum render <id> --format <ext>\n\
                  \x20      rescriptum render --query \"mac=…&serial=…\""
             );
             return ExitCode::FAILURE;
@@ -350,6 +381,899 @@ pub fn check(cfg: &Config) -> ExitCode {
     } else {
         println!("  {failures} problem(s)");
         ExitCode::FAILURE
+    }
+}
+
+/// `power list` — the controllers configured, joined to the answer set.
+///
+/// **It must not probe.** Reading a machine's state means one HTTPS round trip per
+/// controller, each up to the request deadline; with two hundred controllers and a handful
+/// unreachable, a listing that probed would take minutes and look hung. Asking is
+/// `--state`, it is bounded and concurrent, and it is never what a redrawing screen does.
+pub fn power(cfg: &Config, args: &[String]) -> ExitCode {
+    let Some(path) = &cfg.controllers_file else {
+        eprintln!(
+            "there are no controllers: RESCRIPTUM_CONTROLLERS_FILE names a file, and nothing does"
+        );
+        return ExitCode::FAILURE;
+    };
+
+    let controllers = match crate::controllers::load(path) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("{e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    match args.split_first() {
+        Some((cmd, rest)) if cmd == "list" && rest.is_empty() => {
+            power_list(cfg, path, &controllers, false)
+        }
+        Some((cmd, rest)) if cmd == "list" && rest == ["--state"] => {
+            power_list(cfg, path, &controllers, true)
+        }
+        Some((cmd, rest)) if cmd == "status" && rest.len() == 1 => {
+            power_status(&controllers, &rest[0])
+        }
+        Some((cmd, rest)) if cmd == "on" && rest.len() == 1 => {
+            act(&controllers, &rest[0], "power on", crate::power::on)
+        }
+        Some((cmd, rest)) if cmd == "off" && rest.len() == 1 => {
+            act(&controllers, &rest[0], "shut down", |c| {
+                crate::power::off(c, false)
+            })
+        }
+        // Named rather than defaulted: pulling power from a machine mid-write is how a
+        // filesystem gets repaired by hand later.
+        Some((cmd, rest)) if cmd == "off" && rest.len() == 2 && rest[1] == "--hard" => {
+            act(&controllers, &rest[0], "force off", |c| {
+                crate::power::off(c, true)
+            })
+        }
+        Some((cmd, rest)) if cmd == "pxe" && rest.len() == 1 => power_pxe(&controllers, &rest[0]),
+        _ => {
+            eprintln!(
+                "usage: rescriptum power list [--state]\n\
+                 \x20      rescriptum power status <id>\n\
+                 \x20      rescriptum power on <id>\n\
+                 \x20      rescriptum power off <id> [--hard]\n\
+                 \x20      rescriptum power pxe <id>"
+            );
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// Find one controller, or say what is configured instead of "not found".
+fn controller_for<'a>(
+    controllers: &'a crate::controllers::Controllers,
+    id: &str,
+) -> Result<&'a crate::controllers::Controller, ExitCode> {
+    match controllers.find(id) {
+        Some(c) => Ok(c),
+        None => {
+            eprintln!(
+                "no controller for {id:?} — {} configured: {}",
+                controllers.len(),
+                controllers
+                    .iter()
+                    .map(|c| c.id.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+            Err(ExitCode::FAILURE)
+        }
+    }
+}
+
+fn act(
+    controllers: &crate::controllers::Controllers,
+    id: &str,
+    what: &str,
+    run: impl Fn(&crate::controllers::Controller) -> Result<(), String>,
+) -> ExitCode {
+    let c = match controller_for(controllers, id) {
+        Ok(c) => c,
+        Err(code) => return code,
+    };
+    match run(c) {
+        Ok(()) => {
+            println!("{}: {what} sent", c.id);
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("{}: {e}", c.id);
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn power_status(controllers: &crate::controllers::Controllers, id: &str) -> ExitCode {
+    let c = match controller_for(controllers, id) {
+        Ok(c) => c,
+        Err(code) => return code,
+    };
+    match crate::power::status(c) {
+        Ok(s) => {
+            print!("{} [{}] {}", c.id, c.kind.label(), s.state.label());
+            match s.boot_override {
+                Some(o) => println!(" — next boot: {o}"),
+                None => println!(),
+            }
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("{}: {e}", c.id);
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn power_pxe(controllers: &crate::controllers::Controllers, id: &str) -> ExitCode {
+    let c = match controller_for(controllers, id) {
+        Ok(c) => c,
+        Err(code) => return code,
+    };
+    match crate::power::pxe(c) {
+        Ok(crate::power::Armed::Confirmed) => {
+            println!(
+                "{}: one-time network boot armed, and confirmed by reading it back",
+                c.id
+            );
+            ExitCode::SUCCESS
+        }
+        // Not a failure. The boot order stays on PXE and the server decides whether to
+        // install — which is what RESCRIPTUM_BOOT_UNCLAIMED and the `installed-` disarm
+        // already do.
+        Ok(crate::power::Armed::NotSupported) => {
+            println!(
+                "{}: this controller has no boot override — leave the boot order on the \
+                 network and let the server decide whether it installs",
+                c.id
+            );
+            ExitCode::SUCCESS
+        }
+        // The request succeeded and changed nothing. PiKVM answers a PATCH 204 and
+        // ignores it, so a client trusting the status code would report success for a
+        // boot that will never happen.
+        Ok(crate::power::Armed::Ignored) => {
+            eprintln!(
+                "{}: the request was accepted and the override is still not set — this \
+                 controller reports success without doing anything. Leave the boot order \
+                 on the network instead",
+                c.id
+            );
+            ExitCode::FAILURE
+        }
+        Err(e) => {
+            eprintln!("{}: {e}", c.id);
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn power_list(
+    cfg: &Config,
+    path: &std::path::Path,
+    controllers: &crate::controllers::Controllers,
+    probe: bool,
+) -> ExitCode {
+    // **Both sides of the join.** A controller for a machine nothing answers is not an
+    // error — you may well be able to power a machine you have no answer for — and a
+    // machine with an answer and no controller is not one either. The two sets drifting
+    // apart is the ordinary way this gets confusing, so both are shown.
+    //
+    // Asked of the resolver rather than of `machine_ids`, because a machine with no
+    // document of its own is still answered when a group claims it — and "no answer
+    // document" would then be true and misleading. Local work against a cached listing;
+    // nothing here touches the network, which is the whole point of `list` not probing.
+    let answers = match cfg.open_store() {
+        Ok(store) => Some(Answers::new(store)),
+        Err(e) => {
+            // Worth carrying on: the controllers are still worth listing, and an empty
+            // "answer" column with no explanation would be a lie.
+            eprintln!("warning: cannot open the answer store, so nothing is joined: {e}");
+            None
+        }
+    };
+    let answered = |id: &str| -> &'static str {
+        let Some(answers) = &answers else {
+            return "answer unknown";
+        };
+        match answers.resolve(&Facts::from_identity(id)) {
+            Ok(Some(r)) if r.machine.is_some() => "answered by its own document",
+            // Worth distinguishing, and this is the first place it shows: a group is
+            // never disarmed, so a machine armed only by one installs again on every
+            // network boot. `install` refuses it; here it is simply named.
+            Ok(Some(_)) => "answered by a group",
+            Ok(None) => "nothing answers it",
+            Err(_) => "answer does not render",
+        }
+    };
+
+    println!("{}", path.display());
+    if controllers.is_empty() {
+        println!("  (no controllers)");
+        return ExitCode::SUCCESS;
+    }
+
+    // **A plain listing never probes.** One HTTPS round trip per controller, each up to
+    // its deadline, is minutes on a rack with a few unreachable BMCs — and it looks hung.
+    // Asking is `--state`, and it is bounded and concurrent.
+    let all: Vec<&crate::controllers::Controller> = controllers.iter().collect();
+    let states = if probe {
+        let worst = crate::power::worst_case(&all).as_secs();
+        eprintln!(
+            "asking {} controller(s), {} at a time — up to {worst}s each for one that is \
+             unreachable",
+            all.len(),
+            crate::power::PROBE_CONCURRENCY
+        );
+        Some(crate::power::probe(&all))
+    } else {
+        None
+    };
+
+    let mut claimed = 0usize;
+    for (n, c) in controllers.iter().enumerate() {
+        let answer = answered(&c.id);
+        if !answer.starts_with("nothing") {
+            claimed += 1;
+        }
+        let pxe = if c.kind.can_pxe() {
+            "one-time PXE"
+        } else {
+            // Not a gap. Where one-time boot does not exist the boot order stays on PXE
+            // and the server decides whether to install — which is what
+            // RESCRIPTUM_BOOT_UNCLAIMED and the `installed-` disarm already do.
+            "no PXE override — the server decides"
+        };
+        match states.as_ref().and_then(|s| s.get(n)) {
+            None => println!("  {} [{}] {answer}, {pxe}", c.id, c.kind.label()),
+            Some(Ok(s)) => println!(
+                "  {} [{}] {} — {answer}, {pxe}",
+                c.id,
+                c.kind.label(),
+                s.state.label()
+            ),
+            // One unreachable controller is a line, never the end of the listing: the
+            // other two hundred are still worth seeing.
+            Some(Err(e)) => println!("  {} [{}] unreachable — {e}", c.id, c.kind.label()),
+        }
+        if let crate::controllers::Kind::Redfish(r) = &c.kind {
+            // Said once per controller, every time, because it is the thing somebody
+            // meant to fix later and did not.
+            if r.tls == crate::controllers::Tls::Insecure {
+                println!("    warning: verify = false — this connection is not authenticated");
+            }
+        }
+    }
+    println!(
+        "  {} controller(s), {claimed} of them with something to install",
+        controllers.len()
+    );
+    ExitCode::SUCCESS
+}
+
+/// The fleet, as data.
+///
+/// **This is a command before it is a screen**, and deliberately so. Building the model as
+/// part of a terminal UI would make it untestable, unscriptable, unavailable to anybody
+/// who did not install a build with that feature, and gone if the UI is never finished.
+/// Built this way it is covered against both stores, it is what the DSM panel can consume,
+/// and a UI becomes a renderer of it rather than a second implementation.
+pub mod fleet {
+    #![allow(clippy::struct_excessive_bools)]
+    use super::{Answers, Config, Facts, endpoint_segment};
+    use crate::admin::{json_list, json_string};
+
+    /// What answers one machine, and from where.
+    pub struct Machine {
+        pub id: String,
+        /// Formats this machine has documents of, sorted.
+        pub formats: Vec<String>,
+        /// The group whose document it layers on, when one claims it.
+        pub group: Option<String>,
+        /// Whether an `.ipxe` resolves for it — **asked of the resolver**, because a
+        /// machine with no document of its own is still armed when a group holds one.
+        pub armed: bool,
+        /// And whether that arming is a group's, which is the case that can never disarm
+        /// itself.
+        pub armed_by_group: bool,
+        /// A previous install archived its boot script here.
+        pub disarmed: bool,
+    }
+
+    pub struct Group {
+        pub name: String,
+        pub format: String,
+        pub origin: String,
+        pub members: Vec<String>,
+        pub matchers: Vec<(String, String)>,
+        pub extends: Vec<String>,
+    }
+
+    /// Machines, with `installed-` archives folded into the machine they name rather than
+    /// listed as machines of their own — they are a *state*, not an identity.
+    pub fn machines(answers: &Answers) -> std::io::Result<Vec<Machine>> {
+        let documents = answers.machine_documents()?;
+        let prefix = crate::installed::DISARMED;
+
+        let mut ids: Vec<String> = documents
+            .iter()
+            .map(|(id, _)| id.clone())
+            .filter(|id| !id.starts_with(prefix))
+            .collect();
+        ids.sort();
+        ids.dedup();
+
+        let archived: Vec<String> = documents
+            .iter()
+            .filter_map(|(id, _)| id.strip_prefix(prefix).map(str::to_string))
+            .collect();
+        // A machine whose every document is archived still exists, and leaving it out
+        // would be how somebody concludes it was deleted.
+        for id in &archived {
+            if !ids.contains(id) {
+                ids.push(id.clone());
+            }
+        }
+
+        // **And a machine a group names is a machine.** It has no document of its own, so
+        // `machine_documents` cannot see it — but it is answered, it may be armed, and
+        // leaving it out is how a rack armed entirely from a group shows up as an empty
+        // fleet. Normalized before comparing, because a group's member list and a
+        // directory name need not share a separator style.
+        for group in answers.group_names()? {
+            for member in answers.group_members(&group.0)? {
+                let normalized = crate::select::normalize(member.as_bytes());
+                if !ids
+                    .iter()
+                    .any(|id| crate::select::normalize(id.as_bytes()) == normalized)
+                {
+                    ids.push(member);
+                }
+            }
+        }
+        ids.sort();
+        ids.dedup();
+
+        let mut out = Vec::with_capacity(ids.len());
+        for id in ids {
+            let mut formats: Vec<String> = documents
+                .iter()
+                .filter(|(m, _)| m == &id)
+                .map(|(_, f)| f.clone())
+                .collect();
+            formats.sort();
+
+            let resolved = answers.resolve(&Facts::from_identity(&id)).ok().flatten();
+            let boot = answers
+                .resolve(&Facts::from_request(
+                    Some("/ipxe/boot"),
+                    None,
+                    id.as_bytes(),
+                ))
+                .ok()
+                .flatten();
+
+            out.push(Machine {
+                group: resolved.as_ref().and_then(|r| r.group.clone()),
+                armed: boot.is_some(),
+                armed_by_group: boot.as_ref().is_some_and(|r| r.machine.is_none()),
+                disarmed: archived.contains(&id),
+                formats,
+                id,
+            });
+        }
+        Ok(out)
+    }
+
+    pub fn groups(answers: &Answers) -> std::io::Result<Vec<Group>> {
+        let mut out = Vec::new();
+        for (name, origin) in answers.group_names()? {
+            out.push(Group {
+                format: answers
+                    .group_format(&name)?
+                    .unwrap_or_else(|| "toml".to_string()),
+                members: answers.group_members(&name)?,
+                matchers: answers.group_matchers(&name)?,
+                extends: answers.group_extends(&name)?,
+                origin,
+                name,
+            });
+        }
+        Ok(out)
+    }
+
+    /// Hand-written, because **there is no `serde` derive anywhere in this project** and
+    /// this does not introduce one. The two helpers come from `admin`, so the API and the
+    /// command cannot disagree about escaping.
+    pub fn machines_json(machines: &[Machine]) -> String {
+        let rows: Vec<String> = machines
+            .iter()
+            .map(|m| {
+                format!(
+                    "{{{}:{},{}:{},{}:{},{}:{},{}:{},{}:{}}}",
+                    json_string("id"),
+                    json_string(&m.id),
+                    json_string("formats"),
+                    array(&m.formats),
+                    json_string("group"),
+                    m.group.as_deref().map_or("null".to_string(), json_string),
+                    json_string("armed"),
+                    m.armed,
+                    json_string("armed_by_group"),
+                    m.armed_by_group,
+                    json_string("disarmed"),
+                    m.disarmed,
+                )
+            })
+            .collect();
+        format!("{{{}:[{}]}}", json_string("machines"), rows.join(","))
+    }
+
+    pub fn groups_json(groups: &[Group]) -> String {
+        let rows: Vec<String> = groups
+            .iter()
+            .map(|g| {
+                let matchers: Vec<String> = g
+                    .matchers
+                    .iter()
+                    .map(|(k, v)| format!("{}:{}", json_string(k), json_string(v)))
+                    .collect();
+                format!(
+                    "{{{}:{},{}:{},{}:{},{}:{},{}:{{{}}},{}:{}}}",
+                    json_string("name"),
+                    json_string(&g.name),
+                    json_string("format"),
+                    json_string(&g.format),
+                    json_string("origin"),
+                    json_string(&g.origin),
+                    json_string("members"),
+                    array(&g.members),
+                    json_string("match"),
+                    matchers.join(","),
+                    json_string("extends"),
+                    array(&g.extends),
+                )
+            })
+            .collect();
+        format!("{{{}:[{}]}}", json_string("groups"), rows.join(","))
+    }
+
+    pub fn problems_json(problems: &[String]) -> String {
+        json_list("problems", problems)
+    }
+
+    fn array(items: &[String]) -> String {
+        let quoted: Vec<String> = items.iter().map(|s| json_string(s)).collect();
+        format!("[{}]", quoted.join(","))
+    }
+
+    /// A machine's answer for one named format, which the CLI otherwise has no way to ask
+    /// for: `render <mac>` builds facts with no path, so the format is unconstrained.
+    pub fn path_for(format: &str, id: &str) -> String {
+        format!("/{}/{id}", endpoint_segment(format))
+    }
+
+    /// So `status` can say what the store is without repeating itself.
+    pub fn describe(cfg: &Config, answers: &Answers) -> String {
+        let _ = cfg;
+        answers.describe()
+    }
+}
+
+/// `status`, `machines`, `groups` — the fleet, rendered as text or as JSON.
+///
+/// `--json` follows `config --json`, which the DSM panel already consumes. One producer
+/// for both renderings, so a screen and a script can never disagree about what is true.
+pub fn fleet_command(cfg: &Config, what: &str, args: &[String]) -> ExitCode {
+    let json = match args {
+        [] => false,
+        [flag] if flag == "--json" => true,
+        _ => {
+            eprintln!("usage: rescriptum {what} [--json]");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let answers = match cfg.open_store() {
+        Ok(store) => Answers::new(store),
+        Err(e) => {
+            eprintln!("cannot open the answer store: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    match what {
+        "machines" => match fleet::machines(&answers) {
+            Ok(m) if json => {
+                println!("{}", fleet::machines_json(&m));
+                ExitCode::SUCCESS
+            }
+            Ok(machines) => {
+                for m in &machines {
+                    let answered = match (&m.group, m.formats.is_empty()) {
+                        (Some(g), _) => format!("group {g}"),
+                        (None, false) => "its own documents".to_string(),
+                        (None, true) => "nothing".to_string(),
+                    };
+                    let armed = match (m.armed, m.armed_by_group, m.disarmed) {
+                        // Named every time, because it is the state that reinstalls
+                        // forever and looks like a success while doing it.
+                        (true, true, _) => " armed by a group, which cannot disarm itself",
+                        (true, false, _) => " armed",
+                        (false, _, true) => " disarmed by a previous install",
+                        (false, _, false) => "",
+                    };
+                    println!("  {} [{}] {answered}{armed}", m.id, m.formats.join(","));
+                }
+                println!("  {} machine(s)", machines.len());
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("cannot read the answer set: {e}");
+                ExitCode::FAILURE
+            }
+        },
+        "groups" => match fleet::groups(&answers) {
+            Ok(g) if json => {
+                println!("{}", fleet::groups_json(&g));
+                ExitCode::SUCCESS
+            }
+            Ok(groups) => {
+                for g in &groups {
+                    println!("  {} [{}] {}", g.name, g.format, g.origin);
+                    if !g.extends.is_empty() {
+                        println!("    extends {}", g.extends.join(" -> "));
+                    }
+                    if !g.members.is_empty() {
+                        println!("    {} member(s)", g.members.len());
+                    }
+                    for (k, v) in &g.matchers {
+                        println!("    match {k}={v}");
+                    }
+                }
+                println!("  {} group(s)", groups.len());
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("cannot read the answer set: {e}");
+                ExitCode::FAILURE
+            }
+        },
+        _ => status_command(cfg, &answers, json),
+    }
+}
+
+fn status_command(cfg: &Config, answers: &Answers, as_json: bool) -> ExitCode {
+    let machines = fleet::machines(answers).unwrap_or_default();
+    let groups = fleet::groups(answers).unwrap_or_default();
+    let problems = answers.problems().unwrap_or_default();
+    let armed = machines.iter().filter(|m| m.armed).count();
+    let by_group = machines.iter().filter(|m| m.armed_by_group).count();
+    let disarmed = machines.iter().filter(|m| m.disarmed).count();
+
+    if as_json {
+        println!(
+            "{{{}:{},{}:{},{}:{},{}:{},{}:{},{}:{},{}}}",
+            crate::admin::json_string("store"),
+            crate::admin::json_string(&fleet::describe(cfg, answers)),
+            crate::admin::json_string("machines"),
+            machines.len(),
+            crate::admin::json_string("groups"),
+            groups.len(),
+            crate::admin::json_string("armed"),
+            armed,
+            crate::admin::json_string("armed_by_group"),
+            by_group,
+            crate::admin::json_string("disarmed"),
+            disarmed,
+            fleet::problems_json(&problems)
+                .trim_start_matches('{')
+                .trim_end_matches('}')
+        );
+        return ExitCode::SUCCESS;
+    }
+
+    println!("{}", fleet::describe(cfg, answers));
+    println!("  {} machine(s), {} group(s)", machines.len(), groups.len());
+    println!("  {armed} armed, {disarmed} disarmed by a previous install");
+    if by_group > 0 {
+        // Worth its own line rather than a footnote: these machines will reinstall on
+        // every network boot, and their webhook reports success while doing it.
+        println!("  {by_group} of those armed by a group, which `POST /installed` cannot disarm");
+    }
+    if problems.is_empty() {
+        println!("  no problems");
+    } else {
+        for problem in &problems {
+            println!("  problem: {problem}");
+        }
+    }
+    // Zero problems is the normal state, so a non-zero exit here would cry wolf. `check`
+    // is what keys an exit code on this.
+    ExitCode::SUCCESS
+}
+
+/// `tui` — the fleet on one screen.
+///
+/// A **renderer over the read model**, never a second implementation: everything it shows
+/// has a command that prints the same thing, because scripts, `deploy.sh` and CI cannot
+/// press keys.
+#[cfg(feature = "tui")]
+pub fn tui(cfg: &Config, args: &[String]) -> ExitCode {
+    let source = match args {
+        [] => match cfg.open_store() {
+            Ok(store) => crate::tui::draw::Source::Local(Answers::new(store)),
+            Err(e) => {
+                eprintln!("cannot open the answer store: {e}");
+                return ExitCode::FAILURE;
+            }
+        },
+        // **Remote mode reads and nothing else.** It inherits SQLite-only from the API it
+        // speaks to, shows the three screens that API has, and powers nothing — refused in
+        // the state machine so no screen can forget.
+        [flag, url] if flag == "--remote" => {
+            let token = cfg.admin_token.clone().unwrap_or_default();
+            match crate::tui::remote::Remote::new(url, &token) {
+                Ok(r) => crate::tui::draw::Source::Remote(r),
+                Err(e) => {
+                    eprintln!("{e}");
+                    return ExitCode::FAILURE;
+                }
+            }
+        }
+        _ => {
+            eprintln!("usage: rescriptum tui [--remote URL]");
+            return ExitCode::FAILURE;
+        }
+    };
+    tui_run(cfg, source)
+}
+
+#[cfg(feature = "tui")]
+fn tui_run(cfg: &Config, source: crate::tui::draw::Source) -> ExitCode {
+    // The server logs where RESCRIPTUM_LOG_FILE says; this does not. A screen that
+    // reloads writes a `warning:` line per problem per reload, and burying the log an
+    // operator uses to diagnose installs would be a poor trade for a status bar.
+    match crate::tui::draw::run(cfg, source) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("tui: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// Without the feature the command still exists and says why it can do nothing — the rule
+/// `media` and `boot` already follow, so the surface stays described everywhere and only
+/// the binary that cannot honour it objects.
+#[cfg(not(feature = "tui"))]
+pub fn tui(_cfg: &Config, _args: &[String]) -> ExitCode {
+    eprintln!(
+        "this binary was built without the `tui` feature, so it has no terminal interface. \
+         `status`, `machines` and `groups` show the same model as text or JSON."
+    );
+    ExitCode::FAILURE
+}
+
+/// `install <id>` — the command the whole out-of-band feature exists for.
+///
+/// In order, and **the first step is the one that makes it safe**: powering on a machine
+/// that PXE-boots, chains the installer and then meets a 404 leaves an installer sitting
+/// at a prompt in a rack, which is the exact failure this project exists to prevent.
+///
+/// 1. **Resolve.** Every format this machine resolves for renders cleanly — templates
+///    filled, no missing fact. Not a guess at which one the boot script leads to: render
+///    them all, which is `check` scoped to one machine.
+/// 2. **Check the policy**, including the group-arming refusal below.
+/// 3. **Arm**, by putting back what a previous install archived.
+/// 4. **PXE**, where the controller has one.
+/// 5. **On, or restart**, decided by reading the power state.
+pub fn install(cfg: &Config, args: &[String]) -> ExitCode {
+    let (id, dry_run) = match args {
+        [id] if !id.starts_with('-') => (id.as_str(), false),
+        [id, flag] if flag == "--dry-run" => (id.as_str(), true),
+        _ => {
+            eprintln!("usage: rescriptum install <id> [--dry-run]");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    // Two handles rather than one: `Answers` reads and `StoreWrite` writes, and the
+    // reader's trait object is not the writer's. Over files this is free; over SQLite it
+    // is a second connection, which WAL is there for.
+    let store = match cfg.open_store() {
+        Ok(store) => store,
+        Err(e) => {
+            eprintln!("cannot open the answer store: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let answers = match cfg.open_store() {
+        Ok(store) => Answers::new(store),
+        Err(e) => {
+            eprintln!("cannot open the answer store: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    // ---- 1. would this machine actually be answered, and does it render? ----
+    let normalized = crate::select::normalize(id.as_bytes());
+    let documents: Vec<String> = match answers.machine_documents() {
+        Ok(docs) => docs
+            .into_iter()
+            .filter(|(machine, _)| crate::select::normalize(machine.as_bytes()) == normalized)
+            .map(|(_, format)| format)
+            .collect(),
+        Err(e) => {
+            eprintln!("cannot read the answer set: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let mut failures = 0usize;
+    for format in &documents {
+        let path = format!("/{}/{id}", endpoint_segment(format));
+        let facts = Facts::from_request(Some(&path), None, id.as_bytes());
+        match answers.resolve(&facts) {
+            Ok(Some(_)) => println!("  ok   {format}"),
+            Ok(None) => {
+                println!("  FAIL {format}: nothing resolves on {path}");
+                failures += 1;
+            }
+            Err(e) => {
+                println!("  FAIL {format}: {e}");
+                failures += 1;
+            }
+        }
+    }
+    if failures > 0 {
+        eprintln!(
+            "{id}: {failures} document(s) would not render — nothing has been powered on. \
+             A machine that boots into a broken answer sits at a prompt in a rack"
+        );
+        return ExitCode::FAILURE;
+    }
+
+    // ---- 2. is it armed, and by what? ----
+    let boot = Facts::from_request(Some("/ipxe/boot"), None, id.as_bytes());
+    let armed = match answers.resolve(&boot) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("{id}: the boot script does not render: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let archived = crate::installed::archived(store.as_ref(), id).unwrap_or(false);
+    match &armed {
+        Some(r) if r.machine.is_some() => println!("  armed by its own document"),
+        // **A group is never disarmed.** `installed::disarm` moves a machine's own
+        // document and never a group's, deliberately, so that one machine finishing
+        // cannot disarm a rack. A machine armed only by its group therefore installs,
+        // reports success, is not disarmed, and installs again on its next network boot —
+        // and `BootSourceOverrideEnabled=Once` does not help, because the second boot is
+        // the machine's own boot order rather than the override.
+        Some(r) => {
+            eprintln!(
+                "{id}: its boot script comes from group {:?}, and a group is never \
+                 disarmed — this machine would reinstall itself on every network boot. \
+                 Give it its own .ipxe document instead, which `POST /installed` can move \
+                 aside when it reports success",
+                r.group.as_deref().unwrap_or("?")
+            );
+            return ExitCode::FAILURE;
+        }
+        None if archived => {
+            println!("  disarmed by a previous install; its document will be put back")
+        }
+        None => {
+            // Refused in both modes, for different reasons.
+            if cfg.unclaimed_boots_local() {
+                eprintln!(
+                    "{id}: nothing arms it, and RESCRIPTUM_BOOT_UNCLAIMED=local means it \
+                     would boot its own disk and report nothing — which looks exactly \
+                     like a successful install"
+                );
+            } else {
+                eprintln!(
+                    "{id}: nothing arms it, so it would sit on the boot menu waiting for \
+                     somebody who is not coming, and burn a boot cycle"
+                );
+            }
+            return ExitCode::FAILURE;
+        }
+    }
+
+    let controllers = match cfg.controllers_file.as_deref() {
+        Some(path) => match crate::controllers::load(path) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("{e}");
+                return ExitCode::FAILURE;
+            }
+        },
+        None => {
+            eprintln!(
+                "there are no controllers: RESCRIPTUM_CONTROLLERS_FILE names a file, and \
+                 nothing does"
+            );
+            return ExitCode::FAILURE;
+        }
+    };
+    let Some(controller) = controllers.find(id) else {
+        eprintln!("{id}: no controller, so nothing here can power it on");
+        return ExitCode::FAILURE;
+    };
+
+    if dry_run {
+        println!("{id}: everything renders and it is armed — nothing was powered on");
+        return ExitCode::SUCCESS;
+    }
+
+    // ---- 3. arm ----
+    if archived {
+        match crate::installed::rearm(store.as_ref(), id) {
+            Ok(Some(under)) => println!("  its boot script is back, as {under}"),
+            Ok(None) => {
+                eprintln!(
+                    "{id}: its archived boot script vanished between the check and the write"
+                );
+                return ExitCode::FAILURE;
+            }
+            Err(e) => {
+                eprintln!("{id}: cannot put its boot script back: {e}");
+                return ExitCode::FAILURE;
+            }
+        }
+    }
+
+    // ---- 4. one-time PXE, where there is one ----
+    match crate::power::pxe(controller) {
+        Ok(crate::power::Armed::Confirmed) => println!("  one-time network boot armed"),
+        Ok(crate::power::Armed::NotSupported) => {
+            println!("  no boot override on this controller — the server decides instead")
+        }
+        Ok(crate::power::Armed::Ignored) => {
+            println!(
+                "  this controller accepted the override and did not apply it — \
+                      relying on the boot order instead"
+            )
+        }
+        Err(e) => {
+            eprintln!("{id}: {e}");
+            return ExitCode::FAILURE;
+        }
+    }
+
+    // ---- 5. on, or restart ----
+    let running = matches!(
+        crate::power::status(controller).map(|s| s.state),
+        Ok(crate::power::State::On)
+    );
+    let outcome = if running {
+        // `ResetType: "On"` sent to a system already on is refused by many services and a
+        // no-op on others — either way nothing happens while it looks like it did. A
+        // machine being reinstalled is usually running.
+        println!("  it is already on, so restarting rather than powering on");
+        crate::power::restart(controller)
+    } else {
+        crate::power::on(controller)
+    };
+
+    match outcome {
+        Ok(()) => {
+            println!("{id}: installing. Watch the log, or wait for POST /installed");
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("{id}: {e}");
+            ExitCode::FAILURE
+        }
     }
 }
 

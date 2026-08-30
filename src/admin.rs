@@ -16,6 +16,7 @@
 
 use crate::config::Config;
 use crate::facts::Facts;
+use crate::guard;
 use crate::log;
 use crate::select::Answers;
 use crate::store::{StoreWrite, valid_format, valid_id};
@@ -236,7 +237,7 @@ fn json(status: StatusCode, body: String) -> Response<Body> {
 
 /// Minimal JSON string escaping — enough for identifiers and error messages, which is
 /// all this API emits. Not a general encoder.
-fn json_string(s: &str) -> String {
+pub(crate) fn json_string(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 2);
     out.push('"');
     for c in s.chars() {
@@ -254,7 +255,7 @@ fn json_string(s: &str) -> String {
     out
 }
 
-fn json_list(key: &str, items: &[String]) -> String {
+pub(crate) fn json_list(key: &str, items: &[String]) -> String {
     let body: Vec<String> = items.iter().map(|s| json_string(s)).collect();
     format!("{{{}:[{}]}}", json_string(key), body.join(","))
 }
@@ -322,6 +323,16 @@ async fn handle(
 
     let segments: Vec<&str> = path.trim_matches('/').split('/').collect();
     let response = match (&method, segments.as_slice()) {
+        // **Exactly one new endpoint, and it serves the CLI's model byte for byte.**
+        // `GET /machines` returns bare identifiers, so a remote fleet view would need one
+        // `GET /resolve/{id}` per machine — two thousand round trips on the fleet this
+        // project measures itself against, which is not "the same screens over the wire"
+        // but a different and much worse program. One producer, so the command and the
+        // API cannot drift.
+        (&Method::GET, ["fleet"]) => match crate::cli::fleet::machines(&admin.answers) {
+            Ok(machines) => json(StatusCode::OK, crate::cli::fleet::machines_json(&machines)),
+            Err(e) => error(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
+        },
         (&Method::GET, ["machines"]) => list(&admin, Kind::Machine),
         (&Method::GET, ["groups"]) => list(&admin, Kind::Group),
         (&Method::GET, ["check"]) => match admin.answers.problems() {
@@ -508,12 +519,12 @@ fn delete(admin: &Admin, kind: Kind, id: &str, format: &str) -> Response<Body> {
     guarded(admin, kind, id, format, None)
 }
 
-/// Apply a write, then check that it did not break the answer set. If it did, put
-/// things back and say what broke.
+/// Apply a write through the guard, and turn what it did into a response.
 ///
-/// A cycle between groups, or a machine pointing at a group that no longer exists, does
-/// not fail at write time — it fails when a rack tries to install. Catching it here is
-/// the difference between a red response now and a failed provisioning run later.
+/// **This is a mapping and nothing else.** The rule — apply, re-read, roll back what
+/// broke — lives in `crate::guard`, because it is not an HTTP property and more than one
+/// caller needs it. What belongs here is the choice of status code and envelope, which is
+/// this API's business alone.
 fn guarded(
     admin: &Admin,
     kind: Kind,
@@ -521,81 +532,17 @@ fn guarded(
     format: &str,
     body: Option<&str>,
 ) -> Response<Body> {
-    // **Both reads go back to the store.** The listing is cached behind the store's
-    // `version`, and over files that version is the answers directory's mtime — which does
-    // not move when a document is written inside an existing identity's directory. Without
-    // this the guard would compare a write against itself and keep it. See
-    // `Answers::invalidate`.
-    admin.answers.invalidate();
-    let before = match admin.answers.problems() {
-        Ok(p) => p,
-        Err(e) => return error(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
+    let target = match kind {
+        Kind::Machine => guard::Target::Machine(id.to_string()),
+        Kind::Group => guard::Target::Group(id.to_string()),
+        Kind::Default => guard::Target::Default,
     };
 
-    // What was there before, so it can be restored.
-    let previous = match admin.store.snapshot() {
-        Ok(s) => match kind {
-            Kind::Machine => s
-                .machines
-                .iter()
-                .find(|m| m.id == id && m.format == format)
-                .map(|m| (m.format.clone(), m.body.clone())),
-            Kind::Group => s
-                .groups
-                .iter()
-                .find(|g| g.name == id && g.format == format)
-                .map(|g| (g.format.clone(), g.body.clone())),
-            Kind::Default => s
-                .fallbacks
-                .iter()
-                .find(|d| d.format == format)
-                .map(|d| (d.format.clone(), d.body.clone())),
-        },
-        Err(e) => return error(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
-    };
-
-    let applied = match (kind, body) {
-        (Kind::Machine, Some(b)) => admin.store.put_machine(id, format, b).map(|()| true),
-        (Kind::Group, Some(b)) => admin.store.put_group(id, format, b).map(|()| true),
-        (Kind::Default, Some(b)) => admin.store.put_default(format, b).map(|()| true),
-        (Kind::Machine, None) => admin.store.delete_machine(id, format),
-        (Kind::Group, None) => admin.store.delete_group(id, format),
-        (Kind::Default, None) => admin.store.delete_default(format),
-    };
-    let existed = match applied {
-        Ok(v) => v,
-        Err(e) => return error(StatusCode::BAD_REQUEST, &e.to_string()),
-    };
-
-    if body.is_none() && !existed {
-        return error(StatusCode::NOT_FOUND, "not found");
-    }
-
-    admin.answers.invalidate();
-    let after = admin.answers.problems().unwrap_or_default();
-    let introduced: Vec<String> = after
-        .iter()
-        .filter(|p| !before.contains(p))
-        .cloned()
-        .collect();
-
-    if !introduced.is_empty() {
-        // Undo, so the store is never left in a state that breaks installs.
-        let restored = match (kind, &previous) {
-            (Kind::Machine, Some((f, b))) => admin.store.put_machine(id, f, b),
-            (Kind::Group, Some((f, b))) => admin.store.put_group(id, f, b),
-            (Kind::Default, Some((f, b))) => admin.store.put_default(f, b),
-            (Kind::Machine, None) => admin.store.delete_machine(id, format).map(drop),
-            (Kind::Group, None) => admin.store.delete_group(id, format).map(drop),
-            (Kind::Default, None) => admin.store.delete_default(format).map(drop),
-        };
-        if let Err(e) = restored {
-            log::server(&format!(
-                "admin: could not roll back {} {id:?}: {e} — the store may be inconsistent",
-                kind.label()
-            ));
-        }
-        return json(
+    match guard::write(&admin.answers, admin.store.as_ref(), &target, format, body) {
+        guard::Outcome::Unavailable(e) => error(StatusCode::INTERNAL_SERVER_ERROR, &e),
+        guard::Outcome::Rejected(e) => error(StatusCode::BAD_REQUEST, &e),
+        guard::Outcome::NotFound => error(StatusCode::NOT_FOUND, "not found"),
+        guard::Outcome::Refused { introduced } => json(
             StatusCode::CONFLICT,
             format!(
                 "{{{}:{},{}}}",
@@ -605,18 +552,22 @@ fn guarded(
                     .trim_start_matches('{')
                     .trim_end_matches('}')
             ),
-        );
+        ),
+        // Anything still broken is reported on a success too, so a caller is not misled
+        // into thinking all is well just because their own write was clean.
+        guard::Outcome::Stored { problems } => stored(StatusCode::OK, "stored", &problems),
+        guard::Outcome::Deleted { problems } => stored(StatusCode::OK, "deleted", &problems),
     }
+}
 
-    // Report anything already broken, so a caller is not misled into thinking all is
-    // well just because their own write was clean.
+fn stored(status: StatusCode, what: &str, problems: &[String]) -> Response<Body> {
     json(
-        StatusCode::OK,
+        status,
         format!(
             "{{{}:{},{}}}",
             json_string("status"),
-            json_string(if body.is_some() { "stored" } else { "deleted" }),
-            json_list("problems", &after)
+            json_string(what),
+            json_list("problems", problems)
                 .trim_start_matches('{')
                 .trim_end_matches('}')
         ),

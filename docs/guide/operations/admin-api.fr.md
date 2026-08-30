@@ -47,6 +47,7 @@ d'administration sur le store fichiers, omettez le jeton, ou définissez un jeto
 | `PUT /machines/{id}`, `PUT /groups/{name}`, `PUT /default` | stocker un document (le corps est le document) |
 | `DELETE /machines/{id}`, `DELETE /groups/{name}`, `DELETE /default` | en supprimer un |
 | `GET /resolve/{id}` | la réponse **fusionnée** que cette machine recevrait |
+| `GET /fleet` | chaque machine, ce qui lui répond et comment elle est armée — **octet pour octet ce qu'affiche `machines --json`**, depuis le même producteur, pour qu'une vue distante ne puisse pas diverger d'une vue locale |
 | `GET /check` | les problèmes actuels, le même jeu que la sous-commande `check` |
 | `GET /health` | vivacité — le seul endpoint sans jeton, et jamais bloqué |
 

@@ -26,6 +26,13 @@ With no arguments, `rescriptum` runs the server. Everything else is a subcommand
 | `rescriptum config --value KEY` | one value, for a script — never a credential |
 | `rescriptum config set K=V …` | edit the file `RESCRIPTUM_CONFIG` or `RESCRIPTUM_ENV_FILE` names |
 | `rescriptum config unset KEY …` | take a setting back out of it |
+| `rescriptum status [--json]` | the fleet in one screen: counts, what is armed, problems |
+| `rescriptum machines [--json]` | every machine, what answers it, and how it is armed |
+| `rescriptum groups [--json]` | members, the `extends` chain, what each one claims |
+| `rescriptum power …` | [out-of-band control](../operations/power.md), off unless a controllers file is named |
+| `rescriptum install <id>` | check, arm, network-boot, power on — the whole gesture |
+| `rescriptum tui` | the fleet on one screen — a build with `--features tui` |
+| `rescriptum tui --remote URL` | the same, over a deployment's admin API — read-only, and it powers nothing |
 | `rescriptum --help` | usage and the environment variables |
 
 All of them read the same [environment variables](./configuration.md), including
@@ -49,6 +56,7 @@ $ rescriptum render --body /var/log/rescriptum-captures/2026…-0000.body
 | `<id>` | the identifier as a haystack, and nothing else — enough to match by name, not enough for a selector on `serial` |
 | `--query "k=v&k2=v2"` | those labels, percent-decoded. `path=` also yields `file` and `segment`, and constrains the format the way a real URL would |
 | `--body FILE` | the file verbatim: haystack, plus flattened JSON if it parses as JSON |
+| `<id> --format <ext>` | the identifier, constrained to one format — for a machine that holds `proxmox.toml` **and** `debian.preseed`, which is the case the layout exists for |
 
 - The **document** goes to **stdout**; the `# format=… machine=… group=…` line explaining
   how it was reached goes to **stderr**. So `render … > answer.toml` gives you just the
@@ -159,6 +167,31 @@ Two refusals are deliberate:
 Unlike every other subcommand, this one works when the configuration is too broken to start
 a server — a file that will not parse, a token one character short. That is the state
 people run it *to get out of*.
+
+## `status` / `machines` / `groups`
+
+```console
+$ rescriptum status
+$ rescriptum machines --json
+$ rescriptum groups
+```
+
+The fleet as data, from the same producer in both renderings — `--json` is what a settings
+panel or a script consumes, and the admin API's `GET /fleet` returns the *same bytes* as
+`machines --json` so a remote view cannot drift from a local one.
+
+- **"Armed" is a property of resolution, not of a directory.** A machine with no document
+  of its own is armed if the group claiming it holds an `.ipxe`, and `machines` says so —
+  including the warning that such a machine [cannot disarm
+  itself](../operations/power.md#why-a-group-cannot-arm-an-install).
+- **A machine a group only names is still a machine.** It has no document, so it would
+  otherwise be invisible, and a rack armed entirely from a group would look like an empty
+  fleet.
+- **`installed-<id>` is a state, not an identity.** It is folded into the machine it names
+  and reported as *disarmed by a previous install*.
+- `status` exits **0** even when the answer set has problems: zero problems is the normal
+  state, and crying wolf here would make it useless. [`check`](#check) is what keys an exit
+  code on that.
 
 ## `media`
 

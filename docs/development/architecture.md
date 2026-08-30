@@ -49,10 +49,17 @@ flowchart TB
 | `format/` | one interface per document format. `Doc` parses, merges, renders, and reports its control keys |
 | `merge.rs` | the TOML deep merge, used by `format` |
 | `store/` | where documents come from, behind a two-method read trait |
-| `admin.rs` | its own listener, bearer auth, the failure guard, and the rollback that keeps a write from breaking the answer set |
+| `guard.rs` | the rule that a write cannot leave the answer set broken — apply, re-read, roll back what broke. **Not an HTTP property**, so it lives outside `admin` and more than one caller uses it |
+| `admin.rs` | its own listener, bearer auth, the failure guard, and the mapping from a guarded write's outcome onto a status code |
 | `config.rs` | the environment, and the validation that turns a dangerous configuration into a startup error |
 | `envfile.rs` | the file `RESCRIPTUM_ENV_FILE` names: parsed, never discovered, and fatal when it cannot be read |
-| `cli.rs` | `render`, `check`, `import`, `export` |
+| `cli.rs` | `render`, `check`, `import`, `export`, `status`/`machines`/`groups`, `power`, `install` |
+| `controllers.rs` | where a machine's BMC, PiKVM or PDU is described. **The server never reads it** — `power` and `install` do |
+| `redfish.rs` | talking to a Redfish service through `curl`, because there is no TLS in this binary |
+| `power.rs` | driving a controller, for either kind: what `on`, `off`, `pxe` and `status` actually do, and the bounded concurrent probe |
+| `tail.rs` | following the server's log from another process: rotation, a bounded buffer, and the line parser |
+| `edit.rs` | handing a document to `$EDITOR` and storing what comes back, through the guard |
+| `tui.rs` | what a terminal interface keeps and when it may do work. **No drawing**: ratatui is immediate-mode, so the state is ours, and keeping it here means it is tested in every build |
 | `capture.rs` | recording request bodies |
 | `log.rs` | one line per event, UTC timestamps computed without a date crate, and the two knobs over both: what is kept, and where it goes |
 

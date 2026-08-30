@@ -49,8 +49,15 @@ pub struct Resolution {
 
 impl Resolution {
     /// A compact description for the log line.
+    ///
+    /// **The extension, not the family.** `format.label()` reports the *family*, so
+    /// `.ipxe`, `.ks`, `.preseed`, `.cfg` and `.seed` all came out as `format=text` —
+    /// which makes the log unable to tell a machine fetching its **boot script** from the
+    /// same machine, minutes later, fetching its **answer document**. That distinction is
+    /// what "installs in flight" is made of. `format_name` was already carried here and
+    /// unused by this function.
     pub fn how(&self) -> String {
-        let mut parts = vec![format!("format={}", self.format.label())];
+        let mut parts = vec![format!("format={}", self.format_name)];
         if let Some(m) = &self.machine {
             parts.push(format!("machine={m}"));
         }
@@ -252,6 +259,25 @@ impl Answers {
         Ok(self.listing()?.problems.clone())
     }
 
+    /// Drop the cached listing, so the next read goes back to the store.
+    ///
+    /// **This exists for `admin::guarded`, and the rollback depends on it.** The guard
+    /// compares `problems()` before and after a write, but over the file store `version()`
+    /// is the answers directory's mtime — which does not move when a document is written
+    /// *inside* an existing identity's directory, and which a coarse-granularity
+    /// filesystem may not move even for a new one within the same second. Either way the
+    /// listing is served from cache for up to `RELOAD_BACKSTOP`, so a write that broke the
+    /// answer set would compare equal to itself, pass the guard, and be kept.
+    ///
+    /// Which side is forced matters, and only one of them has to be: a stale `after` is a
+    /// rollback that never runs and fails **open**, while a stale `before` blames this
+    /// write for a pre-existing problem and fails **closed**. The guard forces both, since
+    /// the safe direction is cheap to buy twice.
+    pub fn invalidate(&self) {
+        let mut guard = self.cache.lock().unwrap_or_else(|e| e.into_inner());
+        *guard = None;
+    }
+
     /// A group's format, so a caller can address it the way its installer would.
     pub fn group_format(&self, name: &str) -> io::Result<Option<String>> {
         Ok(self
@@ -293,24 +319,29 @@ impl Answers {
             .collect())
     }
 
-    /// Drop the cached listing, so the next read goes back to the store.
+    /// The chain a group extends, nearest parent first.
     ///
-    /// **This exists for `admin::guarded`, and the rollback depends on it.** The guard
-    /// compares `problems()` before and after a write, but over the file store `version()`
-    /// is the answers directory's mtime — which does not move when a document is written
-    /// *inside* an existing identity's directory, and which a coarse-granularity
-    /// filesystem may not move even for a new one within the same second. Either way the
-    /// listing is served from cache for up to `RELOAD_BACKSTOP`, so a write that broke the
-    /// answer set would compare equal to itself, pass the guard, and be kept.
-    ///
-    /// Which side is forced matters, and only one of them has to be: a stale `after` is a
-    /// rollback that never runs and fails **open**, while a stale `before` blames this
-    /// write for a pre-existing problem and fails **closed**. The guard forces both, since
-    /// the safe direction is cheap to buy twice.
-    pub fn invalidate(&self) {
-        let mut guard = self.cache.lock().unwrap_or_else(|e| e.into_inner());
-        *guard = None;
+    /// Resolved at load, so a cycle or a missing parent has already been reported and the
+    /// broken group dropped — what comes back here is a chain that works.
+    pub fn group_extends(&self, name: &str) -> io::Result<Vec<String>> {
+        let listing = self.listing()?;
+        let mut chain = Vec::new();
+        let mut at = name.to_string();
+        // Bounded by the number of groups: a cycle cannot survive load, but a bound here
+        // costs nothing and means this can never be the thing that hangs.
+        for _ in 0..listing.groups.len() {
+            let Some(group) = listing.groups.iter().find(|g| g.name == at) else {
+                break;
+            };
+            let Some(parent) = group.control.extends.clone() else {
+                break;
+            };
+            chain.push(parent.clone());
+            at = parent;
+        }
+        Ok(chain)
     }
+
     /// A group's selector criteria, if it has any.
     pub fn group_matchers(&self, name: &str) -> io::Result<Vec<(String, String)>> {
         Ok(self

@@ -30,6 +30,20 @@ serde_yaml_ng = "0.10.0"
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "net", "time", "io-util", "signal", "macros"] }
 toml_edit = "0.25.13"
 
+# The terminal interface, and **not in `default`**. A terminal UI is layout, wrapping,
+# unicode widths, resize, key decoding and mouse escapes — none of which is this project's
+# subject, and all of which is a decade of other people's bug reports. This project writes
+# its own cpio and SHA-256 because those are twenty-line formats with a specification;
+# this is not one of those.
+#
+# The state it draws lives in `src/tui.rs`, which depends on neither and is compiled and
+# tested in every build. What the feature adds is the painting.
+# Pinned together: ratatui 0.29 requires crossterm ^0.28.1, and asking for 0.29 here puts
+# two incompatible majors in the graph — which cargo reports as an unresolvable `mio`
+# conflict, naming neither.
+crossterm = { version = "0.28", optional = true }
+ratatui = { version = "0.29", optional = true }
+
 [features]
 default = ["sqlite", "boot"]
 # SQLite backs the admin API. Turn it off for the smallest possible binary when the
@@ -47,6 +61,10 @@ boot = []
 # business in a release binary — the resolver keeps it out of one, because nothing but
 # the dev-dependency below asks for it.
 test-support = []
+# The terminal interface. Deliberately **not** in `default`: the answer server a NAS runs
+# must stay byte-identical without it, and CI asserts that the default dependency graph
+# does not reach ratatui.
+tui = ["dep:ratatui", "dep:crossterm"]
 
 [profile.release]
 opt-level = "z"

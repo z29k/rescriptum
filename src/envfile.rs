@@ -28,7 +28,7 @@ use std::path::{Path, PathBuf};
 pub const ENV_FILE: &str = "RESCRIPTUM_ENV_FILE";
 
 /// Every variable this program reads, so a typo can be reported rather than ignored.
-pub const KNOWN_KEYS: [&str; 30] = [
+pub const KNOWN_KEYS: [&str; 31] = [
     "RESCRIPTUM_STORE",
     "RESCRIPTUM_ANSWERS_DIR",
     "RESCRIPTUM_DB_PATH",
@@ -40,6 +40,7 @@ pub const KNOWN_KEYS: [&str; 30] = [
     "RESCRIPTUM_ADMIN_ADDR",
     "RESCRIPTUM_ADMIN_TOKEN",
     "RESCRIPTUM_CAPTURE_DIR",
+    "RESCRIPTUM_CONTROLLERS_FILE",
     "RESCRIPTUM_LOG",
     "RESCRIPTUM_LOG_FILE",
     "RESCRIPTUM_PUBLIC_HOST",

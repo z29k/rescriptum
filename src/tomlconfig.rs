@@ -60,7 +60,7 @@ pub struct Mapped {
 /// one-to-one mapping with the environment lives in this table instead of in the
 /// spelling, which is the right place for it — `config --value` and the panel both go
 /// through it, so nobody has to hold two names in their head.
-pub const MAPPING: [Mapped; 30] = [
+pub const MAPPING: [Mapped; 31] = [
     Mapped {
         key: "RESCRIPTUM_ANSWERS_DIR",
         path: "answers_dir",
@@ -139,6 +139,11 @@ pub const MAPPING: [Mapped; 30] = [
     Mapped {
         key: "RESCRIPTUM_CAPTURE_DIR",
         path: "answer.capture_dir",
+        numeric: false,
+    },
+    Mapped {
+        key: "RESCRIPTUM_CONTROLLERS_FILE",
+        path: "power.controllers_file",
         numeric: false,
     },
     Mapped {

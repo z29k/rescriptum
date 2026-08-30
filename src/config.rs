@@ -77,6 +77,14 @@ pub struct Config {
     pub answer_token: Option<String>,
     /// Where to record what machines actually send. Off unless set.
     pub capture_dir: Option<PathBuf>,
+    /// Out-of-band controllers, keyed by the same identity as the answers directory.
+    ///
+    /// **The server never reads this file** — `power` and `install` do. Naming a file the
+    /// answer listener would die on would take a fleet's installs down for a reason
+    /// unrelated to answering, which is the failure the "unset, it does not exist" rule
+    /// exists to prevent. Startup only says whether it is there and whether its mode is
+    /// alarming.
+    pub controllers_file: Option<PathBuf>,
     /// How much to log. `All` keeps every request; `Problems` keeps everything except the
     /// requests that worked, which is the only high-volume thing here.
     pub log_level: crate::log::Level,
@@ -257,6 +265,7 @@ impl Config {
             admin_token: optional("RESCRIPTUM_ADMIN_TOKEN"),
             answer_token: optional("RESCRIPTUM_ANSWER_TOKEN"),
             capture_dir: optional("RESCRIPTUM_CAPTURE_DIR").map(PathBuf::from),
+            controllers_file: optional("RESCRIPTUM_CONTROLLERS_FILE").map(PathBuf::from),
             log_level: match optional("RESCRIPTUM_LOG") {
                 Some(value) => crate::log::Level::parse(&value).unwrap_or_else(|| {
                     // A typo must not be the reason nobody can see why a rollout failed.
@@ -758,7 +767,7 @@ pub struct Known {
 
 /// Every variable, in the order a person would want to meet them: what answers come
 /// from, where the server listens, how much it says, then the two credentials.
-pub const KNOWN: [Known; 30] = [
+pub const KNOWN: [Known; 31] = [
     Known {
         key: "RESCRIPTUM_STORE",
         default: Some("files"),
@@ -820,6 +829,12 @@ pub const KNOWN: [Known; 30] = [
         default: None,
         secret: false,
         help: "Record what installers actually send, for when nothing is answered.",
+    },
+    Known {
+        key: "RESCRIPTUM_CONTROLLERS_FILE",
+        default: None,
+        secret: false,
+        help: "Out-of-band controllers, for `power` and `install`. The server never reads it.",
     },
     Known {
         key: "RESCRIPTUM_ANSWER_TOKEN",

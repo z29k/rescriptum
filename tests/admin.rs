@@ -712,3 +712,53 @@ fn binding_the_admin_api_beyond_loopback_is_said_out_loud() {
     let log = s.startup_log();
     assert!(log.contains("not bound to loopback"), "{log}");
 }
+
+/// **One producer, two renderings.** `GET /fleet` must be byte-identical to what
+/// `machines --json` prints, because the alternative is a remote view that drifts from the
+/// local one — and the only way to notice would be an operator seeing two different
+/// answers to the same question.
+#[test]
+fn the_fleet_endpoint_is_byte_identical_to_the_command() {
+    let s = Server::start();
+    assert_eq!(
+        status(&s.admin(
+            "PUT",
+            "/machines/98fa9b50d810",
+            "[global]\nkeyboard = \"fr\"\n"
+        )),
+        200
+    );
+
+    let response = s.admin("GET", "/fleet", "");
+    let over_http = response
+        .split_once("\r\n\r\n")
+        .map_or("", |(_, b)| b)
+        .to_string();
+    let from_cli = std::process::Command::new(env!("CARGO_BIN_EXE_rescriptum"))
+        .env("RESCRIPTUM_STORE", "sqlite")
+        .env("RESCRIPTUM_DB_PATH", s.dir.join("answers.db"))
+        .env("RESCRIPTUM_TFTP_ADDR", "off")
+        .args(["machines", "--json"])
+        .output()
+        .expect("run machines --json");
+    let from_cli = String::from_utf8_lossy(&from_cli.stdout).trim().to_string();
+
+    assert_eq!(
+        over_http.trim(),
+        from_cli,
+        "the two renderings have drifted"
+    );
+}
+
+/// It is behind the token like everything else — this API decides what gets installed on
+/// every machine, and a fleet listing is reconnaissance.
+#[test]
+fn the_fleet_endpoint_is_not_readable_without_the_token() {
+    let s = Server::start();
+    let r = Server::raw(
+        &s.admin_addr,
+        "GET /fleet HTTP/1.1\r\nHost: admin\r\n\r\n",
+        &[],
+    );
+    assert_eq!(status(&r), 401, "{r}");
+}

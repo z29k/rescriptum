@@ -51,6 +51,24 @@ jobs:
       # The smallest build has to keep working, or the NAS target rots unnoticed.
       # Both features off, and then each on its own: the combination that ships is not
       # the only one that has to compile.
+      # **The budget that is actually binding: 0 bytes with the feature off.** Asserted on
+      # the *output*, never on the exit code — `cargo tree -i` exits 0 printing
+      # "nothing to print." when the package is an optional dependency whose feature is
+      # off, which is exactly the state being checked, so an exit-code guard would fire
+      # whether or not the crate is there.
+      - name: The default build must not reach the terminal interface
+        run: |
+          graph=$(cargo tree -e normal --prefix none --format '{p}')
+          if echo "$graph" | grep -qE '^(ratatui|crossterm) '; then
+            echo "ratatui or crossterm is in the default dependency graph"; exit 1
+          fi
+          echo "absent, as it must be"
+
+      # `--all-features` does not cover this: the terminal interface must build for a
+      # deployment that wants no boot media either.
+      - name: Build the interface without boot media
+        run: cargo build --release --no-default-features --features tui
+
       - name: Build without SQLite or boot media
         run: cargo build --release --no-default-features
 
@@ -196,11 +214,30 @@ jobs:
         run: command -v cargo-audit >/dev/null || cargo install cargo-audit --locked
 
       # `--deny warnings` also fails on an unmaintained or yanked crate, not only on a
-      # vulnerability. The tree is clean under it today; when something appears that has no
-      # fix, add `--ignore RUSTSEC-…` here with a line saying why, rather than dropping the
-      # flag and losing the rest.
+      # vulnerability. When something appears that has no fix, add `--ignore RUSTSEC-…`
+      # here **with a line saying why**, rather than dropping the flag and losing the rest.
+      #
+      # **`cargo audit` reads `Cargo.lock`, which carries the whole graph whatever the
+      # feature flags say.** All three below come from `ratatui`, reach the tree only
+      # through the optional `tui` feature, and are absent from the default dependency
+      # graph — which the `gates` job asserts separately, on the output of `cargo tree`.
+      # So the answer server that runs as root on a NAS links none of this code.
+      #
+      # * RUSTSEC-2024-0436 — `paste` is unmaintained. A proc-macro, so it runs at build
+      #   time and is not in any shipped binary. No successor is offered.
+      # * RUSTSEC-2026-0002, RUSTSEC-2026-0253 — `lru` unsoundness (`IterMut` and a
+      #   panic-safety hole in `pop`). ratatui 0.29 pins `lru 0.12`; there is no patched
+      #   0.12 to move to, and the interface is not in `default`, not in the `.spk`, and
+      #   not in a release artifact.
+      #
+      # **Revisit when ratatui moves off `lru 0.12`** — these are unsoundness, not
+      # unmaintainedness, and they stay ignored only while nothing shipped links them.
       - name: Advisories
-        run: cargo audit --deny warnings
+        run: |
+          cargo audit --deny warnings \
+            --ignore RUSTSEC-2024-0436 \
+            --ignore RUSTSEC-2026-0002 \
+            --ignore RUSTSEC-2026-0253
 
   cross:
     name: Cross-compile for the NAS, and package it

@@ -26,6 +26,13 @@ Sans argument, `rescriptum` lance le serveur. Tout le reste est une sous-command
 | `rescriptum config --value CLÉ` | une valeur, pour un script — jamais un identifiant |
 | `rescriptum config set C=V …` | éditer le fichier que `RESCRIPTUM_CONFIG` ou `RESCRIPTUM_ENV_FILE` nomme |
 | `rescriptum config unset CLÉ …` | y retirer un réglage |
+| `rescriptum status [--json]` | la flotte en un écran : compteurs, ce qui est armé, problèmes |
+| `rescriptum machines [--json]` | chaque machine, ce qui lui répond, et comment elle est armée |
+| `rescriptum groups [--json]` | membres, chaîne `extends`, ce que chacun revendique |
+| `rescriptum power …` | [contrôle hors bande](../operations/power.md), éteint sans fichier de contrôleurs |
+| `rescriptum install <id>` | vérifier, armer, démarrage réseau, allumer — le geste complet |
+| `rescriptum tui` | la flotte sur un écran — build avec `--features tui` |
+| `rescriptum tui --remote URL` | la même, via l'API admin d'un déploiement — lecture seule, et n'allume rien |
 | `rescriptum --help` | usage et variables d'environnement |
 
 Toutes lisent les mêmes [variables d'environnement](./configuration.md), dont
@@ -49,6 +56,7 @@ $ rescriptum render --body /var/log/rescriptum-captures/2026…-0000.body
 | `<id>` | l'identifiant comme botte de foin, et rien d'autre — assez pour correspondre par nom, pas assez pour un sélecteur sur `serial` |
 | `--query "k=v&k2=v2"` | ces étiquettes, décodées. `path=` fournit aussi `file` et `segment`, et contraint le format comme le ferait une vraie URL |
 | `--body FICHIER` | le fichier verbatim : botte de foin, plus le JSON aplati s'il parse comme du JSON |
+| `<id> --format <ext>` | l'identifiant, contraint à un seul format — pour une machine qui détient `proxmox.toml` **et** `debian.preseed`, le cas pour lequel la disposition existe |
 
 - Le **document** part sur **stdout** ; la ligne `# format=… machine=… group=…` expliquant
   comment il a été obtenu part sur **stderr**. Donc `render … > answer.toml` ne donne que le
@@ -163,6 +171,32 @@ Deux refus sont délibérés :
 Contrairement à toutes les autres sous-commandes, celle-ci fonctionne quand la configuration
 est trop cassée pour démarrer un serveur — un fichier qui ne parse pas, un jeton d'un
 caractère trop court. C'est l'état dont on se sert d'elle pour *sortir*.
+
+## `status` / `machines` / `groups`
+
+```console
+$ rescriptum status
+$ rescriptum machines --json
+$ rescriptum groups
+```
+
+La flotte comme donnée, depuis le même producteur dans les deux rendus — `--json` est ce
+que consomment un panneau de réglages ou un script, et le `GET /fleet` de l'API admin
+renvoie les *mêmes octets* que `machines --json`, pour qu'une vue distante ne puisse pas
+diverger d'une vue locale.
+
+- **« Armée » est une propriété de la résolution, pas d'un répertoire.** Une machine sans
+  document propre est armée si le groupe qui la revendique détient un `.ipxe`, et
+  `machines` le dit — avec l'avertissement qu'une telle machine [ne peut pas se
+  désarmer](../operations/power.md#pourquoi-un-groupe-ne-peut-pas-armer-une-installation).
+- **Une machine qu'un groupe se contente de nommer reste une machine.** Elle n'a pas de
+  document, donc elle serait invisible autrement, et une baie armée entièrement depuis un
+  groupe aurait l'air d'une flotte vide.
+- **`installed-<id>` est un état, pas une identité.** Il est replié dans la machine qu'il
+  nomme et signalé comme *désarmée par une installation précédente*.
+- `status` sort en **0** même quand le jeu de réponses a des problèmes : zéro problème est
+  l'état normal, et crier au loup ici le rendrait inutile. C'est [`check`](#check) qui
+  conditionne un code de sortie là-dessus.
 
 ## `media`
 
