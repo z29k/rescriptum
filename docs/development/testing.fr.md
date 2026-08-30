@@ -8,7 +8,7 @@ sidebar:
 
 # Tests
 
-619 tests. `cargo test` les fait tous tourner en une vingtaine de secondes — dont
+734 tests. `cargo test` les fait tous tourner en une vingtaine de secondes — dont
 l'essentiel dans `tests/tftp.rs`, qui attend de vrais délais UDP parce que c'est
 précisément ce qu'il teste.
 
@@ -28,15 +28,23 @@ cargo test --all-features                 # ce que lance la CI
 
 | Suite | Cas | Pour |
 |---|---|---|
-| `tests/integration.rs` | 52 | le vrai binaire sur une vraie socket |
-| `tests/cli.rs` | 65 | `render`, `check`, `import`, `export`, `config` et le fichier d'environnement — contre le vrai binaire |
+| `tests/integration.rs` | 53 | le vrai binaire sur une vraie socket |
+| `tests/cli.rs` | 89 | `render`, `check`, `import`, `export`, `config` et le fichier d'environnement — contre le vrai binaire |
 | `tests/media.rs` | 45 | les médias de démarrage contre le vrai binaire, les deux listeners debout |
 | `src/config.rs` | 56 | l'environnement, ce qui refuse de démarrer, et qui l'emporte du fichier ou de l'environnement |
 | `tests/stores.rs` | 48 | **chaque comportement, contre les deux stores** |
+| `tests/power.rs` | 12 | le client Redfish, contre un service factice auquel **le vrai curl** parle |
 | `tests/tftp.rs` | 30 | le TFTP sur de l'UDP réel : les tours de parole, et ce qu'une liaison ratée ne doit pas coûter |
 | `src/select.rs` | 29 | normalisation, scoring, superposition, remplissage de templates |
 | `src/format/mod.rs` | 28 | parsing, fusion, clés de contrôle, alias d'endpoint |
-| `tests/admin.rs` | 26 | l'API d'administration de bout en bout, formats compris |
+| `src/tui.rs` | 13 | ce qu'une interface terminal retient, et quand elle a le droit de travailler — sans dessin |
+| `src/tail.rs` | 12 | suivre le log : rotation, troncature, et la surface d'analyse |
+| `src/edit.rs` | 8 | l'aller-retour $EDITOR, à travers le garde |
+| `src/power.rs` | 9 | piloter un contrôleur, et ce qu'un hook tué rapporte |
+| `src/guard.rs` | 5 | l'écriture gardée, et le rollback sur le store fichier |
+| `src/controllers.rs` | 18 | the controllers file: what it refuses, and why each refusal exists |
+| `src/redfish.rs` | 12 | curl's option file, the quoting, and reading a vendor's error |
+| `tests/admin.rs` | 28 | l'API d'administration de bout en bout, formats compris |
 | `src/envfile.rs` | 23 | le parseur et l'écrivain du fichier d'environnement, et ce que chacun refuse |
 | `src/facts.rs` | 22 | parsing de query, aplatissement JSON, globbing |
 | `src/format/xml.rs` | 18 | l'arbre XML — appariement, entités, fidélité |

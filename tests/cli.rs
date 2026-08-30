@@ -187,7 +187,11 @@ fn render_with_a_path_is_constrained_the_way_the_real_url_would_be() {
     let ks = c.run(&["render", "--query", "path=/rhel/ks&mac=98:fa:9b:50:d8:10"]);
     assert!(ks.ok, "{ks}");
     assert!(ks.stdout.contains("lang fr_FR"), "{ks}");
-    assert!(ks.stderr.contains("format=text"), "{ks}");
+    // The **extension**, not the family. This used to read `format=text`, which made
+    // `.ks`, `.preseed`, `.cfg`, `.seed` and `.ipxe` indistinguishable in the log — and a
+    // log that cannot tell a boot script from an answer document cannot say which
+    // machines are mid-install.
+    assert!(ks.stderr.contains("format=ks"), "{ks}");
 
     let toml = c.run(&[
         "render",
@@ -1667,4 +1671,537 @@ fn migrate_refuses_the_whole_run_when_a_destination_is_taken() {
         c.dir.join("aabbccddeeff.toml").is_file(),
         "an unrelated document moved during a run that failed"
     );
+}
+
+// ---- power ---------------------------------------------------------------
+
+/// A controllers file, written `0600` the way the parser insists on, and **outside the
+/// answers directory** — it is a `.toml`, so dropped inside one it would be a misplaced
+/// answer document, exactly as a configuration file is. `Case::etc` is that place.
+#[cfg(unix)]
+fn controllers(case: &Case, body: &str) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = case.etc();
+    fs::create_dir_all(&dir).expect("scratch etc");
+    let path = dir.join("controllers.toml");
+    fs::write(&path, body).expect("write controllers");
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).expect("chmod");
+    path
+}
+
+#[cfg(unix)]
+const TWO_CONTROLLERS: &str = r#"
+["98-fa-9b-50-d8-10"]
+kind = "redfish"
+url = "https://10.0.0.51"
+user = "root"
+pass = "calvin"
+verify = false
+
+["aa-bb-cc-dd-ee-ff"]
+kind = "command"
+on  = ["/usr/local/bin/pdu", "outlet", "7", "on"]
+off = ["/usr/local/bin/pdu", "outlet", "7", "off"]
+"#;
+
+/// Unset means the feature does not exist, the way `RESCRIPTUM_MEDIA_DIR` works.
+#[test]
+fn power_without_a_controllers_file_says_which_variable_names_one() {
+    let c = Case::new(&[("98fa9b50d810.toml", "[global]\nkeyboard = \"fr\"\n")]);
+    let r = c.run(&["power", "list"]);
+    assert!(!r.ok, "{r}");
+    assert!(r.stderr.contains("RESCRIPTUM_CONTROLLERS_FILE"), "{r}");
+}
+
+/// **Both sides of the join**, and the machine/group distinction on the answer side —
+/// which is what `install` will refuse on, so it had better be visible before then.
+#[cfg(unix)]
+#[test]
+fn power_list_joins_controllers_to_the_answer_set() {
+    let c = Case::new(&[
+        ("98fa9b50d810.toml", "[global]\nkeyboard = \"fr\"\n"),
+        (
+            "groups/rack-a.toml",
+            "members = [\"11:22:33:44:55:66\"]\n[global]\nkeyboard = \"us\"\n",
+        ),
+    ]);
+    let file = controllers(
+        &c,
+        &format!("{TWO_CONTROLLERS}\n[\"11-22-33-44-55-66\"]\nkind = \"command\"\non = [\"x\"]\n"),
+    );
+    let r = c.run_env(
+        &[
+            ("RESCRIPTUM_ANSWERS_DIR", c.dir.as_path()),
+            ("RESCRIPTUM_CONTROLLERS_FILE", file.as_path()),
+        ],
+        &["power", "list"],
+    );
+
+    assert!(r.ok, "{r}");
+    assert!(r.stdout.contains("98-fa-9b-50-d8-10"), "{r}");
+    assert!(r.stdout.contains("answered by its own document"), "{r}");
+    // A controller for a machine nothing answers is not an error — you may be able to
+    // power a machine you have no answer for.
+    assert!(r.stdout.contains("nothing answers it"), "{r}");
+    // And one answered only by its group, which is the case that cannot disarm itself.
+    assert!(r.stdout.contains("answered by a group"), "{r}");
+    assert!(r.stdout.contains("3 controller(s)"), "{r}");
+}
+
+/// Said every time, because it is the thing somebody meant to fix later and did not.
+#[cfg(unix)]
+#[test]
+fn power_list_says_out_loud_which_controllers_are_unverified() {
+    let c = Case::new(&[("98fa9b50d810.toml", "[global]\nkeyboard = \"fr\"\n")]);
+    let file = controllers(&c, TWO_CONTROLLERS);
+    let r = c.run_env(
+        &[
+            ("RESCRIPTUM_ANSWERS_DIR", c.dir.as_path()),
+            ("RESCRIPTUM_CONTROLLERS_FILE", file.as_path()),
+        ],
+        &["power", "list"],
+    );
+    assert!(r.ok, "{r}");
+    assert!(r.stdout.contains("verify = false"), "{r}");
+    // A controller that cannot arm a one-time boot is described, not treated as broken:
+    // the boot order stays on PXE and the server decides.
+    assert!(r.stdout.contains("the server decides"), "{r}");
+}
+
+/// Refused at use, not warned about — unlike the env file, where refusing would stop an
+/// otherwise healthy server.
+#[cfg(unix)]
+#[test]
+fn power_refuses_a_controllers_file_others_can_read() {
+    use std::os::unix::fs::PermissionsExt;
+    let c = Case::new(&[("98fa9b50d810.toml", "[global]\nkeyboard = \"fr\"\n")]);
+    let file = controllers(&c, TWO_CONTROLLERS);
+    fs::set_permissions(&file, fs::Permissions::from_mode(0o644)).expect("chmod");
+
+    let r = c.run_env(
+        &[
+            ("RESCRIPTUM_ANSWERS_DIR", c.dir.as_path()),
+            ("RESCRIPTUM_CONTROLLERS_FILE", file.as_path()),
+        ],
+        &["power", "list"],
+    );
+    assert!(!r.ok, "{r}");
+    assert!(r.stderr.contains("chmod 600"), "{r}");
+}
+
+/// The server must not read this file, so a broken one cannot stop it answering — that is
+/// the whole reason it is not a startup error.
+#[cfg(unix)]
+#[test]
+fn a_broken_controllers_file_does_not_stop_the_other_commands() {
+    let c = Case::new(&[("98fa9b50d810.toml", "[global]\nkeyboard = \"fr\"\n")]);
+    let file = controllers(&c, "this is not toml at all");
+    let r = c.run_env(
+        &[
+            ("RESCRIPTUM_ANSWERS_DIR", c.dir.as_path()),
+            ("RESCRIPTUM_CONTROLLERS_FILE", file.as_path()),
+        ],
+        &["check"],
+    );
+    assert!(r.ok, "check must not care about the controllers file\n{r}");
+
+    // But the command that does read it says why, naming the line.
+    let r = c.run_env(
+        &[
+            ("RESCRIPTUM_ANSWERS_DIR", c.dir.as_path()),
+            ("RESCRIPTUM_CONTROLLERS_FILE", file.as_path()),
+        ],
+        &["power", "list"],
+    );
+    assert!(!r.ok, "{r}");
+}
+
+/// The same rule the configuration file has, for the same reason: this format shares the
+/// `.toml` extension with an answer document, so a controllers file dropped at the top of
+/// the answers directory is a misplaced answer and is reported rather than served.
+#[cfg(unix)]
+#[test]
+fn a_controllers_file_inside_the_answers_directory_is_reported_as_a_stray_answer() {
+    let c = Case::new(&[("98fa9b50d810.toml", "[global]\nkeyboard = \"fr\"\n")]);
+    let stray = c.dir.join("controllers.toml");
+    fs::write(&stray, TWO_CONTROLLERS).expect("write");
+
+    let r = c.run(&["check"]);
+    assert!(!r.ok, "a stray .toml must fail check\n{r}");
+    assert!(r.stdout.contains("controllers.toml"), "{r}");
+}
+
+/// Resolved rather than hard-coded: `/bin/true` exists on Linux and not on macOS. A
+/// hard-coded path here is the "passed locally, failed in CI" trap this repository has
+/// already been caught by once.
+#[cfg(unix)]
+fn tool(name: &str) -> String {
+    ["/usr/bin", "/bin"]
+        .iter()
+        .map(|dir| format!("{dir}/{name}"))
+        .find(|p| Path::new(p).is_file())
+        .unwrap_or_else(|| panic!("no {name} on this system"))
+}
+
+#[cfg(unix)]
+fn power_case() -> (Case, PathBuf) {
+    let c = Case::new(&[("aabbccddeeff.toml", "[global]\nkeyboard = \"fr\"\n")]);
+    let file = controllers(
+        &c,
+        &format!(
+            "[\"aa-bb-cc-dd-ee-ff\"]\nkind = \"command\"\non = [\"{}\"]\noff = [\"{}\"]\n",
+            tool("true"),
+            tool("false")
+        ),
+    );
+    (c, file)
+}
+
+#[cfg(unix)]
+fn run_power(c: &Case, file: &Path, args: &[&str]) -> Run {
+    c.run_env(
+        &[
+            ("RESCRIPTUM_ANSWERS_DIR", c.dir.as_path()),
+            ("RESCRIPTUM_CONTROLLERS_FILE", file),
+        ],
+        args,
+    )
+}
+
+/// A controller that presses a button has no way to know, and saying "off" would be an
+/// invention an operator would act on.
+#[cfg(unix)]
+#[test]
+fn power_status_of_a_command_controller_is_unknown_rather_than_guessed() {
+    let (c, file) = power_case();
+    let r = run_power(&c, &file, &["power", "status", "aa:bb:cc:dd:ee:ff"]);
+    assert!(r.ok, "{r}");
+    assert!(r.stdout.contains("unknown"), "{r}");
+}
+
+#[cfg(unix)]
+#[test]
+fn power_on_runs_the_hook_and_power_off_reports_its_exit_code() {
+    let (c, file) = power_case();
+    let on = run_power(&c, &file, &["power", "on", "aa:bb:cc:dd:ee:ff"]);
+    assert!(on.ok, "{on}");
+    assert!(on.stdout.contains("power on sent"), "{on}");
+
+    // The fixture's `off` is `false`, so a failing hook must fail the command rather than
+    // being reported as done.
+    let off = run_power(&c, &file, &["power", "off", "aa:bb:cc:dd:ee:ff"]);
+    assert!(!off.ok, "a failing hook must not report success\n{off}");
+    assert!(off.stderr.contains("exited 1"), "{off}");
+}
+
+/// Not a failure: the boot order stays on the network and the server decides whether the
+/// machine installs — which is what `RESCRIPTUM_BOOT_UNCLAIMED` already does.
+#[cfg(unix)]
+#[test]
+fn power_pxe_on_a_controller_without_one_explains_rather_than_failing() {
+    let (c, file) = power_case();
+    let r = run_power(&c, &file, &["power", "pxe", "aa:bb:cc:dd:ee:ff"]);
+    assert!(r.ok, "{r}");
+    assert!(r.stdout.contains("no boot override"), "{r}");
+    assert!(r.stdout.contains("let the server decide"), "{r}");
+}
+
+#[cfg(unix)]
+#[test]
+fn an_unknown_machine_is_told_what_is_configured_instead() {
+    let (c, file) = power_case();
+    let r = run_power(&c, &file, &["power", "on", "11:22:33:44:55:66"]);
+    assert!(!r.ok, "{r}");
+    assert!(r.stderr.contains("aa-bb-cc-dd-ee-ff"), "{r}");
+}
+
+/// `list` must not probe, `list --state` must — and must say it is going to, because a
+/// rack of unreachable BMCs otherwise looks like a hang.
+#[cfg(unix)]
+#[test]
+fn only_list_with_state_asks_the_controllers_anything() {
+    let (c, file) = power_case();
+    let plain = run_power(&c, &file, &["power", "list"]);
+    assert!(plain.ok, "{plain}");
+    assert!(
+        !plain.stderr.contains("asking"),
+        "a plain listing must not probe\n{plain}"
+    );
+
+    let probed = run_power(&c, &file, &["power", "list", "--state"]);
+    assert!(probed.ok, "{probed}");
+    assert!(probed.stderr.contains("asking 1 controller"), "{probed}");
+    assert!(probed.stdout.contains("unknown"), "{probed}");
+}
+
+// ---- install -------------------------------------------------------------
+
+#[cfg(unix)]
+const ARMED_MACHINE: &[(&str, &str)] = &[
+    ("aabbccddeeff.toml", "[global]\nkeyboard = \"fr\"\n"),
+    ("aabbccddeeff.ipxe", "#!ipxe\nchain http://x/answer\n"),
+];
+
+#[cfg(unix)]
+fn install_case(files: &[(&str, &str)]) -> (Case, PathBuf) {
+    let c = Case::new(files);
+    let file = controllers(
+        &c,
+        &format!(
+            "[\"aabbccddeeff\"]\nkind = \"command\"\non = [\"{}\"]\n",
+            tool("true")
+        ),
+    );
+    (c, file)
+}
+
+#[cfg(unix)]
+fn run_install(c: &Case, file: &Path, env: &[(&str, &Path)], args: &[&str]) -> Run {
+    let mut all: Vec<(&str, &Path)> = vec![
+        ("RESCRIPTUM_ANSWERS_DIR", c.dir.as_path()),
+        ("RESCRIPTUM_CONTROLLERS_FILE", file),
+    ];
+    all.extend_from_slice(env);
+    c.run_env(&all, args)
+}
+
+#[cfg(unix)]
+#[test]
+fn install_renders_every_format_before_anything_is_powered() {
+    let (c, file) = install_case(ARMED_MACHINE);
+    let r = run_install(&c, &file, &[], &["install", "aa:bb:cc:dd:ee:ff"]);
+    assert!(r.ok, "{r}");
+    // Both documents, not a guess at which one the boot script leads to.
+    assert!(r.stdout.contains("ok   toml"), "{r}");
+    assert!(r.stdout.contains("ok   ipxe"), "{r}");
+    assert!(r.stdout.contains("installing"), "{r}");
+}
+
+/// Powering on a machine that boots into a broken answer leaves an installer sitting at a
+/// prompt in a rack — the exact failure this project exists to prevent.
+#[cfg(unix)]
+#[test]
+fn install_refuses_when_a_document_would_not_render() {
+    let (c, file) = install_case(&[
+        // A machine whose answer names a group that does not exist.
+        ("aabbccddeeff.toml", "extends = \"nowhere\"\n"),
+        ("aabbccddeeff.ipxe", "#!ipxe\nchain http://x/answer\n"),
+    ]);
+    let r = run_install(&c, &file, &[], &["install", "aa:bb:cc:dd:ee:ff"]);
+    assert!(!r.ok, "{r}");
+    assert!(r.stderr.contains("nothing has been powered on"), "{r}");
+}
+
+/// **The refusal the whole group-arming finding produced.** A machine armed only by its
+/// group installs, reports success, is never disarmed, and installs again forever.
+#[cfg(unix)]
+#[test]
+fn install_refuses_a_machine_armed_only_by_its_group() {
+    let (c, file) = install_case(&[
+        ("aabbccddeeff.toml", "[global]\nkeyboard = \"fr\"\n"),
+        (
+            "groups/rack-a.ipxe",
+            "# answer: member aa:bb:cc:dd:ee:ff\n#!ipxe\nchain http://x/answer\n",
+        ),
+    ]);
+    let r = run_install(&c, &file, &[], &["install", "aa:bb:cc:dd:ee:ff"]);
+    assert!(!r.ok, "{r}");
+    assert!(r.stderr.contains("a group is never disarmed"), "{r}");
+    assert!(r.stderr.contains("reinstall itself"), "{r}");
+}
+
+/// Refused in **both** unclaimed modes, for different reasons — one is dangerous and the
+/// other is merely useless, and an operator should be told which.
+#[cfg(unix)]
+#[test]
+fn install_refuses_an_unarmed_machine_differently_in_each_unclaimed_mode() {
+    let (c, file) = install_case(&[("aabbccddeeff.toml", "[global]\nkeyboard = \"fr\"\n")]);
+
+    let menu = run_install(&c, &file, &[], &["install", "aa:bb:cc:dd:ee:ff"]);
+    assert!(!menu.ok, "{menu}");
+    assert!(menu.stderr.contains("boot menu"), "{menu}");
+
+    let local = run_install(
+        &c,
+        &file,
+        &[("RESCRIPTUM_BOOT_UNCLAIMED", Path::new("local"))],
+        &["install", "aa:bb:cc:dd:ee:ff"],
+    );
+    assert!(!local.ok, "{local}");
+    assert!(
+        local
+            .stderr
+            .contains("looks exactly like a successful install"),
+        "the dangerous case must say so\n{local}"
+    );
+}
+
+/// The archive is reused rather than an image argument invented, so the operator's own
+/// document comes back byte for byte — and `installed-` directories stop accumulating.
+#[cfg(unix)]
+#[test]
+fn install_puts_back_what_a_previous_install_archived() {
+    let (c, file) = install_case(&[
+        ("aabbccddeeff.toml", "[global]\nkeyboard = \"fr\"\n"),
+        (
+            "installed-aabbccddeeff.ipxe",
+            "#!ipxe\n# the operator's own words\nchain http://x/answer\n",
+        ),
+    ]);
+    let r = run_install(&c, &file, &[], &["install", "aa:bb:cc:dd:ee:ff"]);
+    assert!(r.ok, "{r}");
+    assert!(r.stdout.contains("disarmed by a previous install"), "{r}");
+    assert!(r.stdout.contains("boot script is back"), "{r}");
+
+    // Byte for byte, and the archive is gone rather than left to accumulate.
+    let back = fs::read_to_string(c.dir.join("aabbccddeeff/boot.ipxe")).expect("restored");
+    assert!(back.contains("the operator's own words"), "{back}");
+    assert!(!c.dir.join("installed-aabbccddeeff").exists());
+}
+
+/// `--dry-run` proves the whole chain without touching the hardware, which is what makes
+/// it safe to check a rack before powering any of it.
+#[cfg(unix)]
+#[test]
+fn install_dry_run_changes_nothing() {
+    let (c, file) = install_case(&[
+        ("aabbccddeeff.toml", "[global]\nkeyboard = \"fr\"\n"),
+        ("installed-aabbccddeeff.ipxe", "#!ipxe\nchain http://x/a\n"),
+    ]);
+    let r = run_install(
+        &c,
+        &file,
+        &[],
+        &["install", "aa:bb:cc:dd:ee:ff", "--dry-run"],
+    );
+    assert!(r.ok, "{r}");
+    assert!(r.stdout.contains("nothing was powered on"), "{r}");
+    // The archive is still archived: a dry run must not arm anything either.
+    assert!(c.dir.join("installed-aabbccddeeff").exists());
+}
+
+/// A second armed machine, so the refusal is genuinely about the missing controller
+/// rather than about the answer set — the checks run in that order on purpose, and a test
+/// that cannot tell them apart proves the wrong one.
+#[cfg(unix)]
+#[test]
+fn install_without_a_controller_says_so_rather_than_half_arming() {
+    let mut files = ARMED_MACHINE.to_vec();
+    files.push(("112233445566.toml", "[global]\nkeyboard = \"fr\"\n"));
+    files.push(("112233445566.ipxe", "#!ipxe\nchain http://x/answer\n"));
+    let (c, file) = install_case(&files);
+
+    let r = run_install(&c, &file, &[], &["install", "11:22:33:44:55:66"]);
+    assert!(!r.ok, "{r}");
+    assert!(r.stderr.contains("no controller"), "{r}");
+    // It got past the answer checks, which is what makes this about the controller.
+    assert!(r.stdout.contains("armed by its own document"), "{r}");
+}
+
+// ---- the read model ------------------------------------------------------
+
+const FLEET: &[(&str, &str)] = &[
+    ("98fa9b50d810.toml", "[global]\nkeyboard = \"fr\"\n"),
+    ("98fa9b50d810.ipxe", "#!ipxe\nchain http://x/a\n"),
+    (
+        "groups/rack-a.toml",
+        "extends = \"base\"\nmembers = [\"11:22:33:44:55:66\"]\n[global]\nkeyboard = \"us\"\n",
+    ),
+    ("groups/base.toml", "[global]\ncountry = \"fr\"\n"),
+    ("installed-aabbccddeeff.ipxe", "#!ipxe\nchain http://x/a\n"),
+];
+
+#[test]
+fn machines_lists_what_answers_each_one_and_how_it_is_armed() {
+    let c = Case::new(FLEET);
+    let r = c.run(&["machines"]);
+    assert!(r.ok, "{r}");
+    assert!(r.stdout.contains("98fa9b50d810"), "{r}");
+    assert!(r.stdout.contains("armed"), "{r}");
+    // A machine a group only names has no documents of its own, and is still a machine.
+    assert!(
+        r.stdout.contains("11:22:33:44:55:66") || r.stdout.contains("112233445566"),
+        "{r}"
+    );
+    // An archive is a *state* of the machine it names, not a machine of its own.
+    assert!(!r.stdout.contains("installed-"), "{r}");
+    assert!(r.stdout.contains("disarmed by a previous install"), "{r}");
+}
+
+#[test]
+fn groups_shows_the_extends_chain_and_what_each_one_claims() {
+    let c = Case::new(FLEET);
+    let r = c.run(&["groups"]);
+    assert!(r.ok, "{r}");
+    assert!(r.stdout.contains("extends base"), "{r}");
+    assert!(r.stdout.contains("1 member(s)"), "{r}");
+}
+
+#[test]
+fn status_counts_the_fleet_and_names_the_group_armed_ones() {
+    let c = Case::new(&[
+        (
+            "groups/rack-a.ipxe",
+            "# answer: member aa:bb:cc:dd:ee:ff\n#!ipxe\nchain http://x/a\n",
+        ),
+        (
+            "groups/rack-a.toml",
+            "members = [\"aa:bb:cc:dd:ee:ff\"]\n[g]\nx = 1\n",
+        ),
+    ]);
+    let r = c.run(&["status"]);
+    assert!(r.ok, "{r}");
+    assert!(r.stdout.contains("armed by a group"), "{r}");
+    assert!(r.stdout.contains("cannot disarm"), "{r}");
+}
+
+/// Zero problems is the normal state, so a non-zero exit here would cry wolf. `check` is
+/// what keys an exit code on the answer set.
+#[test]
+fn status_succeeds_even_when_the_answer_set_has_problems() {
+    let c = Case::new(&[("98fa9b50d810.toml", "extends = \"nowhere\"\n")]);
+    let r = c.run(&["status"]);
+    assert!(r.ok, "status must report, not judge\n{r}");
+    assert!(r.stdout.contains("problem:"), "{r}");
+    // And `check` still fails on the same set, which is the one that gates a deploy.
+    assert!(!c.run(&["check"]).ok);
+}
+
+#[test]
+fn the_json_form_is_parseable_and_says_the_same_thing() {
+    let c = Case::new(FLEET);
+    for (args, key) in [
+        (["machines", "--json"], "machines"),
+        (["groups", "--json"], "groups"),
+        (["status", "--json"], "armed"),
+    ] {
+        let r = c.run(&args);
+        assert!(r.ok, "{r}");
+        let v: serde_json::Value =
+            serde_json::from_str(r.stdout.trim()).unwrap_or_else(|e| panic!("{args:?}: {e}\n{r}"));
+        assert!(v.get(key).is_some(), "{args:?} has no {key}: {r}");
+    }
+}
+
+/// A machine holding two formats is the case the layout exists for, so asking for one of
+/// them should not be a trick.
+#[test]
+fn render_can_be_asked_for_one_named_format() {
+    let c = Case::new(&[
+        ("98fa9b50d810.toml", "[global]\nkeyboard = \"fr\"\n"),
+        (
+            "98fa9b50d810.preseed",
+            "d-i debian-installer/locale string fr_FR\n",
+        ),
+    ]);
+    let toml = c.run(&["render", "98:fa:9b:50:d8:10", "--format", "toml"]);
+    assert!(toml.ok, "{toml}");
+    assert!(toml.stdout.contains("keyboard"), "{toml}");
+
+    let preseed = c.run(&["render", "98:fa:9b:50:d8:10", "--format", "preseed"]);
+    assert!(preseed.ok, "{preseed}");
+    assert!(preseed.stdout.contains("debian-installer"), "{preseed}");
+
+    let nonsense = c.run(&["render", "98:fa:9b:50:d8:10", "--format", "txt"]);
+    assert!(!nonsense.ok, "txt is deliberately not a format\n{nonsense}");
 }

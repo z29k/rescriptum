@@ -31,6 +31,7 @@ quelque chose que l'environnement ne dirait pas.
 | `RESCRIPTUM_ADMIN_ADDR` | non défini | Listener de l'API d'administration. Non défini = API désactivée |
 | `RESCRIPTUM_ADMIN_TOKEN` | non défini | Jeton d'administration, 16+ caractères. Obligatoire avec `RESCRIPTUM_ADMIN_ADDR` |
 | `RESCRIPTUM_CAPTURE_DIR` | non défini | Enregistre les corps de requête ici. Non défini = pas de capture |
+| `RESCRIPTUM_CONTROLLERS_FILE` | non défini | Contrôleurs hors bande, pour `power` et `install`. **Le serveur ne le lit jamais.** Non défini, il n'y a aucun contrôle d'alimentation |
 | `RESCRIPTUM_LOG` | `all` | `all`, `problems` ou `off` — voir [plus bas](#journalisation) |
 | `RESCRIPTUM_LOG_FILE` | non défini | Un fichier où ajouter, ou `stdout` / `stderr`. Non défini = stderr |
 | `RESCRIPTUM_MEDIA_DIR` | non défini | Images d'installation. **Non défini = pas de média et pas de listener média** |
@@ -162,6 +163,7 @@ orthographes.
 | `server.workers`, `server.max_connections`, `server.timeout_secs` | `RESCRIPTUM_WORKERS`, `RESCRIPTUM_MAX_CONNECTIONS`, `RESCRIPTUM_TIMEOUT_SECS` |
 | `admin.addr`, `admin.token` | `RESCRIPTUM_ADMIN_ADDR`, `RESCRIPTUM_ADMIN_TOKEN` |
 | `answer.token`, `answer.capture_dir` | `RESCRIPTUM_ANSWER_TOKEN`, `RESCRIPTUM_CAPTURE_DIR` |
+| `power.controllers_file` | `RESCRIPTUM_CONTROLLERS_FILE` |
 | `media.dir`, `media.addr`, `media.timeout_secs`, `media.max_connections` | les quatre `RESCRIPTUM_MEDIA_*` |
 | `boot.dir`, `boot.allow`, `boot.unclaimed`, `boot.timeout_secs`, `boot.logo`, `boot.title` | les six `RESCRIPTUM_BOOT_*` |
 | `tftp.addr`, `tftp.port_range`, `tftp.blksize` | les trois `RESCRIPTUM_TFTP_*` |

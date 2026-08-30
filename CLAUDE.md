@@ -416,6 +416,20 @@ spend into an apparent 293% overrun.**
 | `boot` only | 1,649,048 |
 | neither | 1,392,544 |
 
+Re-measured 2026-08-30 with the terminal interface, same target and floor:
+
+| Build | Bytes | Against the default |
+|---|---|---|
+| default (`sqlite` + `boot`) | 2,900,408 | — |
+| default + `tui` | 3,099,816 | **+199,408 (+6.9%)** |
+
+`tui` also costs **45 locked packages** (74 → 119), and that is the number that matters
+more: `Cargo.lock` carries the whole graph whatever the feature flag says, so `cargo audit`,
+`clippy --all-features` and `test --all-features` all see them. An advisory reachable only
+through that graph gets `--ignore RUSTSEC-…` with that reason written beside it. **The
+shipped answer server links none of it**, and CI asserts that on the *output* of
+`cargo tree` rather than its exit code.
+
 Re-measured 2026-08-29 on armv7-gnueabihf (floor 2.17), all four in one sitting. **Both
 tables that held these numbers were stale by roughly 200 KB** — this one and
 `docs/guide/reference/configuration`, which disagreed with each other as well.
@@ -680,28 +694,43 @@ could not check. Note it needs `Resolution::format_name` (the extension), not
 - **`git checkout <file>` to undo a deliberately-broken test also undoes the work.** Copy
   the file aside before breaking it to watch a test fail; a `git checkout` here silently
   reverted a whole feature and its test, and only a `grep` afterwards caught it.
-- **The listing cache made `admin::guarded` blind over the file store.** `version()` there
-  is the answers directory's mtime, which does not move when a document is written *inside*
-  an existing identity's directory — so the guard compared a write against itself, found no
-  difference, and kept something that broke the answer set. It forces both reads through
-  `Answers::invalidate` now. Note which side matters: a stale `after` is a rollback that
-  never runs and fails **open**; a stale `before` merely blames this write for a
-  pre-existing problem and fails closed.
-- **A `pid`-only temporary filename disambiguates processes and not threads.** Two writes
-  to one document inside one process share the path, and one silently takes the other's
-  content. `store::file::write_atomic` has a counter for this.
-- **`log::init` ran before subcommand dispatch, and an unopenable log file is fatal.** On a
-  packaged deployment `RESCRIPTUM_LOG_FILE` belongs to the service user, so any subcommand
-  run by anybody else died on `cannot be opened` before its subcommand was looked at. The
-  destination is now a property of *what is being run*: a server logs where the variable
-  says, a subcommand logs to stderr. `Config::validate` deliberately stayed fatal for
-  both — `tests/tftp.rs` pins that.
+- **`cargo tree -i <pkg>` exits 0, printing `warning: nothing to print.`, when the package
+  is an optional dependency whose feature is off.** It exits 101 when the package is absent
+  from the manifest entirely. So a guard written as `cargo tree -i x >/dev/null && exit 1`
+  fires in *both* states and reddens CI forever. **Assert on the output, never on the exit
+  code** — `cargo tree -e normal --prefix none --format '{p}' | grep -q '^x '`. Measured
+  against `rusqlite` in all three feature states.
+- **`/bin/true` and `/bin/false` do not exist on macOS**; they are `/usr/bin`. `/bin/sleep`
+  exists on macOS and `/usr/bin/sleep` does not. A test that spawns a standard tool must
+  resolve it from a candidate list, or it is the "passed locally, failed in CI for a reason
+  unrelated to the change" trap with a new hat on.
+- **A `pid`-only temporary name disambiguates processes and not threads.** `store::file`'s
+  `write_atomic` had it, and `edit::scratch_path` reintroduced it two hours after it was
+  fixed — three tests passed alone and failed in the full suite, because they edited the
+  same document at once. Add a counter.
+- **A `"#` inside `r#"…"#` ends the raw string.** `"#ComputerSystem.Reset"` in a Redfish
+  fixture does exactly that, and the error is `prefix ... is unknown`, which points
+  nowhere near it. Use `r##"…"##`.
+- **curl's `--fail` discards the response body on an error status** — which for Redfish is
+  `error.@Message.ExtendedInfo[].Message`, the sentence the vendor wrote about what went
+  wrong. Read the status with `--write-out` instead, and note that `-w` writes to *stdout*
+  where the body already is: a newline plus the code, split from the right, keeps both.
+  And `--data` sends a form content type, which Redfish answers with 415.
+- **A Redfish `PATCH` can answer `204 No Content` and do nothing at all.** PiKVM's does,
+  verified in kvmd's source, while reporting `BootSourceOverrideEnabled: "Disabled"`. So a
+  boot override must be **read back**; the status code is not evidence. Its `@odata.id`
+  also says `/redfish/v1/...` while the service is mounted at `/api/redfish/v1`, so **never
+  follow a URL out of a response body** — take the last segment and compose from `base`.
+- **A log follower must notice two kinds of rotation.** `logrotate --create` replaces the
+  file so the inode changes; `copytruncate` keeps it and empties it, so only the length
+  going backwards gives it away. Checking one and not the other stops the screen updating
+  for half the deployments, silently.
 - **A group's `.ipxe` arms machines that can never be disarmed.** `installed::disarm` moves
   a *machine's* own document and never a group's, so a machine armed only by its group
   installs, reports success, is not disarmed, and installs again on its next network boot —
   while the webhook logs `nothing was claiming it`, which reads like it worked. The
   project's own `examples/groups/edge-router/boot.ipxe` did this and `check` called it
-  green; `check` reports it now.
+  green. `install` refuses it now and `check` reports it.
 
 ## Layout on disk, and the core algorithm
 
@@ -801,6 +830,7 @@ and the TOML file wins over the env file**:
 | `RESCRIPTUM_TIMEOUT_SECS` | `10` | Header-read timeout **and** whole-connection deadline |
 | `RESCRIPTUM_LOG` | `all` | `all` \| `problems` (drops the requests that worked) \| `off` |
 | `RESCRIPTUM_LOG_FILE` | unset | A file to append to, or `stdout`/`stderr`. Unopenable is fatal |
+| `RESCRIPTUM_CONTROLLERS_FILE` | unset | Out-of-band controllers (`src/controllers.rs`), for `power` and `install`. **The server never reads it** — a broken one must not stop the answer listener. Refused at use if group-readable |
 | `RESCRIPTUM_MEDIA_DIR` | unset | Installer images. **Unset is the whole off switch for boot media** |
 | `RESCRIPTUM_MEDIA_ADDR` | `0.0.0.0:8001` | The media listener, when there is a media directory |
 | `RESCRIPTUM_MEDIA_TIMEOUT_SECS` | `600` | Whole-transfer deadline — deliberately not the answer listener's 10 |
@@ -939,7 +969,7 @@ is the procedure*), which `AGENTS.md` also points at.
 
 ## Testing expectations
 
-619 tests, plus the package's own harnesses (see *The DSM package*, and note that
+734 tests, plus the package's own harnesses (see *The DSM package*, and note that
 `cargo test` does not run those). `docs/development/testing.md` has the per-suite table;
 the rules that decide where a test goes:
 

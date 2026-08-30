@@ -46,6 +46,7 @@ at the file store, leave the token out, or set a token shorter than 16 character
 | `DELETE /machines/{id}`, `DELETE /groups/{name}`, `DELETE /default` | remove one |
 | `GET /resolve/{id}` | the **merged** answer that machine would receive |
 | `GET /check` | current problems, the same set as the `check` subcommand |
+| `GET /fleet` | every machine, what answers it and how it is armed — **byte for byte what `machines --json` prints**, from the same producer, so a remote view cannot drift from a local one |
 | `GET /health` | liveness — the only endpoint needing no token, and never blocked |
 
 Every endpoint that names a document takes **`?format=`** — the extension the document is

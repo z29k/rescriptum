@@ -92,7 +92,9 @@ fn main() -> ExitCode {
     // **Fatal for a subcommand too, and that is deliberate** — `tests/tftp.rs` pins it.
     // Unlike the log file above, an invalid combination is a statement about the
     // configuration itself rather than about who is running the command, and `check`
-    // reporting success under one would be the wrong answer.
+    // reporting success under one would be the wrong answer. Whether the read-only
+    // commands should downgrade this to a warning, the way `config` is exempted from
+    // `from_env` entirely, is a real question and a separate one; it is not settled here.
     if let Err(problem) = cfg.validate() {
         log::server(&format!("configuration error: {problem}"));
         return ExitCode::FAILURE;
@@ -102,9 +104,15 @@ fn main() -> ExitCode {
         None => {}
         Some((cmd, rest)) if cmd == "render" => return cli::render(&cfg, rest),
         Some((cmd, _)) if cmd == "check" => return cli::check(&cfg),
+        Some((cmd, rest)) if cmd == "status" || cmd == "machines" || cmd == "groups" => {
+            return cli::fleet_command(&cfg, cmd, rest);
+        }
         Some((cmd, rest)) if cmd == "import" => return cli::import(&cfg, rest),
         Some((cmd, rest)) if cmd == "export" => return cli::export(&cfg, rest),
         Some((cmd, rest)) if cmd == "migrate" => return cli::migrate(&cfg, rest),
+        Some((cmd, rest)) if cmd == "power" => return cli::power(&cfg, rest),
+        Some((cmd, rest)) if cmd == "install" => return cli::install(&cfg, rest),
+        Some((cmd, rest)) if cmd == "tui" => return cli::tui(&cfg, rest),
         Some((cmd, rest)) if cmd == "media" => return cli::media(&cfg, rest),
         Some((cmd, rest)) if cmd == "boot" => return cli::boot(&cfg, rest),
         Some((cmd, _)) => {
@@ -729,7 +737,12 @@ async fn handle(
     // lookup below is blocking IO — both belong off the async worker.
     let picked = tokio::task::spawn_blocking(move || {
         let facts = Facts::from_request(Some(&request_path), query.as_deref(), &body);
-        answers.resolve(&facts)
+        // The identity comes back with the resolution so that a 404 can name the machine
+        // that asked. For a GET it is already in the target; for a Proxmox POST it is only
+        // in the body, and the body is not logged — which is what made "these machines are
+        // asking and I have no answer for them" underivable.
+        let said = facts.identity();
+        answers.resolve(&facts).map(|r| (r, said))
     })
     .await;
 
@@ -740,7 +753,7 @@ async fn handle(
     };
 
     match picked {
-        Ok(Ok(Some(resolution))) => {
+        Ok(Ok((Some(resolution), _))) => {
             record(&format!("200 {}", resolution.how()));
             log::request(
                 &peer,
@@ -759,9 +772,16 @@ async fn handle(
                 .body(Full::new(Bytes::from(resolution.body)))
                 .unwrap_or_else(|_| text(StatusCode::INTERNAL_SERVER_ERROR, "500\n"))
         }
-        Ok(Ok(None)) => {
+        Ok(Ok((None, said))) => {
             record("404");
-            log::request(&peer, 404, &format!("{prefix} 404 no answer file applies"));
+            log::request(
+                &peer,
+                404,
+                &match said {
+                    Some(who) => format!("{prefix} 404 no answer file applies for {who}"),
+                    None => format!("{prefix} 404 no answer file applies"),
+                },
+            );
             text(StatusCode::NOT_FOUND, "404 Not Found\n")
         }
         // A misconfiguration (bad TOML, a missing group) must be loud: a half-built

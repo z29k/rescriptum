@@ -126,6 +126,33 @@ key's original decor, so the output can read `value= 3` — valid TOML, differen
 project's history silently no-opped and were only caught by checking test counts
 afterwards. Assert the old text was found before writing.
 
+**`cargo tree -i <pkg>` exits 0 when the package is an optional dependency whose feature is
+off**, printing `warning: nothing to print.`. It exits 101 when the package is absent from
+the manifest entirely. So a guard written as `cargo tree -i x >/dev/null 2>&1 && exit 1`
+fires in both states and reddens CI forever. Assert on the *output*:
+
+```sh
+cargo tree -e normal --prefix none --format '{p}' | grep -q '^ratatui ' && exit 1
+```
+
+Measured against `rusqlite` in all three feature states — present, absent, optional-and-off.
+
+**`/bin/true` and `/bin/false` do not exist on macOS**, where they live in `/usr/bin`; and
+`/bin/sleep` exists on macOS while `/usr/bin/sleep` does not. A test that spawns a standard
+tool must resolve it from a candidate list. This is the same failure mode as the TFTP port
+tests: it passes locally and fails in CI for a reason that has nothing to do with the
+change.
+
+**A `pid`-only temporary filename disambiguates processes and not threads.** Two writes to
+one document inside one process then share a path, and one silently takes the other's
+content. `store::file::write_atomic` had this; `edit::scratch_path` reintroduced it two
+hours after it was fixed, and three tests that passed alone failed in the full suite. Add a
+counter.
+
+**A `"#` inside a `r#"…"#` raw string ends it.** A Redfish fixture containing
+`"#ComputerSystem.Reset"` does exactly that, and the compiler says `prefix ... is unknown`,
+which points nowhere near the cause. Use `r##"…"##`.
+
 ## Packaging for DSM
 
 **A shell script that works on macOS is not a shell script that works on CI.** Two found by
@@ -375,6 +402,46 @@ heuristic freshness is a tenth of the file's apparent age — years. An upgraded
 on running the **old** JavaScript against the new backend, through a reinstall and a hard
 reload. The application's file is therefore named after the version and everything it
 fetches itself carries `?v=`; `check-spk.sh` asserts the name still moves.
+
+## Out-of-band control
+
+**A Redfish `PATCH` can answer `204 No Content` and do nothing at all.** PiKVM's does —
+verified in `kvmd`'s source, not guessed — while continuing to report
+`BootSourceOverrideEnabled: "Disabled"`. A client that trusts the status code believes it
+armed a network boot that will never happen, and the machine then installs nothing while
+looking correct. **Read the override back**; the status code is not evidence.
+
+**Never follow a URL out of a response body.** `@odata.id` is service-root relative by the
+specification, and PiKVM breaks that: the handbook serves Redfish at `/api/redfish/v1`
+while kvmd emits `"@odata.id": "/redfish/v1/Systems/0"`. Joining it to the origin 404s.
+Take the **last segment** and compose `<base>/Systems/<id>` — the only form that works on
+both a conformant BMC and that one.
+
+**`Members[0]` is a guess.** A blade chassis, a Dell FX2 and a PiKVM with a switch all
+expose several systems; on a PiKVM with ATX disabled the first member is a switch port — a
+different machine. Refuse and name them, and let the operator say `system = "…"`.
+
+**curl's `--fail` discards the vendor's error sentence**, which is the most useful thing a
+failed Redfish call produces. Read the status with `--write-out` instead — and note `-w`
+writes to *stdout*, where the body already is, so a naive `%{http_code}` welds three digits
+onto a JSON document. A newline plus the code, split from the right, keeps both.
+`--data` also sends a form content type, which Redfish answers with 415.
+
+**A timeout is not a failure; it is an unknown.** A `ComputerSystem.Reset` that timed out
+may have powered the rack on, and a `Boot` PATCH may or may not have taken. Never retry a
+write automatically — say the outcome is unknown and read the state back.
+
+**A group's `.ipxe` arms machines that can never be disarmed.** `installed::disarm` moves a
+*machine's* own document and never a group's, deliberately, so that one machine finishing
+cannot disarm a rack. The consequence: a machine armed only by its group installs, reports
+success, is not disarmed, and installs again on its next network boot — while the webhook
+logs `nothing was claiming it`, which reads like everything worked. This project's own
+`examples/groups/edge-router/boot.ipxe` did it and `check` called the directory green.
+
+**A log follower must notice two kinds of rotation.** `logrotate --create` replaces the
+file, so the inode changes; `copytruncate` keeps the same file and empties it, so the inode
+is unchanged and only the length going backwards gives it away. Checking one and not the
+other stops the screen updating for half the deployments, and it is silent.
 
 ## Behaviour changes worth remembering
 

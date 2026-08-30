@@ -51,6 +51,24 @@ jobs:
       # The smallest build has to keep working, or the NAS target rots unnoticed.
       # Both features off, and then each on its own: the combination that ships is not
       # the only one that has to compile.
+      # **The budget that is actually binding: 0 bytes with the feature off.** Asserted on
+      # the *output*, never on the exit code — `cargo tree -i` exits 0 printing
+      # "nothing to print." when the package is an optional dependency whose feature is
+      # off, which is exactly the state being checked, so an exit-code guard would fire
+      # whether or not the crate is there.
+      - name: The default build must not reach the terminal interface
+        run: |
+          graph=$(cargo tree -e normal --prefix none --format '{p}')
+          if echo "$graph" | grep -qE '^(ratatui|crossterm) '; then
+            echo "ratatui or crossterm is in the default dependency graph"; exit 1
+          fi
+          echo "absent, as it must be"
+
+      # `--all-features` does not cover this: the terminal interface must build for a
+      # deployment that wants no boot media either.
+      - name: Build the interface without boot media
+        run: cargo build --release --no-default-features --features tui
+
       - name: Build without SQLite or boot media
         run: cargo build --release --no-default-features
 

@@ -27,6 +27,7 @@ le droit de servir, et à qui.
 - **[Dépannage](./troubleshooting.md)** — la ligne de log est tout le diagnostic disponible.
 - [Servir les médias de démarrage](./media.md) — le noyau, l'initrd et l'image de l'installeur, depuis le même serveur.
 - [Démarrer une machine par le réseau](./netboot.md) — TFTP, le chargeur, le menu, et les deux lignes de leur DHCP.
+- [Allumer des machines](./power.md) — contrôle hors bande via Redfish ou un script que vous fournissez, et les vérifications qu'`install` fait avant que quoi que ce soit ne bouge.
 
 ## La forme d'un déploiement
 

@@ -8,7 +8,7 @@ sidebar:
 
 # Testing
 
-619 tests. `cargo test` runs all of them in about twenty seconds — most of that is
+734 tests. `cargo test` runs all of them in about twenty seconds — most of that is
 `tests/tftp.rs`, which waits on real UDP timeouts because that is what it is testing.
 
 **`cargo test` does not run the harnesses that matter most**: the boot rig, the DSM
@@ -26,15 +26,23 @@ cargo test --all-features                 # what CI runs
 
 | Suite | Cases | For |
 |---|---|---|
-| `tests/integration.rs` | 52 | the real binary over a real socket |
-| `tests/cli.rs` | 65 | `render`, `check`, `import`, `export`, `config` and the env file — against the real binary |
+| `tests/integration.rs` | 53 | the real binary over a real socket |
+| `tests/cli.rs` | 89 | `render`, `check`, `import`, `export`, `config` and the env file — against the real binary |
 | `tests/media.rs` | 45 | boot media against the real binary, with both listeners up |
 | `src/config.rs` | 56 | the environment, what refuses to start, and which of the file and the environment wins |
 | `tests/stores.rs` | 48 | **every behaviour, against both stores** |
+| `tests/power.rs` | 12 | the Redfish client, against a fake service that **real curl** talks to |
 | `tests/tftp.rs` | 30 | TFTP over real UDP: the turn-taking, and what a failed bind must not cost |
 | `src/select.rs` | 29 | normalization, scoring, layering, template filling |
 | `src/format/mod.rs` | 28 | parsing, merging, control keys, endpoint aliases |
-| `tests/admin.rs` | 26 | the admin API end to end, formats included |
+| `src/tui.rs` | 13 | what a terminal interface keeps, and when it may do work — no drawing |
+| `src/tail.rs` | 12 | following the log: rotation, truncation, and the parse surface |
+| `src/edit.rs` | 8 | the $EDITOR round trip, through the guard |
+| `src/power.rs` | 9 | driving a controller, and what a killed hook is reported as |
+| `src/guard.rs` | 5 | the guarded write, and the rollback over the file store |
+| `src/controllers.rs` | 18 | the controllers file: what it refuses, and why each refusal exists |
+| `src/redfish.rs` | 12 | curl's option file, the quoting, and reading a vendor's error |
+| `tests/admin.rs` | 28 | the admin API end to end, formats included |
 | `src/envfile.rs` | 23 | the env-file parser and writer, and what each refuses |
 | `src/facts.rs` | 22 | query parsing, JSON flattening, globbing |
 | `src/format/xml.rs` | 18 | the XML tree — pairing, entities, fidelity |

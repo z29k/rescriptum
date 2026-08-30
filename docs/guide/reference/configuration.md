@@ -30,6 +30,7 @@ rules, so nothing you can write in a file means anything the environment could n
 | `RESCRIPTUM_ADMIN_ADDR` | unset | Admin API listener. Unset means the admin API is off |
 | `RESCRIPTUM_ADMIN_TOKEN` | unset | Admin bearer token, 16+ characters. Required with `RESCRIPTUM_ADMIN_ADDR` |
 | `RESCRIPTUM_CAPTURE_DIR` | unset | Record request bodies here. Unset means no capture |
+| `RESCRIPTUM_CONTROLLERS_FILE` | unset | Out-of-band controllers, for `power` and `install`. **The server never reads it.** Unset, there is no power control at all |
 | `RESCRIPTUM_LOG` | `all` | `all`, `problems` or `off` — see [below](#logging) |
 | `RESCRIPTUM_LOG_FILE` | unset | A file to append to, or `stdout` / `stderr`. Unset means stderr |
 | `RESCRIPTUM_MEDIA_DIR` | unset | Installer images. **Unset means no media and no media listener** |
@@ -154,6 +155,7 @@ the variable of the same name, and `rescriptum config` prints both spellings.
 | `server.workers`, `server.max_connections`, `server.timeout_secs` | `RESCRIPTUM_WORKERS`, `RESCRIPTUM_MAX_CONNECTIONS`, `RESCRIPTUM_TIMEOUT_SECS` |
 | `admin.addr`, `admin.token` | `RESCRIPTUM_ADMIN_ADDR`, `RESCRIPTUM_ADMIN_TOKEN` |
 | `answer.token`, `answer.capture_dir` | `RESCRIPTUM_ANSWER_TOKEN`, `RESCRIPTUM_CAPTURE_DIR` |
+| `power.controllers_file` | `RESCRIPTUM_CONTROLLERS_FILE` |
 | `media.dir`, `media.addr`, `media.timeout_secs`, `media.max_connections` | the `RESCRIPTUM_MEDIA_*` four |
 | `boot.dir`, `boot.allow`, `boot.unclaimed`, `boot.timeout_secs`, `boot.logo`, `boot.title` | the `RESCRIPTUM_BOOT_*` six |
 | `tftp.addr`, `tftp.port_range`, `tftp.blksize` | the `RESCRIPTUM_TFTP_*` three |

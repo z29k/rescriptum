@@ -49,10 +49,17 @@ flowchart TB
 | `format/` | une interface par format de document. `Doc` parse, fusionne, rend, et signale ses clés de contrôle |
 | `merge.rs` | la fusion profonde TOML, utilisée par `format` |
 | `store/` | d'où viennent les documents, derrière un trait de lecture à deux méthodes |
-| `admin.rs` | son propre listener, l'auth bearer, le garde-fou d'échecs, et l'annulation qui empêche une écriture de casser le jeu de réponses |
+| `guard.rs` | la règle qu'une écriture ne peut pas laisser le jeu de réponses cassé — appliquer, relire, annuler ce qui a cassé. **Ce n'est pas une propriété HTTP**, donc elle vit hors d'`admin` et plusieurs appelants l'utilisent |
+| `admin.rs` | son propre listener, l'auth bearer, le garde-fou d'échecs, et la traduction de l'issue d'une écriture gardée en code de statut |
 | `config.rs` | l'environnement, et la validation qui transforme une configuration dangereuse en erreur de démarrage |
 | `envfile.rs` | le fichier que nomme `RESCRIPTUM_ENV_FILE` : parsé, jamais découvert, et fatal s'il est illisible |
-| `cli.rs` | `render`, `check`, `import`, `export` |
+| `cli.rs` | `render`, `check`, `import`, `export`, `status`/`machines`/`groups`, `power`, `install` |
+| `controllers.rs` | où le BMC, PiKVM ou PDU d'une machine est décrit. **Le serveur ne le lit jamais** — `power` et `install` le lisent |
+| `redfish.rs` | parler à un service Redfish via `curl`, puisqu'il n'y a pas de TLS dans ce binaire |
+| `power.rs` | piloter un contrôleur, pour les deux sortes : ce que `on`, `off`, `pxe` et `status` font vraiment, et le sondage borné et concurrent |
+| `tail.rs` | suivre le log du serveur depuis un autre processus : rotation, tampon borné, analyse des lignes |
+| `edit.rs` | confier un document à `$EDITOR` et stocker ce qui revient, à travers le garde |
+| `tui.rs` | ce qu'une interface terminal retient et quand elle a le droit de travailler. **Sans dessin** : ratatui est en mode immédiat, donc l'état est le nôtre, et le garder ici le fait tester dans toutes les builds |
 | `capture.rs` | l'enregistrement des corps de requête |
 | `log.rs` | une ligne par événement, des horodatages UTC calculés sans crate de date, et les deux réglages au-dessus : ce qui est gardé, et où cela va |
 

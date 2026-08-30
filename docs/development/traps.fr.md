@@ -138,6 +138,33 @@ TOML valide, un texte différent.
 l'histoire de ce projet n'ont silencieusement rien fait et n'ont été attrapées qu'en vérifiant
 le nombre de tests ensuite. Vérifiez que l'ancien texte a été trouvé avant d'écrire.
 
+**`cargo tree -i <paquet>` sort en 0 quand le paquet est une dépendance optionnelle dont la
+feature est désactivée**, en affichant `warning: nothing to print.`. Il sort en 101 quand le
+paquet est absent du manifeste. Un garde écrit `cargo tree -i x >/dev/null 2>&1 && exit 1`
+se déclenche donc dans les deux cas et rougit la CI indéfiniment. Testez la *sortie* :
+
+```sh
+cargo tree -e normal --prefix none --format '{p}' | grep -q '^ratatui ' && exit 1
+```
+
+Mesuré contre `rusqlite` dans les trois états — présent, absent, optionnel-et-désactivé.
+
+**`/bin/true` et `/bin/false` n'existent pas sur macOS**, où ils sont dans `/usr/bin` ; et
+`/bin/sleep` existe sur macOS alors que `/usr/bin/sleep` non. Un test qui lance un outil
+standard doit le résoudre depuis une liste de candidats. C'est le même mode d'échec que les
+tests de port TFTP : ça passe en local et ça casse en CI pour une raison sans rapport avec
+le changement.
+
+**Un nom de fichier temporaire fondé sur le seul `pid` distingue les processus, pas les
+threads.** Deux écritures d'un même document dans un processus partagent alors le chemin, et
+l'une prend silencieusement le contenu de l'autre. `store::file::write_atomic` avait ce
+défaut ; `edit::scratch_path` l'a réintroduit deux heures après sa correction, et trois
+tests qui passaient seuls échouaient dans la suite complète. Ajoutez un compteur.
+
+**Un `"#` dans une chaîne brute `r#"…"#` la termine.** Une fixture Redfish contenant
+`"#ComputerSystem.Reset"` fait exactement ça, et le compilateur dit `prefix ... is unknown`,
+ce qui ne pointe pas du tout vers la cause. Utilisez `r##"…"##`.
+
 ## Empaqueter pour DSM
 
 **Un script shell qui marche sur macOS n'est pas un script qui marche en CI.** Deux cas
@@ -405,6 +432,49 @@ un rechargement forcé. Le fichier de l'application porte donc le numéro de ver
 nom, et tout ce qu'elle va chercher elle-même porte `?v=` ; `check-spk.sh` vérifie que le nom
 bouge toujours.
 deux.
+
+## Contrôle hors bande
+
+**Un `PATCH` Redfish peut répondre `204 No Content` sans rien faire.** Celui de PiKVM le
+fait — vérifié dans la source de `kvmd`, pas deviné — tout en continuant à rapporter
+`BootSourceOverrideEnabled: "Disabled"`. Un client qui croit le code de statut pense avoir
+armé un démarrage réseau qui n'aura jamais lieu, et la machine n'installe rien tout en
+ayant l'air correcte. **Relisez l'override** ; le code de statut n'est pas une preuve.
+
+**Ne suivez jamais une URL sortie d'un corps de réponse.** `@odata.id` est relatif à la
+racine du service selon la spécification, et PiKVM enfreint cela : le manuel sert Redfish
+sous `/api/redfish/v1` tandis que kvmd émet `"@odata.id": "/redfish/v1/Systems/0"`. Le
+joindre à l'origine donne un 404. Prenez le **dernier segment** et composez
+`<base>/Systems/<id>` — la seule forme qui marche sur un BMC conforme et sur celui-là.
+
+**`Members[0]` est une supposition.** Un châssis lame, un Dell FX2 et un PiKVM avec switch
+exposent tous plusieurs systèmes ; sur un PiKVM dont l'ATX est désactivé, le premier membre
+est un port de switch — une autre machine. Refusez en les nommant, et laissez l'opérateur
+écrire `system = "…"`.
+
+**Le `--fail` de curl jette la phrase d'erreur du vendeur**, qui est la chose la plus utile
+que produise un appel Redfish raté. Lisez le statut avec `--write-out` — et notez que `-w`
+écrit sur *stdout*, là où se trouve déjà le corps, donc un `%{http_code}` naïf soude trois
+chiffres à un document JSON. Un saut de ligne puis le code, découpé par la droite, garde les
+deux. `--data` envoie aussi un content-type de formulaire, auquel Redfish répond 415.
+
+**Un délai dépassé n'est pas un échec, c'est un inconnu.** Un `ComputerSystem.Reset` qui a
+expiré a peut-être allumé la baie, et un `PATCH` de `Boot` a peut-être pris. Ne réessayez
+jamais une écriture automatiquement : dites que l'issue est inconnue et relisez l'état.
+
+**Le `.ipxe` d'un groupe arme des machines qu'on ne peut jamais désarmer.**
+`installed::disarm` déplace le document *propre à la machine* et jamais celui d'un groupe,
+délibérément, pour qu'une machine qui termine ne désarme pas une baie. La conséquence : une
+machine armée uniquement par son groupe s'installe, signale son succès, n'est pas désarmée,
+et se réinstalle au démarrage réseau suivant — pendant que le webhook journalise
+`nothing was claiming it`, ce qui se lit comme si tout avait marché. Le propre
+`examples/groups/edge-router/boot.ipxe` de ce projet le faisait, et `check` déclarait le
+répertoire vert.
+
+**Un suiveur de log doit remarquer deux sortes de rotation.** `logrotate --create` remplace
+le fichier, donc l'inode change ; `copytruncate` garde le même fichier et le vide, donc
+l'inode ne change pas et seule la longueur qui recule le trahit. N'en vérifier qu'une seule
+arrête la mise à jour de l'écran pour la moitié des déploiements, en silence.
 
 ## Changements de comportement à retenir
 

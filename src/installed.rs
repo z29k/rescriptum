@@ -168,6 +168,63 @@ pub fn disarm(answers: &Answers, store: &dyn StoreWrite, facts: &Facts) -> io::R
     Ok(Disarmed { moved })
 }
 
+/// Put a machine's `.ipxe` back, the exact reverse of `disarm`.
+///
+/// This is what `install` uses to arm a machine that has installed before. It reuses the
+/// archive rather than inventing an image argument, so **the operator's own document comes
+/// back byte for byte** — and it keeps `installed-` directories from accumulating, which
+/// matters because the per-request scan is linear in identities.
+///
+/// **Put before delete**, the same way round as `disarm`: if the put fails the archive is
+/// still there and the caller is told, which is the recoverable half.
+///
+/// `Ok(None)` means there was nothing archived — not an error, just nothing to undo.
+/// `Ok(Some(id))` gives the machine identifier the document was put back under.
+pub fn rearm(store: &dyn StoreWrite, id: &str) -> io::Result<Option<String>> {
+    let Some(from) = archive_of(store, id)? else {
+        return Ok(None);
+    };
+    let Some(body) = read_machine(store, &from, "ipxe")? else {
+        return Ok(None);
+    };
+    // The machine's own spelling, which is whatever `disarm` prefixed. Rebuilding it from
+    // what the operator typed would write `installed-aa:bb:...` beside
+    // `installed-aa-bb-...` and leave both.
+    let to = from
+        .strip_prefix(DISARMED)
+        .expect("archive_of only returns prefixed names")
+        .to_string();
+    store.put_machine(&to, "ipxe", &body)?;
+    store.delete_machine(&from, "ipxe")?;
+    Ok(Some(to))
+}
+
+/// Whether a machine has an archived `.ipxe` waiting to be put back.
+pub fn archived(store: &dyn StoreWrite, id: &str) -> io::Result<bool> {
+    Ok(archive_of(store, id)?.is_some())
+}
+
+/// The archive directory for a machine, found **by normalized identity** rather than by
+/// pasting a prefix onto whatever the operator typed.
+///
+/// `disarm` names the archive after the identifier as the *store* spells it, so
+/// `98-fa-9b-50-d8-10` archives to `installed-98-fa-9b-50-d8-10`. Somebody typing
+/// `98:fa:9b:50:d8:10` has to reach the same directory, which is the rule every other
+/// lookup in this program already follows.
+fn archive_of(store: &dyn StoreWrite, id: &str) -> io::Result<Option<String>> {
+    let wanted = format!(
+        "{}{}",
+        normalize(DISARMED.as_bytes()),
+        normalize(id.as_bytes())
+    );
+    Ok(store
+        .snapshot()?
+        .machines
+        .into_iter()
+        .find(|m| m.format == "ipxe" && normalize(m.id.as_bytes()) == wanted)
+        .map(|m| m.id))
+}
+
 fn read_machine(store: &dyn StoreWrite, id: &str, format: &str) -> io::Result<Option<String>> {
     Ok(store
         .snapshot()?
