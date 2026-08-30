@@ -240,6 +240,31 @@ pub fn check(cfg: &Config) -> ExitCode {
         let members = answers.group_members(group).unwrap_or_default();
         let matchers = answers.group_matchers(group).unwrap_or_default();
 
+        // **A group cannot be disarmed.** `installed::disarm` moves a *machine's* own
+        // document and never a group's — deliberately, so that one machine reporting
+        // success cannot disarm a whole rack. The consequence is easy to miss: a machine
+        // armed only by its group installs, reports, is not disarmed, and installs again
+        // on its next network boot.
+        //
+        // Stated as a fact rather than judged, because `check` cannot tell an installer
+        // arm from a permanent boot policy — a group `.ipxe` that boots the local disk is
+        // meant to be served forever, and is fine.
+        if answers.group_format(group).unwrap_or_default().as_deref() == Some("ipxe") {
+            let claimed = if members.is_empty() {
+                "the machines its `match` block selects".to_string()
+            } else {
+                format!("{} machine(s) by name", members.len())
+            };
+            if !members.is_empty() || !matchers.is_empty() {
+                println!(
+                    "  note: group {group:?} ({origin}) serves .ipxe to {claimed}, and a group \
+                     is never disarmed — `POST /installed` only ever moves a machine's own \
+                     document. If this script starts an installer, those machines will run it \
+                     again on every network boot; arm from the machine's own directory instead."
+                );
+            }
+        }
+
         if !matchers.is_empty() {
             let criteria: Vec<String> = matchers.iter().map(|(k, v)| format!("{k}={v}")).collect();
             println!("  group {group:?} selects on {}", criteria.join(" "));

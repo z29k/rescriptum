@@ -64,15 +64,35 @@ fn main() -> ExitCode {
         }
     };
 
-    // Point logging at its destination before anything else is said. Whatever the
-    // configuration itself had to report has already gone to stderr: until this runs,
-    // there is nowhere else it could go.
-    if let Err(problem) = log::init(cfg.log_level, cfg.log_file.as_deref()) {
+    // **The log destination is a property of what is being run, not of the configuration
+    // alone.** A server logs where `RESCRIPTUM_LOG_FILE` says; a subcommand logs to
+    // stderr, and never touches that file.
+    //
+    // Two reasons, and the second is the one that bites. A screen or a script that reloads
+    // the answer set writes a `warning:` line per problem per reload, into the log an
+    // operator uses to diagnose installs. And on a packaged deployment the log file
+    // belongs to the service user: opening it is *fatal*, so `rescriptum check` run over
+    // SSH by anybody else died on `cannot be opened` before its subcommand was even
+    // looked at. `config` is dispatched before `Config::from_env` for this same argument
+    // — the commands you reach for when something is wrong must not be stopped by the
+    // thing that is wrong.
+    let running_server = args.is_empty();
+    let log_file = if running_server {
+        cfg.log_file.as_deref()
+    } else {
+        None
+    };
+    if let Err(problem) = log::init(cfg.log_level, log_file) {
         log::server(&format!("configuration error: {problem}"));
         return ExitCode::FAILURE;
     }
 
     // Refuse an unsafe or impossible combination before anything is listening.
+    //
+    // **Fatal for a subcommand too, and that is deliberate** — `tests/tftp.rs` pins it.
+    // Unlike the log file above, an invalid combination is a statement about the
+    // configuration itself rather than about who is running the command, and `check`
+    // reporting success under one would be the wrong answer.
     if let Err(problem) = cfg.validate() {
         log::server(&format!("configuration error: {problem}"));
         return ExitCode::FAILURE;

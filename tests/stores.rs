@@ -683,6 +683,88 @@ fn the_file_store_writes_atomically_and_leaves_no_scratch_files() {
     let _ = fs::remove_dir_all(&dir);
 }
 
+/// A document holds a root password hash and SSH keys, so a rewrite must never widen
+/// its permissions.
+///
+/// The admin API has always run as the service, so this never mattered in process. A
+/// command run by hand — over SSH, quite possibly not as the service user — is a
+/// different process with a different umask, and `0600` coming back `0644` would be a
+/// security regression introduced by a convenience.
+///
+/// **Watched failing:** drop the `preserve` call in `write_atomic` and the rewritten
+/// document comes back `0644` under the default umask.
+#[cfg(unix)]
+#[test]
+fn the_file_store_keeps_a_documents_mode_when_it_rewrites_it() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = scratch("modes");
+    let store = FileStore::new(&dir);
+    store
+        .put_machine("98fa9b50d810", "toml", "marker = \"first\"\n")
+        .unwrap();
+    let path = dir.join("98fa9b50d810/proxmox.toml");
+
+    // A document an operator has locked down, the way a real one holding a hash would be.
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+    store
+        .put_machine("98fa9b50d810", "toml", "marker = \"second\"\n")
+        .unwrap();
+
+    let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+    assert_eq!(
+        mode, 0o600,
+        "the rewrite widened the document to {mode:04o}"
+    );
+    assert!(fs::read_to_string(&path).unwrap().contains("second"));
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// A document nobody has set a mode on is created `0600` rather than inheriting a umask.
+#[cfg(unix)]
+#[test]
+fn a_new_document_is_not_created_world_readable() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = scratch("new-mode");
+    let store = FileStore::new(&dir);
+    store
+        .put_machine("98fa9b50d810", "toml", "marker = \"x\"\n")
+        .unwrap();
+
+    let mode = fs::metadata(dir.join("98fa9b50d810/proxmox.toml"))
+        .unwrap()
+        .permissions()
+        .mode()
+        & 0o777;
+    assert_eq!(mode, 0o600, "a new document was created {mode:04o}");
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// And the identity directory takes the answers directory's mode, not the caller's
+/// umask — a `0600` document inside a directory the service cannot traverse is the same
+/// outage, arriving one restart later.
+#[cfg(unix)]
+#[test]
+fn a_new_identity_directory_inherits_the_answers_directory() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = scratch("dir-mode");
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o750)).unwrap();
+    let store = FileStore::new(&dir);
+    store
+        .put_machine("98fa9b50d810", "toml", "marker = \"x\"\n")
+        .unwrap();
+
+    let mode = fs::metadata(dir.join("98fa9b50d810"))
+        .unwrap()
+        .permissions()
+        .mode()
+        & 0o777;
+    assert_eq!(mode, 0o750, "the identity directory came out {mode:04o}");
+    let _ = fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn the_sqlite_store_survives_being_reopened() {
     let dir = scratch("reopen");
