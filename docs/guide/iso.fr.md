@@ -106,14 +106,14 @@ Le dernier segment du chemin est disponible comme fait `file`, ce qui permet de 
 distinguer avec un sélecteur :
 
 ```yaml
-# answers/groups/ubuntu-web.yaml
+# answers/groups/ubuntu-web/ubuntu.yaml
 match:
   file: "user-data"
   product: "PowerEdge R6*"
 ```
 
 ```yaml
-# answers/groups/ubuntu-meta.yaml
+# answers/groups/ubuntu-meta/ubuntu.yaml
 match:
   file: "meta-data"
 

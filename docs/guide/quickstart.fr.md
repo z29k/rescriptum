@@ -15,16 +15,17 @@ pouvez avoir la bonne réponse avant qu'aucune machine ne démarre.
 ## 1. Un répertoire et un document
 
 ```console
-$ mkdir -p answers/groups
+$ mkdir -p answers/groups/rack-a
 ```
 
-Le répertoire de réponses est plat. Les documents à la racine appartiennent chacun à une
-machine ; `groups/` contient ceux qui sont partagés. Commencez par un groupe, puisque c'est
-la forme que prend presque tout déploiement réel — une baie de machines d'accord sur tout
-sauf sur les disques qu'elles ont :
+**Un répertoire par identité.** Un répertoire à la racine est une machine, nommé d'après
+elle ; `groups/` contient ceux qui sont partagés. Dans l'un comme dans l'autre, l'extension
+nomme le format et le reste du nom de fichier n'est qu'une étiquette. Commencez par un
+groupe, puisque c'est la forme que prend presque tout déploiement réel — une baie de
+machines d'accord sur tout sauf sur les disques qu'elles ont :
 
 ```toml
-# answers/groups/rack-a.toml
+# answers/groups/rack-a/proxmox.toml
 members = ["98:fa:9b:50:d8:10", "98:fa:9b:50:d8:11"]
 
 [global]
@@ -70,15 +71,15 @@ disk-list = ["sda", "sdb"]
 
 La première ligne part sur stderr et dit comment la réponse a été obtenue — la famille de
 format, quel document machine a matché, quel groupe s'est appliqué. Le document lui-même
-part sur stdout, donc `render … > answer.toml` ne vous donne que le fichier.
+part sur stdout, donc `render … > answer.toml` ne vous donne que le document.
 
 ## 3. Une machine qui diffère
 
-Le second nœud de la baie a quatre disques. Il reçoit un fichier contenant **seulement la
-différence**, nommé d'après sa MAC :
+Le second nœud de la baie a quatre disques. Il reçoit un répertoire nommé d'après sa MAC,
+contenant un document avec **seulement la différence** :
 
 ```toml
-# answers/98-fa-9b-50-d8-10.toml
+# answers/98-fa-9b-50-d8-10/proxmox.toml
 [global]
 fqdn = "node01.example.com"
 
@@ -107,7 +108,7 @@ zfs.raid = "raid10"
 disk-list = ["sda", "sdb", "sdc", "sdd"]
 ```
 
-Le groupe d'abord, le fichier machine par-dessus, et **la machine a gagné** partout où les
+Le groupe d'abord, le document propre à la machine par-dessus, et **la machine a gagné** partout où les
 deux étaient en désaccord. Les tables ont fusionné clé par clé ; `disk-list` a été
 **remplacée**, pas concaténée — une liste qui ne pourrait que grandir ne pourrait jamais
 être raccourcie depuis une couche supérieure.
@@ -117,7 +118,7 @@ deux étaient en désaccord. Les tables ont fusionné clé par clé ; `disk-list
 ```console
 $ RESCRIPTUM_ANSWERS_DIR=answers rescriptum check
 checking files:answers
-  1 group(s), 1 machine file(s)
+  1 group(s), 1 machine document(s)
   note: toml answers not schema-checked — proxmox-auto-install-assistant is not on PATH
   ok — everything renders
 ```
@@ -152,8 +153,10 @@ et regardez le serveur dire ce qu'il a fait :
 Cette ligne est tout le diagnostic disponible quand un déploiement dérape : qui a demandé,
 quelle taille faisait son corps, ce qu'il a reçu, et à partir de quoi c'était construit.
 
-Les nouveaux fichiers sont pris en compte au fur et à mesure — pas de redémarrage, pas de
-signal de rechargement.
+Les nouveaux documents sont pris en compte au fur et à mesure — pas de redémarrage, pas de
+signal de rechargement. L'apparition ou la disparition du répertoire entier d'une machine
+est vue immédiatement ; un document ajouté ou modifié *à l'intérieur* de l'un d'eux est pris
+en compte en moins d'une seconde.
 
 ## À lire ensuite
 
@@ -162,5 +165,5 @@ signal de rechargement.
 - **[Un document par système d'exploitation](./answers/formats.md)** — la même machine en
   Proxmox, en Debian, en Ubuntu, côte à côte.
 - **[Templating](./answers/templating.md)** — `fqdn = "node-{{ serial }}.example.com"`, pour
-  qu'un groupe couvre une baie sans un fichier par machine.
+  qu'un groupe couvre une baie sans un répertoire par machine.
 - **[Préparer les médias d'installation](./iso.md)** — l'URL à graver dans l'ISO, par OS.

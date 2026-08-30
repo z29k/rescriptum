@@ -64,15 +64,35 @@ fn main() -> ExitCode {
         }
     };
 
-    // Point logging at its destination before anything else is said. Whatever the
-    // configuration itself had to report has already gone to stderr: until this runs,
-    // there is nowhere else it could go.
-    if let Err(problem) = log::init(cfg.log_level, cfg.log_file.as_deref()) {
+    // **The log destination is a property of what is being run, not of the configuration
+    // alone.** A server logs where `RESCRIPTUM_LOG_FILE` says; a subcommand logs to
+    // stderr, and never touches that file.
+    //
+    // Two reasons, and the second is the one that bites. A screen or a script that reloads
+    // the answer set writes a `warning:` line per problem per reload, into the log an
+    // operator uses to diagnose installs. And on a packaged deployment the log file
+    // belongs to the service user: opening it is *fatal*, so `rescriptum check` run over
+    // SSH by anybody else died on `cannot be opened` before its subcommand was even
+    // looked at. `config` is dispatched before `Config::from_env` for this same argument
+    // — the commands you reach for when something is wrong must not be stopped by the
+    // thing that is wrong.
+    let running_server = args.is_empty();
+    let log_file = if running_server {
+        cfg.log_file.as_deref()
+    } else {
+        None
+    };
+    if let Err(problem) = log::init(cfg.log_level, log_file) {
         log::server(&format!("configuration error: {problem}"));
         return ExitCode::FAILURE;
     }
 
     // Refuse an unsafe or impossible combination before anything is listening.
+    //
+    // **Fatal for a subcommand too, and that is deliberate** — `tests/tftp.rs` pins it.
+    // Unlike the log file above, an invalid combination is a statement about the
+    // configuration itself rather than about who is running the command, and `check`
+    // reporting success under one would be the wrong answer.
     if let Err(problem) = cfg.validate() {
         log::server(&format!("configuration error: {problem}"));
         return ExitCode::FAILURE;
@@ -84,6 +104,9 @@ fn main() -> ExitCode {
         Some((cmd, _)) if cmd == "check" => return cli::check(&cfg),
         Some((cmd, rest)) if cmd == "import" => return cli::import(&cfg, rest),
         Some((cmd, rest)) if cmd == "export" => return cli::export(&cfg, rest),
+        Some((cmd, rest)) if cmd == "migrate" => return cli::migrate(&cfg, rest),
+        Some((cmd, rest)) if cmd == "media" => return cli::media(&cfg, rest),
+        Some((cmd, rest)) if cmd == "boot" => return cli::boot(&cfg, rest),
         Some((cmd, _)) => {
             eprintln!("unknown argument {cmd:?}\n");
             eprint!("{}", cli::USAGE);
@@ -153,6 +176,157 @@ async fn serve(cfg: Arc<Config>) -> ExitCode {
             guard: Default::default(),
         });
         tokio::spawn(rescriptum::admin::serve(admin_listener, admin));
+    }
+
+    // The media listener, if a media directory was named. Its own socket, its own
+    // timeout and its own connection budget — see `boot::media` for why all three are
+    // forced rather than preferred.
+    #[cfg(feature = "boot")]
+    if let Some(dir) = cfg.media_dir.clone() {
+        let addr = cfg.media_addr();
+        let media_listener = match TcpListener::bind(&addr).await {
+            Ok(l) => l,
+            Err(e) => {
+                log::server(&format!("cannot bind the media listener on {addr}: {e}"));
+                return ExitCode::FAILURE;
+            }
+        };
+        let bound = media_listener
+            .local_addr()
+            .map(|a| a.to_string())
+            .unwrap_or(addr);
+
+        // Said out loud because it is the value every generated script is written
+        // against, and a wrong guess here produces a machine that boots, chains, and
+        // hangs on an address that does not exist. This log line is the only place the
+        // answer will ever appear.
+        let (host, derived) = cfg.public_host();
+        if derived {
+            // Naming the alternatives is what makes this actionable. A generic "this
+            // might be wrong" sends an operator off to look at interfaces; a list they
+            // can read in place tells them in one glance whether the guess is the
+            // address their machines can reach.
+            let others: Vec<String> = config::local_addresses()
+                .into_iter()
+                .filter(|a| *a != host)
+                .collect();
+            if others.is_empty() {
+                log::server(&format!(
+                    "RESCRIPTUM_PUBLIC_HOST is not set — using {host}, the only address this \
+                     host has. Every generated URL will name it."
+                ));
+            } else {
+                log::server(&format!(
+                    "warning: RESCRIPTUM_PUBLIC_HOST is not set — derived {host}, which is \
+                     what every generated URL will name. This host also has {}. If the \
+                     machines reach it on one of those instead, set it explicitly.",
+                    others.join(", ")
+                ));
+            }
+        }
+        log::server(&format!(
+            "media listening on {bound} — serving {} as http://{host}",
+            dir.display()
+        ));
+
+        let catalog = Arc::new(rescriptum::boot::catalog::Catalog::new(dir.clone()));
+        // Load it now rather than on the first request, so a broken catalogue is known
+        // before a machine asks rather than at 3am.
+        for problem in catalog.problems().unwrap_or_default() {
+            log::server(&format!("warning: media: {problem}"));
+        }
+        let media = Arc::new(rescriptum::boot::media::Media {
+            cfg: Arc::clone(&cfg),
+            catalog,
+        });
+        tokio::spawn(rescriptum::boot::media::serve(media_listener, media));
+    }
+
+    // TFTP, if a boot directory was named. It hands over **one file** — the loader —
+    // and everything after that is HTTP: at 1468 bytes a round-trip, an image would
+    // take twenty minutes where HTTP takes fifteen seconds.
+    #[cfg(feature = "boot")]
+    if let Some(dir) = cfg.boot_dir.clone() {
+        let tftp = match rescriptum::boot::tftp::Tftp::new(&dir, Arc::clone(&cfg)) {
+            Ok(tftp) => Arc::new(tftp),
+            // Fatal: a boot directory that cannot be resolved is not something that
+            // fixes itself, and every path check below compares against it.
+            Err(e) => {
+                log::server(&format!("configuration error: {e}"));
+                return ExitCode::FAILURE;
+            }
+        };
+        // **Off is a value, not an absence.** It is how an operator says another daemon
+        // hands the loader over while rescriptum serves the rest of the chain — a
+        // deployment workaround, never what a package ships with. Said once at startup,
+        // because "where did my TFTP go" is otherwise a silent question.
+        match cfg.tftp_addr() {
+            None => log::server(&format!(
+                "tftp is off — {} is still served over HTTP at /boot/ and still checked \
+                 by `boot check`, but something else has to hand the loader over",
+                tftp.root().display()
+            )),
+            Some(addr) => {
+                let socket = match tokio::net::UdpSocket::bind(&addr).await {
+                    Ok(socket) => Some(socket),
+                    // **This is the one listener whose failure to bind does not end the
+                    // server, and the reason is measured rather than argued.** Every
+                    // other one here is fatal, on the rule that a server which accepts
+                    // and never answers is worse than one that does not start. TFTP is
+                    // where that rule inverts: port 69 is privileged — the only
+                    // privileged port in the whole design — so this bind is the only one
+                    // that can fail for a reason nobody configured. On a DSM 7.2.2
+                    // machine the capability is granted by a `setcap` outside the
+                    // package, and **an upgrade replaces the binary and silently drops
+                    // it**; with a fatal bind the whole package then goes to
+                    // `start_failed`, taking answers and media with it and failing every
+                    // install in flight to report that a second port could not be opened.
+                    //
+                    // Answers are the product. TFTP hands over one file and something
+                    // else can, so this degrades instead — loudly, in three places at
+                    // once: this line, `boot check`'s non-zero exit, and the settings
+                    // panel. **The failure mode being refused is the silent one, not the
+                    // degraded one**, and a warning nobody can miss is not silent.
+                    Err(e) => {
+                        log::server(&format!(
+                            "warning: cannot bind TFTP on {addr}: {e}{}. Answers and media \
+                             are unaffected and {} is still served over HTTP at /boot/, \
+                             but nothing here hands a loader over UDP — a machine sent to \
+                             this server by DHCP will ask and get nothing",
+                            if addr.ends_with(":69") {
+                                " — port 69 is privileged. Run as root and set \
+                                 RESCRIPTUM_USER to drop afterwards, or grant the binary \
+                                 cap_net_bind_service with setcap"
+                            } else {
+                                ""
+                            },
+                            tftp.root().display()
+                        ));
+                        None
+                    }
+                };
+                if let Some(socket) = socket {
+                    let bound = socket
+                        .local_addr()
+                        .map(|a| a.to_string())
+                        .unwrap_or_else(|_| addr.clone());
+                    log::server(&format!(
+                        "tftp listening on {bound} — serving {}",
+                        tftp.root().display()
+                    ));
+                    tokio::spawn(rescriptum::boot::tftp::serve(socket, tftp));
+                }
+            }
+        }
+    }
+
+    // **Bind everything first, then drop.** The other order works as root in testing
+    // and fails on deployment, which is the bug this ordering exists to prevent.
+    #[cfg(feature = "boot")]
+    if let Err(e) = rescriptum::boot::privileges::drop_to(cfg.user.as_deref(), cfg.group.as_deref())
+    {
+        log::server(&format!("configuration error: {e}"));
+        return ExitCode::FAILURE;
     }
 
     // Report the address actually bound, not the one requested: with `:0` (used by the
@@ -234,10 +408,11 @@ async fn serve(cfg: Arc<Config>) -> ExitCode {
 
                 let cfg = Arc::clone(&cfg);
                 let answers = Arc::clone(&answers);
+                let store = Arc::clone(&store);
                 let capture = Arc::clone(&capture);
                 tokio::spawn(async move {
                     let _permit = permit; // released when the connection ends
-                    connection(stream, peer.to_string(), cfg, answers, capture).await;
+                    connection(stream, peer.to_string(), cfg, answers, store, capture).await;
                 });
             }
         }
@@ -304,6 +479,7 @@ async fn connection(
     peer: String,
     cfg: Arc<Config>,
     answers: Arc<Answers>,
+    store: Arc<dyn rescriptum::store::StoreWrite>,
     capture: Arc<Option<Capture>>,
 ) {
     let timeout = cfg.timeout;
@@ -312,9 +488,10 @@ async fn connection(
     let service = service_fn(move |req| {
         let cfg = Arc::clone(&cfg);
         let answers = Arc::clone(&answers);
+        let store = Arc::clone(&store);
         let capture = Arc::clone(&capture);
         let peer = peer.clone();
-        async move { Ok::<_, Infallible>(handle(req, cfg, answers, capture, peer).await) }
+        async move { Ok::<_, Infallible>(handle(req, cfg, answers, store, capture, peer).await) }
     });
 
     // `header_read_timeout` is the slowloris guard: a client that opens a socket and
@@ -341,10 +518,81 @@ async fn connection(
     }
 }
 
+/// `POST /installed` — a machine saying it finished, and its claim being dropped.
+///
+/// Answers `200` whether or not anything was claiming it: the webhook may arrive twice,
+/// and a machine installed from the menu was never claimed at all. Neither is a failure,
+/// and a `4xx` here would read to an operator as "the thing did not work".
+async fn installed(
+    req: Request<Incoming>,
+    expected: String,
+    bearer: bool,
+    query: Option<String>,
+    answers: Arc<Answers>,
+    store: Arc<dyn rescriptum::store::StoreWrite>,
+    peer: String,
+) -> Response<Body> {
+    // Read the body before answering, always: closing on a peer that is still writing
+    // earns a connection reset instead of the response.
+    let body = match Limited::new(req.into_body(), MAX_BODY).collect().await {
+        Ok(collected) => collected.to_bytes(),
+        Err(_) => {
+            log::request(&peer, 400, "POST /installed 400 body");
+            return text(StatusCode::BAD_REQUEST, "400 Bad Request\n");
+        }
+    };
+
+    // **Either credential, because the callers differ.** Proxmox puts its `auth-token` in
+    // the JSON body and cannot be told to send a header; a `curl` in a `%post` sends a
+    // header and would have to be talked into composing JSON. Both are the same secret,
+    // and both are compared without an early return.
+    if !bearer && !rescriptum::installed::token_matches(&body, &expected) {
+        // Logged and never rate-limited, for the reason the answer token is not: a rack
+        // sits behind one address, and shutting it out would turn a bad token into a
+        // fleet that reinstalls itself forever.
+        log::request(&peer, 401, "POST /installed 401 bad or missing token");
+        return text(StatusCode::UNAUTHORIZED, "401 Unauthorized\n");
+    }
+
+    let facts = Facts::from_request(None, query.as_deref(), &body);
+    // Blocking: the file store reads and renames. Doing that on an async worker stalls
+    // every other connection that thread is driving.
+    let result = tokio::task::spawn_blocking(move || {
+        rescriptum::installed::disarm(&answers, store.as_ref(), &facts)
+    })
+    .await;
+
+    match result {
+        Ok(Ok(done)) => {
+            let said = done.describe();
+            log::request(&peer, 200, &format!("POST /installed 200 {said}"));
+            text(StatusCode::OK, format!("{said}\n"))
+        }
+        // **Loud, because the consequence is otherwise silent.** A disarm that failed
+        // leaves the machine armed, so it installs again on its next boot — and this line
+        // is the only place that could be noticed.
+        Ok(Err(e)) => {
+            log::request(&peer, 500, &format!("POST /installed 500 still armed: {e}"));
+            text(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "500 Internal Server Error\n",
+            )
+        }
+        Err(e) => {
+            log::request(&peer, 500, &format!("POST /installed 500 {e}"));
+            text(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "500 Internal Server Error\n",
+            )
+        }
+    }
+}
+
 async fn handle(
     req: Request<Incoming>,
     cfg: Arc<Config>,
     answers: Arc<Answers>,
+    store: Arc<dyn rescriptum::store::StoreWrite>,
     capture: Arc<Option<Capture>>,
     peer: String,
 ) -> Response<Body> {
@@ -359,6 +607,30 @@ async fn handle(
     if method == Method::GET && path == "/health" {
         log::request(&peer, 200, "GET /health 200");
         return text(StatusCode::OK, "OK\n");
+    }
+
+    // **The install-finished webhook, checked before the bearer guard below on purpose.**
+    // Proxmox authenticates this callback with a token it puts *in the JSON body*, not in
+    // an Authorization header — a different credential, from a different caller, for a
+    // different purpose. Running it through the answer token's guard would reject every
+    // webhook the moment an operator set an answer token.
+    //
+    // The path is reserved **only when the feature is configured**, so a deployment that
+    // never sets the token keeps the "POST on any path is an answer request" contract
+    // whole. That contract is why a URL can be baked into an ISO.
+    if method == Method::POST
+        && path == "/installed"
+        && let Some(expected) = cfg.installed_token.clone()
+    {
+        // The query goes in as identity too, not only the body. Proxmox puts the machine's
+        // interfaces in its webhook body and needs nothing else; **every other family
+        // reports back from a shell script** — a kickstart `%post`, a preseed
+        // `late_command`, an autoinstall `late-commands`, an AutoYaST chroot script — and
+        // there `?mac=…` is a line somebody can write, where composing the same JSON is a
+        // line they will get wrong.
+        let query = req.uri().query().map(str::to_string);
+        let bearer = bearer_matches(&req, &expected);
+        return installed(req, expected, bearer, query, answers, store, peer).await;
     }
 
     // An installer that was given a token must present it. Proxmox does when its ISO

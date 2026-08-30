@@ -2,7 +2,7 @@
 #
 # `members` lists the machines this group answers for — separator style does not
 # matter, same as filenames. A listed machine needs no file of its own unless it has
-# something to override, in which case add `<mac>.toml` next to this directory and put
+# something to override, in which case add a `<mac>/` directory beside `groups/` and put
 # only the difference in it.
 #
 # `members` and `extends` are this server's keys, not Proxmox's. They are stripped from

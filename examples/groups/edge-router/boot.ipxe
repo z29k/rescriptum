@@ -11,6 +11,19 @@
 # replacing them — write it as a script that can be appended to, not one that ends.
 #
 # answer: member 52:54:00:aa:00:01, 52:54:00:aa:00:02
+#
+# WARNING, and `check` says this too: **a group is never disarmed.** When a machine
+# reports success, `POST /installed` moves that machine's own `.ipxe` into an
+# `installed-<id>/` sibling — and only a machine's own, deliberately, so that one machine
+# finishing cannot disarm a whole rack. A machine armed *here* has nothing of its own to
+# move, so it installs, reports, and finds this same script waiting on its next network
+# boot. With a permanently PXE boot order that is a reinstall loop, and the webhook logs
+# `nothing was claiming it`, which reads like a success.
+#
+# So arm from the machine's own directory — `52-54-00-aa-00-01/boot.ipxe` — and keep a
+# group `.ipxe` for what is meant to be served forever, such as booting the local disk.
+# This file is kept as a group to show the layering, not as a pattern to copy for an
+# install.
 
 set base http://192.0.2.10:8000
 set answers ${base}

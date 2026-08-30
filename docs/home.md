@@ -13,9 +13,9 @@ about to receive, you can read it before you power the machine on.
 flowchart LR
   M["Any machine<br/>same image, same URL"]
   M -->|"MAC · serial · DMI"| R["rescriptum"]
-  R --> B["groups/base.toml"]
-  R --> A["groups/rack-a.toml"]
-  R --> H["98fa9b50d810.toml"]
+  R --> B["groups/base/"]
+  R --> A["groups/rack-a/"]
+  R --> H["98fa9b50d810/"]
   B --> G["merge<br/>the machine always wins"]
   A --> G
   H --> G
@@ -45,8 +45,8 @@ datacenter host fielding a provisioning burst.
 ## Thirty seconds
 
 ```console
-$ mkdir -p answers/groups
-$ cat > answers/groups/rack-a.toml <<'TOML'
+$ mkdir -p answers/groups/rack-a
+$ cat > answers/groups/rack-a/proxmox.toml <<'TOML'
 members = ["98:fa:9b:50:d8:10", "98:fa:9b:50:d8:11"]
 
 [global]
@@ -66,8 +66,9 @@ timezone = "Europe/Paris"
 …
 ```
 
-That is one rack **as Proxmox**. The same directory holds `groups/rack-a.ks` for the RHEL
-nodes and `groups/rack-a.preseed` for the Debian ones — same idea, different extension. A
+That is one rack **as Proxmox**. The same directory holds `groups/rack-a/rhel.ks` for the
+RHEL nodes and `groups/rack-a/debian.preseed` for the Debian ones — same directory, different
+extension. A
 document is keyed by *(machine, format)*, so one machine can be several operating systems at
 once and the URL picks between them.
 
@@ -99,7 +100,7 @@ Then point whatever you are installing at **its own URL** — one server answers
   by what the machine *is*.
 - **[One document per operating system](./guide/answers/formats.md)** — the extension is the
   format, the endpoint chooses between them.
-- **[Groups and merging](./guide/answers/grouping.md)** — a rack shares one file; a machine
+- **[Groups and merging](./guide/answers/grouping.md)** — a rack shares one document; a machine
   that differs carries only its difference.
 - **[Templating](./guide/answers/templating.md)** — `{{ serial }}` in a group covers five
   hundred machines.

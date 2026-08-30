@@ -44,16 +44,29 @@ closed immediately, so the installer it was trying to tell *"retry"* got a conne
 reset instead. It now drains briefly first, the way the admin API's `put()` already did.
 A test at the connection cap pins it.
 
+- **macOS lets an unprivileged process bind UDP port 69; Linux does not.** So a test that
+  reaches the *default* TFTP address takes a different branch on each platform — `boot
+  check` calls an obtainable-but-silent port a note and an unbindable one a problem, which
+  is the right rule and exactly what makes the test platform-dependent. It passed locally
+  and failed in CI for a reason that had nothing to do with the change. Any test that sets
+  `RESCRIPTUM_BOOT_DIR` must also set `RESCRIPTUM_TFTP_ADDR=off` unless the probe *is* the
+  subject; `tests/tftp.rs` covers the unbindable port on a high one.
+- **A branch developed entirely offline has never met the CI.** This one accumulated 57
+  commits before its first push, and the first run failed on two things no local run could
+  see: a clippy five versions newer than the pinned local toolchain, and a Linux-only port
+  permission. Push early enough to find out, or expect to.
+
 ## Selection and formats
 
 **A Mac editing the answers directory over SMB can hijack a machine's answer.** macOS writes
 an AppleDouble `._<name>` beside a file whose extended attributes the filesystem will not
-take — `._98-fa-9b-50-d8-10.toml` has an extension that *is* on the allowlist, and
-normalization strips the leading `._`, so it claims the same identity as the real file with a
-body that is binary. The machine being configured then receives a parse error instead of its
-answer, and `check` reports the failure against the *group* as well. `.DS_Store` is harmless
-only by luck (its extension is not on the list). The file store now skips every entry whose
-name starts with `.`; found on a real NAS, not by reading anything.
+take — `._proxmox.toml` has an extension that *is* on the allowlist. With a directory per
+identity it is worse than it was when answers were flat: it is a **second `.toml` in a
+directory that may hold only one**, and it sorts *before* the real one, so a rule that took
+the first would hand every request a binary body. The machine being configured then receives
+a parse error instead of its answer. `.DS_Store` is harmless only by luck (its extension is
+not on the list). The file store skips every entry whose name starts with `.`; found on a
+real NAS, not by reading anything.
 
 **Normalizing a selector pattern strips `*` and `?`** unless you use `normalize_pattern` —
 which turns every glob into a literal, quietly.
@@ -197,10 +210,115 @@ carries on writing to a file with no name.
 **A `.spk` whose outer tar is gzipped is rejected** with "invalid file format" and no
 further detail. So is one carrying macOS `._` members. `check-spk.sh` asserts both.
 
+**There is exactly one route to port 69 on DSM 7, and it is `setcap`.** All four were
+tried on a 7.2.2 machine on 2026-08-27, because the claim "DSM 7 does not let an unsigned
+package run as root" had sat in `CLAUDE.md` for a while with no measurement behind it —
+true, but by luck.
+
+| Route | Result |
+|---|---|
+| `"defaults": {"run-as": "root"}` in `conf/privilege` | **refused** — `synopkg` error **319**, `invalid package privilege content`, `stage: install_failed` |
+| `"ctrl-script": [{"action":"start","run-as":"root"}]` — the shape Synology's *own* packages use (FileStation, QuickConnect and StorageManager all do) | **refused**, same error 319 |
+| `cap_net_bind_service` embedded as a `security.capability` xattr in `package.tgz` | installs fine — the pax inner format is accepted — but **Package Center strips the xattr**, and `getcap` comes back empty |
+| `setcap cap_net_bind_service=+ep` on the installed binary, as root, after install | **works**; the package then binds `udp/69` as its own unprivileged user alongside 8000 and 8001 |
+
+`net.ipv4.ip_unprivileged_port_start` does not exist on that kernel, so that route is
+closed too. `/volume1` is btrfs with `nodev` but **not** `nosuid`, so file capabilities do
+work there, and `/usr/bin/setcap` exists at mode `0700`.
+
+**Root on DSM 7 is gated on being a *Synology* package, and `libsynopkg.so.1` says so in
+so many words.** Reading its strings on a 7.2.2 machine turns the measurement above into
+an explanation. A package that does not pass the signature check (`verifyPackageSignature`
+lives in the same library) is refused all of this:
+
+```
+Failed to pass privilege check, ctrl-script and executable section should not exist
+Failed to pass privilege check, defaults should be provided and defaults.run-as should be package
+Failed to pass privilege check, join-groupname should not contains admin group
+Failed to pass privilege check, tool capabilities should not exist
+Failed to pass privilege check, tool user should be package
+Failed to pass privilege check, non-synology package should not use privilege migration
+```
+
+Which is why FileStation, StorageManager, QuickConnect and SecureSignIn all carry
+`"ctrl-script": [{"action": "start", "run-as": "root"}]` in their own `conf/privilege` and
+we cannot: the shape is legal, the signature is what makes it legal *for them*.
+
+**The line that matters most is `tool capabilities should not exist`.** DSM's privilege
+format has a native `capabilities` field — documented as
+`"capabilities": "cap_chown,cap_net_raw"` on a `tool` entry since 7.0-40656, and
+`SYNOPackageTool::Privilege::ChangeCapabilities` is right there in the library. A signed
+package declares `cap_net_bind_service` and never needs `setcap` at all. **The mechanism we
+want exists, is documented, and is closed to us.**
+
+Synology's developer guide states the rule outright: *"If you are developing a package with
+root privilege, you are not able to install that package unless it is signed by synology."*
+So it is **their** signature, not any trusted publisher's — which answers what the library
+string left open. SynoCommunity hit the same wall
+([spksrc#4170](https://github.com/SynoCommunity/spksrc/issues/4170),
+[#4215](https://github.com/SynoCommunity/spksrc/issues/4215)).
+
+There is one documented bypass and it is **not a distribution path**: a *development
+token*. Generate `debug.dat` from Support Center → Support Services, send it to Synology,
+receive a signed token, drop it at `/var/packages/syno_dev_token`. It is valid **only on
+the NAS that generated the `debug.dat`**, so shipping this way would mean every single user
+doing a round trip with Synology before they could install. `setcap` is one local command
+and strictly better for them.
+
+Conclusion, and it is settled rather than provisional: **the manual `setcap` is the price
+of not being signed by Synology, and no packaging change removes it.** If the package is
+ever signed, the manual step and the boot-up task are both replaced by three lines in
+`conf/privilege`.
+
+**`setcap` works on a DS416j too, and that was not a given.** The four routes to port 69
+were measured on a 7.2.2 VM, which is x86_64 with `/volume1` on btrfs mounted `nodev` but
+not `nosuid` — and a volume mounted `nosuid` makes the kernel ignore file capabilities
+entirely, which would have closed the last open route on the one machine this project
+exists for. Measured on the DS416j (ARMv7, `armada38x`): the capability holds, the package
+binds `udp/69` as its unprivileged user, and `boot check` reports
+`0.0.0.0:69 handed over ipxe-arm64.efi` — a real read request answered with real data.
+
+**The capability belongs to the file, so an upgrade drops it.** A new version replaces the
+binary and the capability goes with the old one — which is why the package documents a
+Task Scheduler boot-up task rather than a one-off command, and why a failed TFTP bind is
+not fatal: when it was, that upgrade took the answer endpoint down too.
+
+**Binding is not a health check, and it proves the opposite of what it looks like.** A
+bind that *succeeds* on the TFTP port means nothing is listening — the degraded state, not
+the healthy one — and a bind that fails cannot tell this server apart from another daemon
+squatting the port, because both are `AddrInUse`. `boot check` therefore sends a real read
+request and reports what a machine would get. The first version of it reported "already in
+use — that is this server, if it is running" and a test with a squatter on the port
+immediately showed that to be a guess.
+
+**A new setting never reaches an installation that already exists**, unless something
+puts it there. The live env file is written only when absent — correct, because an upgrade
+must never replace somebody's port and tokens with defaults — but on its own that makes a
+new feature invisible to every install that predates it. Boot media shipped with the
+folders created, the loaders seeded and 69/udp registered with the firewall, and
+`RESCRIPTUM_BOOT_DIR` never arriving, so `boot check` answered *"boot assets are off"* on a
+DS416j that had everything else in place. `etc/` surviving an uninstall means even removing
+and reinstalling does not fix it. The `.env.example` was no help, because nothing makes
+anybody read it.
+
+`postinst` now appends keys the live file has **never heard of**, touching nothing that is
+present. **A commented-out key counts as present**, and that is the safety property: it is
+how an operator says "I know about this one and I do not want it". Deleting a line means
+"never heard of it" and gets it back; commenting it out means no, and is respected.
+
 ## The DSM desktop application
 
-Seven things, measured on a DSM 7.2.2 virtual machine and on a DS416j running 7.1.1, and
+Eight things, measured on a DSM 7.2.2 virtual machine and on a DS416j running 7.1.1, and
 none of them in the developer guide.
+
+**A default computed at runtime has to be computed in `settings()` too.** The panel renders
+a variable's default as the field's value, so a default that exists only where the server
+consumes it shows as an empty box — while the server runs on an address it derived and
+never displayed. `RESCRIPTUM_PUBLIC_HOST` shipped that way; the operator had no way to see
+which address their machines would be sent to short of reading the startup log. Two entries
+in `KNOWN` are like this, and both are special-cased in `settings()`: the worker count and
+the public host. A third would need the same treatment, and nothing in the type system says
+so.
 
 **A CGI under `/webman/3rdparty/<pkg>/` runs as the owner of the script.** Not as `http`,
 and not as root — as whoever owns the file. DSM chowns a package's tree to the package

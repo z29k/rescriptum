@@ -37,9 +37,49 @@ EXAMPLE="$DEST/etc/$PKG.env.example"
 SC_FILE="$DEST/port_conf/$PKG.sc"
 
 SHARE_ANSWERS="$ROOT/shares/$PKG/answers"
+SHARE_MEDIA="$ROOT/shares/$PKG/media"
+SHARE_BOOT="$ROOT/shares/$PKG/boot"
 DEFAULT_PORT=8000
+# Fixed, and a contract rather than a preference: the loader we ship embeds a script
+# that chains to `${next-server}:8001` before any deployment exists, so a media listener
+# anywhere else is one every already-shipped loader cannot reach.
+MEDIA_PORT=8001
+# TFTP's, and not a preference either: a PXE ROM has 69 burned into it, so this is the
+# one port in the design that cannot move without changing the client.
+TFTP_PORT=69
+# **The ports transfers answer from, and they have to be pinned here.** A TFTP transfer
+# leaves port 69 immediately — the server replies from a fresh port and the client
+# acknowledges to *that* — so a firewall that allows only 69 lets the request in, lets the
+# answer out, and drops the acknowledgement. The symptom is a machine that says
+# "Downloading NBP file" and then nothing, which is as hard to read as this protocol gets.
+#
+# Chosen against a real DSM rather than picked: below the kernel's own ephemeral range
+# (32768–60999, so nothing here can be handed to something else), clear of every UDP port
+# in use on a stock install (68, 123, 137, 138, 161, 323, 1900, 3702, 5353, 9997–9999),
+# claimed by no Synology .sc, and all 64 verified bindable. Sixty-four is MAX_TRANSFERS,
+# so the range cannot be the thing that runs out first.
+TFTP_DATA_FIRST=30000
+TFTP_DATA_LAST=30063
 
 say() { echo "$PKG: $*"; }
+
+# **A secret nobody has to invent.** The install-finished webhook only works when the
+# token in the answer document and the one this server checks are the same string — and
+# two places that must agree, both left blank, is a configuration people get wrong once
+# and then debug as "the machine reinstalls itself". Generating one here means the server
+# half is already right, and the answer half is a copy rather than a decision.
+#
+# `od` rather than `openssl rand` or `base64 /dev/urandom`: all three exist on DSM 7.2.2,
+# but od is POSIX and is the one most likely to exist on the oldest thing this package is
+# allowed to install on. 128 bits of hex, which is not guessable and survives being
+# pasted into a TOML string without quoting questions.
+#
+# Empty output is possible in principle (no /dev/urandom, a stripped od), and an empty
+# token would be a webhook endpoint anybody could call. So the caller checks, and writes
+# the setting commented out rather than live if there is nothing to write.
+generate_token() {
+    od -An -tx1 -N16 /dev/urandom 2>/dev/null | tr -d ' \n'
+}
 
 # Wizard values arrive as environment variables named after the component keys — and every
 # one of them has to be read as "possibly absent, with a default". silent_install exists,
@@ -65,6 +105,20 @@ fi
 # The file, in full, for both the live copy and the example. Every path is explicit:
 # RESCRIPTUM_ANSWERS_DIR defaults to /srv/answers and RESCRIPTUM_DB_PATH to
 # /srv/answers.db, neither of which exists on DSM nor could be created by this user.
+# One per run of this script, so the example file and the live file say the same thing.
+# It only ever *reaches* the live file when that file is being created, or when the
+# top-up finds the key absent — an existing token is never replaced.
+INSTALLED_TOKEN=$(generate_token)
+# **An empty token would be an endpoint anybody can call**, so nothing is better than
+# something here: the setting goes in commented out, the feature stays off, and the
+# comment above it still explains what to do. Only reachable if /dev/urandom or od is
+# missing, which is not a thing this package should decide to ship a hole over.
+if [ -n "$INSTALLED_TOKEN" ]; then
+    INSTALLED_LINE="RESCRIPTUM_INSTALLED_TOKEN=$INSTALLED_TOKEN"
+else
+    INSTALLED_LINE="# RESCRIPTUM_INSTALLED_TOKEN=   # could not generate one here; pick your own"
+fi
+
 env_body() {
     cat <<BODY
 # rescriptum — configuration for the packaged install on DSM.
@@ -88,6 +142,12 @@ RESCRIPTUM_LOG_FILE=$VAR/$PKG.log
 RESCRIPTUM_DB_PATH=$ROOT/shares/$PKG/answers.db
 # RESCRIPTUM_STORE=sqlite
 
+# The address this NAS is reachable at, which the server writes into every script it
+# generates. A NAS is often multi-homed, and the value derived by asking the routing
+# table is then the wrong interface — a machine that boots, chains, and hangs on an
+# address that does not exist. Set it once and the guessing stops.
+# RESCRIPTUM_PUBLIC_HOST=
+
 # Keeps the failures and drops the requests that worked. Worth it once a rollout is
 # routine: successful answers are the only high-volume thing in the log.
 # RESCRIPTUM_LOG=problems
@@ -105,8 +165,105 @@ RESCRIPTUM_DB_PATH=$ROOT/shares/$PKG/answers.db
 # and speaks plain HTTP, which is why it is deliberately not registered with the firewall.
 # It also requires the sqlite store and a token of at least 16 characters; both are
 # startup errors, so getting them wrong shows up as a package that will not start.
-# RESCRIPTUM_ADMIN_ADDR=127.0.0.1:8001
+# Not 8001: that is the media listener's port below, and two listeners on one port is a
+# startup error rather than a race.
+# RESCRIPTUM_ADMIN_ADDR=127.0.0.1:9000
 # RESCRIPTUM_ADMIN_TOKEN=
+
+# ---------------------------------------------------------------------------
+# Boot media — serving the installer itself, not only its answer.
+#
+# Uncomment the directory and restart the package. The share already has the folder;
+# drop an ISO in it over File Station or SMB, then register it:
+#
+#     rescriptum-cli media add $SHARE_MEDIA/proxmox-ve_8.4-1.iso --sha256 ...
+#     rescriptum-cli media list
+#
+# **No image ships with this package.** An ISO is somebody else's artefact, gigabytes,
+# on its own schedule; this folder is where you keep them and it is the archive —
+# nothing here ever modifies an image after it lands. It is set rather than commented
+# because the folder already exists and the port is already registered: leaving it blank
+# would mean a settings panel with an empty field and no hint of what to type.
+RESCRIPTUM_MEDIA_DIR=$SHARE_MEDIA
+
+# The listener's own port. Left commented because the default is already $MEDIA_PORT,
+# which the firewall entry above already covers and which every loader we ship chains to.
+# RESCRIPTUM_MEDIA_ADDR=0.0.0.0:$MEDIA_PORT
+
+# ---------------------------------------------------------------------------
+# TFTP — and it is this package's, not somebody else's.
+#
+# rescriptum *is* the TFTP server. Port 69 is privileged and DSM 7 refuses to let an
+# unsigned package run as root, so it takes one root command, once, from you:
+#
+#     sudo setcap cap_net_bind_service=+ep /volume1/@appstore/$PKG/bin/$PKG
+#     sudo synopkg restart $PKG
+#
+# Measured on a DSM 7.2.2 machine, all four routes: `run-as: root` in conf/privilege is
+# refused with synopkg error 319 (invalid package privilege content), both in `defaults`
+# and as a per-action ctrl-script, even though Synology's own packages use exactly that
+# shape; a security.capability xattr baked into package.tgz installs but Package Center
+# strips it during extraction; setcap after install works, and the package then binds
+# udp/69 as the unprivileged '$PKG' user alongside $port and $MEDIA_PORT.
+#
+# **An upgrade replaces the binary and the capability goes with it.** Re-run the two
+# commands above, or make it durable with a boot-up task: Control Panel > Task Scheduler
+# > Create > Triggered Task > User-defined script, user root, event Boot-up, with the
+# setcap line as the script. Then run it once by hand from that page.
+#
+# Without the capability nothing breaks except TFTP itself: the server warns at startup,
+# keeps answering, keeps serving media, and 'rescriptum-cli boot check' exits non-zero
+# and says so. That is deliberate — an upgrade must not take a fleet's answers down to
+# report that a second port could not be opened.
+#
+# RESCRIPTUM_TFTP_ADDR is left unset on purpose: the default is 0.0.0.0:69, which is
+# what the generated DHCP snippet and every loader we ship expect. Set it to another
+# port to avoid the capability entirely (your DHCP server must then be told), or to
+# 'off' if some other daemon on this NAS is already handing out loaders — DSM has its
+# own TFTP server under Control Panel > File Services > Advanced, and pointing it at the
+# boot folder below is a working alternative rather than the intended one.
+# RESCRIPTUM_TFTP_ADDR=0.0.0.0:69
+
+# The ports a transfer answers from. **Set, not commented, and the firewall entry above
+# covers them** — left to the kernel they would land somewhere no rule allows, and every
+# transfer would die at the handshake with the client looking like it lost interest.
+RESCRIPTUM_TFTP_PORT_RANGE=$TFTP_DATA_FIRST-$TFTP_DATA_LAST
+
+# Where the loaders live — **and this package ships them**, so the folder is already
+# filled in when you first start it. They are iPXE, GPLv2, separate files never linked
+# into our binary; the NOTICE beside them names the exact upstream commit they were built
+# from. Served over TFTP from the address above *and* over HTTP at /boot/ on port
+# $MEDIA_PORT, which is what UEFI HTTP Boot fetches and where the boot menu looks for its
+# logo. 'rescriptum-cli boot check' says whether the set is complete and whether a loader
+# can actually be handed over.
+#
+# An upgrade refreshes the files this package ships and touches nothing else in the
+# folder. If you manage loaders yourself, point this somewhere else and nothing will ever
+# write to it.
+RESCRIPTUM_BOOT_DIR=$SHARE_BOOT
+
+# ---------------------------------------------------------------------------
+# Installing a machine once, and only once.
+#
+# A machine claimed by a '<mac>.ipxe' answer boots the installer every time it starts —
+# including the reboot right after it finished installing, which wipes the disk and does
+# it again. Forever.
+#
+# The machine is what knows it is done. Proxmox calls a webhook after a successful
+# install and *before* that reboot; put this in the machine's answer document:
+#
+#     [post-installation-webhook]
+#     url = "http://<this-nas>:$port/installed"
+#     auth-token = "$INSTALLED_TOKEN"
+#
+# and rescriptum renames the claim out of the way, so the machine boots its own disk from
+# then on. Re-arming it later is renaming that file back. Every other family reports the
+# same thing from its own post-install script with one curl — see the guide.
+#
+# **The token below was generated when this file was written**, so the server half is
+# already right and the answer document only has to copy it. Both must be the same string.
+# Change it if you like; change it in both places.
+$INSTALLED_LINE
 BODY
 }
 
@@ -146,13 +303,67 @@ else
     say "wrote $ENV_FILE"
 fi
 
+# **A setting this version introduced has to reach an installation that already exists.**
+# The live file is written only when absent, which is right — an upgrade must never
+# replace somebody's port and tokens with defaults. But taken alone it means a new feature
+# is *invisible* to every installation that predates it: boot media shipped with the folders
+# created, the loaders seeded and the firewall port registered, and RESCRIPTUM_BOOT_DIR
+# never arriving, so `boot check` said "boot assets are off" on a NAS that had everything
+# else in place. Found on a real DS416j upgrading from a version without boot media, and
+# the .env.example was no help because nothing makes anybody read it.
+#
+# So: keys the live file has **never heard of** are appended. Nothing present is touched,
+# in any way, ever.
+#
+# **A commented-out key counts as present**, and that is the whole safety property: it is
+# how an operator says "I know about this one and I do not want it". Deleting a line means
+# "never heard of it" and gets it back; commenting it out means "no" and is respected.
+if [ -f "$ENV_FILE" ]; then
+    added=""
+    # Only live keys. The commented ones in the template are documentation, and appending
+    # a wall of them to somebody's working file would be noise rather than help.
+    env_body "$SHARE_ANSWERS" "$DEFAULT_PORT" | grep -E '^[A-Z_]+=' | while IFS= read -r line; do
+        key=${line%%=*}
+        # `#\?` so a deliberately commented setting is left alone.
+        if ! grep -qE "^[[:space:]]*#?[[:space:]]*$key=" "$ENV_FILE"; then
+            echo "$line"
+        fi
+    done >"$ENV_FILE.new" 2>/dev/null
+    if [ -s "$ENV_FILE.new" ]; then
+        added=$(cut -d= -f1 <"$ENV_FILE.new" | tr '\n' ' ')
+        {
+            echo
+            echo "# Added by the $PKG ${SYNOPKG_PKGVER:-upgrade} upgrade: settings this file had"
+            echo "# never heard of. Nothing above was touched. Comment one out to turn it off —"
+            echo "# a commented key is respected, a deleted one comes back."
+            cat "$ENV_FILE.new"
+        } >>"$ENV_FILE"
+        # **We just wrote to a file holding an admin token, so restate the mode.** The
+        # append itself preserves it, but a file that arrived from an older version — or
+        # from a hand-edit — may never have been 0600, and the moment to fix that is the
+        # moment we are already touching it. The harness asserts the outcome, not the
+        # append, precisely so this cannot regress unnoticed.
+        chmod 600 "$ENV_FILE"
+        say "added new settings to $ENV_FILE: $added"
+    fi
+    rm -f "$ENV_FILE.new"
+fi
+
 # The .sc file is static and the port is not, so write the chosen one in. Whether the
 # port-config worker acquires this before or after this script runs decides whether it
 # reaches the firewall entry on a fresh install; either way, changing the port later means
 #   sudo /usr/syno/sbin/synopkghelper update rescriptum port-config
 # because Acquire skips a file that already exists in /usr/local/etc/service.d/.
 if [ -f "$SC_FILE" ]; then
-    sed "s|^dst.ports=.*|dst.ports=\"$port/tcp\"|" "$SC_FILE" >"$SC_FILE.new" &&
+    # All three listeners, and every one of them is registered whether or not it is
+    # currently enabled: registering a port does not open it, and the alternative is an
+    # operator who turns boot media on and then cannot find rescriptum in the firewall
+    # list. **69/udp is the one worth naming here** — a machine PXE-booting asks over
+    # UDP broadcast, and a firewall that drops it produces a client that retries and
+    # times out with nothing in any log on this side.
+    # The protocol rides on the port, which is the shape the tcp entries already use —
+    # not a second dst.udp.ports key, which would be a guess.
+    sed "s|^dst.ports=.*|dst.ports=\"$port/tcp $MEDIA_PORT/tcp $TFTP_PORT/udp $TFTP_DATA_FIRST:$TFTP_DATA_LAST/udp\"|" "$SC_FILE" >"$SC_FILE.new" &&
         mv "$SC_FILE.new" "$SC_FILE"
 fi
 

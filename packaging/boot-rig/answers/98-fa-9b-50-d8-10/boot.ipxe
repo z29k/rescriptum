@@ -1,0 +1,12 @@
+#!ipxe
+# The **claimed** machine's answer, and the rig's other marker.
+#
+# It installs nothing: what is being tested is that the chain reached the point where an
+# unattended answer would run, for this machine specifically and not for the other one.
+# Fetching a sentinel puts one line in the *server's own* log — which is a stronger
+# assertion than anything the client could print, because it proves the request arrived.
+echo rescriptum rig: claimed machine {{ mac }} reached its own answer
+chain --autofree http://10.99.0.2:8000/rig/claimed?mac={{ mac }} ||
+echo rescriptum rig: sentinel fetched
+sleep 2
+reboot

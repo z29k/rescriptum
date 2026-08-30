@@ -25,6 +25,8 @@ le droit de servir, et à qui.
 - **[L'API d'administration](./admin-api.md)** — gérer les réponses en HTTP, sur son propre
   listener, avec une écriture qui ne peut pas casser le parc.
 - **[Dépannage](./troubleshooting.md)** — la ligne de log est tout le diagnostic disponible.
+- [Servir les médias de démarrage](./media.md) — le noyau, l'initrd et l'image de l'installeur, depuis le même serveur.
+- [Démarrer une machine par le réseau](./netboot.md) — TFTP, le chargeur, le menu, et les deux lignes de leur DHCP.
 
 ## La forme d'un déploiement
 

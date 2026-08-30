@@ -1,5 +1,7 @@
 //! The answer endpoint's own token, and the capture of what machines really send.
 
+mod common;
+
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
@@ -31,7 +33,7 @@ impl Server {
         let dir = std::env::temp_dir().join(format!("pve-guard-{}-{n}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).expect("scratch");
-        fs::write(dir.join("default.toml"), "marker = \"served\"\n").expect("fixture");
+        common::seed(&dir, "default.toml", "marker = \"served\"\n");
 
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_rescriptum"));
         cmd.env("RESCRIPTUM_ANSWERS_DIR", &dir)

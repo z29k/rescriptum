@@ -23,15 +23,27 @@ USAGE:
     rescriptum check              validate the configured store
     rescriptum import <dir>       load a directory of TOML into the store
     rescriptum export <dir>       write the store out as a directory of TOML
+    rescriptum migrate            show what a flat answers directory would become
+    rescriptum migrate --apply    move those documents into their own directories
     rescriptum config             show the configuration, and where each value comes from
     rescriptum config --json      the same, for a settings panel
     rescriptum config --value K   one value, for a script (never a credential)
-    rescriptum config set K=V     edit the file RESCRIPTUM_ENV_FILE names
-    rescriptum config unset K     comment a setting back out of it
+    rescriptum config set K=V     edit the configuration file, whichever one is named
+    rescriptum config unset K     take a setting back out of it
+    rescriptum media list         the installer images this server holds
+    rescriptum media add FILE     register one already in the media directory
+    rescriptum media add URL      fetch one into it, then register it
+    rescriptum media check        re-verify every recorded digest, report what drifted
+    rescriptum media ipxe ID      print the .ipxe answer that boots one image
+    rescriptum boot dhcp-snippet  their DHCP server's two lines, generated
+    rescriptum boot check         are the loaders a snippet names actually here?
+    rescriptum boot bootstrap     print the stage-two script
+    rescriptum boot menu          print the built-in menu
     rescriptum --help
 
 ENVIRONMENT:
-    RESCRIPTUM_ENV_FILE           read these from a file too  (the real environment wins)
+    RESCRIPTUM_CONFIG             read these from a TOML file (the real environment wins)
+    RESCRIPTUM_ENV_FILE           read these from a KEY=value file, same rules
     RESCRIPTUM_STORE              files | sqlite              (default files)
     RESCRIPTUM_ANSWERS_DIR        directory of answer files   (default /srv/answers)
     RESCRIPTUM_DB_PATH            sqlite database             (default /srv/answers.db)
@@ -43,8 +55,20 @@ ENVIRONMENT:
     RESCRIPTUM_LOG_FILE           a path, stdout or stderr    (default stderr)
 
 ADMIN API (requires RESCRIPTUM_STORE=sqlite; off unless RESCRIPTUM_ADMIN_ADDR is set):
-    RESCRIPTUM_ADMIN_ADDR         admin listener, e.g. 127.0.0.1:8001
+    RESCRIPTUM_ADMIN_ADDR         admin listener, e.g. 127.0.0.1:9000
     RESCRIPTUM_ADMIN_TOKEN        bearer token, 16 characters or more (required)
+
+BOOT MEDIA (off unless RESCRIPTUM_MEDIA_DIR is set):
+    RESCRIPTUM_MEDIA_DIR          directory of installer images
+    RESCRIPTUM_MEDIA_ADDR         media listener             (default 0.0.0.0:8001)
+    RESCRIPTUM_MEDIA_TIMEOUT_SECS whole-transfer deadline    (default 600)
+    RESCRIPTUM_MEDIA_MAX_CONNECTIONS  concurrent transfers   (default 16)
+    RESCRIPTUM_PUBLIC_HOST        the host generated URLs name  (a host, not a URL)
+    RESCRIPTUM_BOOT_ALLOW         CIDRs allowed to fetch media  (default: anyone)
+    RESCRIPTUM_BOOT_DIR           loaders and menus, served over TFTP
+    RESCRIPTUM_TFTP_ADDR          TFTP listener              (default 0.0.0.0:69)
+    RESCRIPTUM_BOOT_TIMEOUT_SECS  menu timeout               (default 15)
+    RESCRIPTUM_USER / _GROUP      drop to these after binding port 69
 
 VALIDATING A MERGED ANSWER:
     rescriptum render 98:fa:9b:50:d8:10 > /tmp/answer.toml
@@ -205,7 +229,7 @@ pub fn check(cfg: &Config) -> ExitCode {
     let groups = answers.group_names().unwrap_or_default();
     let machines = answers.machine_ids().unwrap_or_default();
     println!(
-        "  {} group(s), {} machine file(s)",
+        "  {} group(s), {} machine document(s)",
         groups.len(),
         machines.len()
     );
@@ -215,6 +239,31 @@ pub fn check(cfg: &Config) -> ExitCode {
     for (group, origin) in &groups {
         let members = answers.group_members(group).unwrap_or_default();
         let matchers = answers.group_matchers(group).unwrap_or_default();
+
+        // **A group cannot be disarmed.** `installed::disarm` moves a *machine's* own
+        // document and never a group's — deliberately, so that one machine reporting
+        // success cannot disarm a whole rack. The consequence is easy to miss: a machine
+        // armed only by its group installs, reports, is not disarmed, and installs again
+        // on its next network boot.
+        //
+        // Stated as a fact rather than judged, because `check` cannot tell an installer
+        // arm from a permanent boot policy — a group `.ipxe` that boots the local disk is
+        // meant to be served forever, and is fine.
+        if answers.group_format(group).unwrap_or_default().as_deref() == Some("ipxe") {
+            let claimed = if members.is_empty() {
+                "the machines its `match` block selects".to_string()
+            } else {
+                format!("{} machine(s) by name", members.len())
+            };
+            if !members.is_empty() || !matchers.is_empty() {
+                println!(
+                    "  note: group {group:?} ({origin}) serves .ipxe to {claimed}, and a group \
+                     is never disarmed — `POST /installed` only ever moves a machine's own \
+                     document. If this script starts an installer, those machines will run it \
+                     again on every network boot; arm from the machine's own directory instead."
+                );
+            }
+        }
 
         if !matchers.is_empty() {
             let criteria: Vec<String> = matchers.iter().map(|(k, v)| format!("{k}={v}")).collect();
@@ -335,6 +384,122 @@ pub fn import(cfg: &Config, args: &[String]) -> ExitCode {
     )
 }
 
+/// `migrate [--apply] [<dir>]` — move a flat answers directory into the layout.
+///
+/// **Shows by default and moves only when told to.** The answers directory is the thing
+/// a rack installs from; a command that rearranges it the moment somebody types the name
+/// to find out what it would do is not a command anybody should have to be careful with.
+///
+/// Every move is a `rename` within the same directory, so the documents themselves are
+/// never rewritten and a half-finished run leaves both halves readable.
+pub fn migrate(cfg: &Config, args: &[String]) -> ExitCode {
+    let mut apply = false;
+    let mut dir: Option<&String> = None;
+    for arg in args {
+        match arg.as_str() {
+            "--apply" => apply = true,
+            other if other.starts_with('-') => {
+                eprintln!("unknown option {other:?}\nusage: rescriptum migrate [--apply] [<dir>]");
+                return ExitCode::FAILURE;
+            }
+            other => {
+                if dir.replace(arg).is_some() {
+                    eprintln!("only one directory: {other:?}");
+                    return ExitCode::FAILURE;
+                }
+            }
+        }
+    }
+    let dir = dir
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| cfg.answers_dir.clone());
+
+    let moves = match crate::store::file::pending_moves(&dir) {
+        Ok(moves) => moves,
+        Err(e) => {
+            eprintln!("cannot read {}: {e}", dir.display());
+            return ExitCode::FAILURE;
+        }
+    };
+
+    println!("migrating {}", dir.display());
+    if moves.is_empty() {
+        println!("  nothing to move — every answer is already in a directory of its own");
+        return ExitCode::SUCCESS;
+    }
+
+    // Collisions first, all of them, before a single rename: finding out halfway through
+    // that one document cannot move is worse than finding out before anything did.
+    let mut blocked = Vec::new();
+    for m in &moves {
+        if m.to.exists() {
+            blocked.push(m);
+        }
+    }
+    if !blocked.is_empty() {
+        for m in &blocked {
+            println!(
+                "  BLOCKED {} -> {} already exists",
+                relative(&m.from, &dir),
+                relative(&m.to, &dir)
+            );
+        }
+        println!(
+            "  {} document(s) cannot move; nothing has been changed. \
+             Reconcile them by hand — two documents of one format have no order between \
+             them, so this cannot be decided here.",
+            blocked.len()
+        );
+        return ExitCode::FAILURE;
+    }
+
+    let mut failures = 0;
+    for m in &moves {
+        let from = relative(&m.from, &dir);
+        let to = relative(&m.to, &dir);
+        if !apply {
+            println!("  {from} -> {to}");
+            continue;
+        }
+        let done =
+            m.to.parent()
+                .map(std::fs::create_dir_all)
+                .unwrap_or(Ok(()))
+                .and_then(|()| std::fs::rename(&m.from, &m.to));
+        match done {
+            Ok(()) => println!("  {from} -> {to}"),
+            Err(e) => {
+                println!("  FAILED {from} -> {to}: {e}");
+                failures += 1;
+            }
+        }
+    }
+
+    if !apply {
+        println!(
+            "  {} document(s) to move — nothing has been changed. \
+             Re-run with --apply.",
+            moves.len()
+        );
+        return ExitCode::SUCCESS;
+    }
+    if failures == 0 {
+        println!("  moved {} document(s) — now run `check`", moves.len());
+        ExitCode::SUCCESS
+    } else {
+        println!("  {failures} failure(s)");
+        ExitCode::FAILURE
+    }
+}
+
+/// A path as the operator sees it, against the directory being migrated.
+fn relative(path: &std::path::Path, root: &std::path::Path) -> String {
+    path.strip_prefix(root)
+        .unwrap_or(path)
+        .display()
+        .to_string()
+}
+
 /// `export <dir>` — write the configured store out as a directory of answer files.
 pub fn export(cfg: &Config, args: &[String]) -> ExitCode {
     let [dir] = args else {
@@ -411,6 +576,1084 @@ fn copy(
     }
 }
 
+// ---- media ----------------------------------------------------------------
+
+/// `media list|add|check|ipxe` — the boot-media half of the CLI.
+///
+/// **Preparation and asset management are commands, never requests.** The rule that
+/// keeps the server honest is that no request ever triggers work proportional to the
+/// size of an image; hashing 1.5 GB happens here, once, and the result is recorded
+/// beside the image so nothing ever recomputes it.
+#[cfg(not(feature = "boot"))]
+pub fn media(_cfg: &Config, _args: &[String]) -> ExitCode {
+    eprintln!("this binary was built without the `boot` feature, so it has no media commands");
+    ExitCode::FAILURE
+}
+
+#[cfg(feature = "boot")]
+pub fn media(cfg: &Config, args: &[String]) -> ExitCode {
+    let Some(dir) = &cfg.media_dir else {
+        eprintln!("there is no media directory: RESCRIPTUM_MEDIA_DIR names one, and nothing does");
+        return ExitCode::FAILURE;
+    };
+    let catalog = crate::boot::catalog::Catalog::new(dir);
+
+    match args.split_first() {
+        Some((cmd, rest)) if cmd == "list" && rest.is_empty() => media_list(&catalog),
+        Some((cmd, rest)) if cmd == "add" && !rest.is_empty() => media_add(&catalog, rest),
+        Some((cmd, rest)) if cmd == "check" && rest.is_empty() => media_check(&catalog),
+        Some((cmd, rest)) if cmd == "ipxe" && rest.len() == 1 => {
+            media_ipxe(cfg, &catalog, &rest[0])
+        }
+        Some((cmd, rest)) if cmd == "prepare" && !rest.is_empty() => {
+            media_prepare(cfg, &catalog, rest)
+        }
+        Some((cmd, rest)) if cmd == "export" && rest.len() == 2 => {
+            media_export(&catalog, &rest[0], &rest[1])
+        }
+        Some((cmd, rest)) if cmd == "sources" && rest.len() < 2 => {
+            media_sources(rest.first().map(String::as_str))
+        }
+        _ => {
+            eprintln!(
+                "usage: rescriptum media list\n\
+                 \x20      rescriptum media sources [SOURCE]\n\
+                 \x20      rescriptum media add FILE|URL [--sha256 D] [--as NAME]\n\
+                 \x20      rescriptum media add --from SOURCE NAME\n\
+                 \x20      rescriptum media check\n\
+                 \x20      rescriptum media ipxe ID\n\
+                 \x20      rescriptum media prepare ID [--as NAME] [--url URL]\n\
+                 \x20      rescriptum media export ID FILE"
+            );
+            ExitCode::FAILURE
+        }
+    }
+}
+
+#[cfg(feature = "boot")]
+fn media_sources(which: Option<&str>) -> ExitCode {
+    use crate::boot::{fetch, sources};
+
+    let Some(id) = which else {
+        println!("{:<12} {:<16}  WHAT IT INSTALLS", "SOURCE", "NAME");
+        for s in sources::SOURCES {
+            println!("{:<12} {:<16}  {}", s.id, s.label, s.about);
+        }
+        println!();
+        println!("`media sources <SOURCE>` lists what one offers, reading the vendor's own");
+        println!("checksum index — so the list is current and the digests are theirs.");
+        println!("`media add --from <SOURCE> <NAME>` fetches one.");
+        return ExitCode::SUCCESS;
+    };
+
+    let Some(source) = sources::source(id) else {
+        eprintln!(
+            "no source called {id:?}. There are: {}",
+            sources::SOURCES
+                .iter()
+                .map(|s| s.id)
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        return ExitCode::FAILURE;
+    };
+
+    // Said before the wait, not after: on a NAS with a slow uplink this is several
+    // seconds of apparent nothing, and silence there reads as a hang.
+    eprintln!("reading {} …", source.index);
+    let text = match fetch::fetch_text(source.index) {
+        Ok(text) => text,
+        Err(e) => {
+            eprintln!("{e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let offers = source.offers(&text);
+    if offers.is_empty() {
+        eprintln!(
+            "{} answered, but nothing in it looks like an installer image. The index may \
+             have moved or changed format.",
+            source.index
+        );
+        return ExitCode::FAILURE;
+    }
+
+    println!("{} — {}", source.label, source.about);
+    for offer in &offers {
+        println!("  {}", offer.name);
+    }
+    println!();
+    println!("  rescriptum media add --from {id} {}", offers[0].name);
+    ExitCode::SUCCESS
+}
+
+#[cfg(feature = "boot")]
+fn media_list(catalog: &crate::boot::catalog::Catalog) -> ExitCode {
+    let listing = match catalog.listing() {
+        Ok(listing) => listing,
+        Err(e) => {
+            eprintln!("cannot read {}: {e}", catalog.dir().display());
+            return ExitCode::FAILURE;
+        }
+    };
+
+    // **The last column is what makes the archive visible.** A base image is what the
+    // vendor published, on disk, never modified; a prepared one is a few hundred bytes
+    // of sidecar over it. Seeing which is which is the difference between a directory
+    // and an archive somebody can reason about.
+    println!(
+        "{:<20} {:<8} {:<10} {:<24} {:>8}  SOURCE",
+        "ID", "FAMILY", "ARCH", "VERSION", "SIZE"
+    );
+    for entry in &listing.entries {
+        let source = match &entry.prepared {
+            Some(prepared) => format!("{} -> {}", prepared.source_id, prepared.url),
+            None => match &entry.digest {
+                Some(digest) => format!("base, pinned {}", &digest[..12.min(digest.len())]),
+                None => "base".to_string(),
+            },
+        };
+        println!(
+            "{:<20} {:<8} {:<10} {:<24} {:>8}  {}",
+            entry.id,
+            entry.family().label(),
+            entry.arch().map(|a| a.label()).unwrap_or("-"),
+            truncate(&entry.describe(), 24),
+            human(entry.size),
+            source,
+        );
+    }
+    if listing.entries.is_empty() {
+        println!("(nothing in {})", catalog.dir().display());
+    }
+    for problem in &listing.problems {
+        eprintln!("warning: {problem}");
+    }
+    ExitCode::SUCCESS
+}
+
+/// `media add FILE` or `media add URL` — register an image, or fetch one and register it.
+///
+/// **No base image is ever in this repository or in a release.** An ISO is somebody
+/// else's artefact, it is gigabytes, and it changes on its own schedule; it belongs on
+/// the deployment's disk. Two ways to get it there, and the difference is only who does
+/// the download:
+///
+/// - **Drop it in the media directory** — over SMB, over `scp`, from wherever it already
+///   is — and register it. The native act on a NAS.
+/// - **Give this a URL** and the server fetches it, through `curl` or `wget`, straight
+///   into that directory.
+///
+/// Either way the file lands in the directory and **is never modified afterwards**. That
+/// is what makes the media directory the archive: preparing an image produces a sidecar
+/// and an injection applied on the wire, so the bytes on disk stay exactly what the
+/// vendor published and their digest stays checkable against the vendor's own checksums.
+#[cfg(feature = "boot")]
+fn media_add(catalog: &crate::boot::catalog::Catalog, args: &[String]) -> ExitCode {
+    let mut source: Option<&String> = None;
+    let mut expected: Option<&String> = None;
+    let mut name: Option<String> = None;
+    let mut unverified = false;
+    let mut from: Option<String> = None;
+    let mut rest = args.iter();
+    while let Some(arg) = rest.next() {
+        match arg.as_str() {
+            "--sha256" => match rest.next() {
+                Some(digest) => expected = Some(digest),
+                None => {
+                    eprintln!("--sha256 wants a digest");
+                    return ExitCode::FAILURE;
+                }
+            },
+            "--as" => match rest.next() {
+                Some(value) => name = Some(value.clone()),
+                None => {
+                    eprintln!("--as wants a filename");
+                    return ExitCode::FAILURE;
+                }
+            },
+            "--unverified" => unverified = true,
+            "--from" => match rest.next() {
+                Some(value) => from = Some(value.clone()),
+                None => {
+                    eprintln!("--from wants a source; `media sources` lists them");
+                    return ExitCode::FAILURE;
+                }
+            },
+            _ if source.is_none() => source = Some(arg),
+            other => {
+                eprintln!("unexpected argument {other:?}");
+                return ExitCode::FAILURE;
+            }
+        }
+    }
+    // **`--from` turns a name into a URL and a digest, both read from the vendor.** It is
+    // not a shortcut around the digest rule — it is the strictest way to satisfy it that
+    // does not involve a human copying 64 characters correctly. What it is *not* is a
+    // signature check: the digest comes from the same host as the image, so it proves the
+    // download matches what that vendor is publishing right now, and nothing about
+    // whether the vendor is who you think. Somebody who needs that pastes a digest they
+    // obtained out of band, which is why --sha256 stays.
+    let resolved;
+    let source = if let Some(id) = &from {
+        let Some(wanted) = source else {
+            eprintln!("--from {id} wants an image name too; `media sources {id}` lists them");
+            return ExitCode::FAILURE;
+        };
+        let Some(src) = crate::boot::sources::source(id) else {
+            eprintln!(
+                "no source called {id:?}. There are: {}",
+                crate::boot::sources::SOURCES
+                    .iter()
+                    .map(|s| s.id)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+            return ExitCode::FAILURE;
+        };
+        if expected.is_some() {
+            eprintln!("--from and --sha256 disagree about where the digest comes from; pick one");
+            return ExitCode::FAILURE;
+        }
+        eprintln!("reading {} …", src.index);
+        let text = match crate::boot::fetch::fetch_text(src.index) {
+            Ok(text) => text,
+            Err(e) => {
+                eprintln!("{e}");
+                return ExitCode::FAILURE;
+            }
+        };
+        let offers = src.offers(&text);
+        let Some(offer) = offers.iter().find(|o| o.name == *wanted) else {
+            eprintln!("{} does not offer {wanted:?}.", src.label);
+            if let Some(newest) = offers.first() {
+                eprintln!("The newest it has is {}.", newest.name);
+            }
+            eprintln!("`media sources {id}` lists them all.");
+            return ExitCode::FAILURE;
+        };
+        resolved = (offer.url.clone(), offer.digest.clone());
+        eprintln!("{} publishes it as {}", src.label, &resolved.1[..16]);
+        expected = Some(&resolved.1);
+        &resolved.0
+    } else {
+        let Some(source) = source else {
+            eprintln!(
+                "usage: rescriptum media add FILE [--sha256 DIGEST]\n\
+                 \x20      rescriptum media add URL --sha256 DIGEST [--as NAME.iso]\n\
+                 \x20      rescriptum media add --from SOURCE NAME"
+            );
+            return ExitCode::FAILURE;
+        };
+        source
+    };
+
+    if let Some(digest) = expected
+        && !crate::boot::sha256::is_digest(digest)
+    {
+        eprintln!("{digest:?} is not a SHA-256 — it is 64 hexadecimal characters");
+        return ExitCode::FAILURE;
+    }
+
+    let path = if crate::boot::fetch::looks_like_a_url(source) {
+        // **A digest is required for a URL**, and `--unverified` is what makes going
+        // without one a deliberate act rather than the default. This decides what every
+        // machine on the network installs; an image pulled off a mirror with nothing
+        // checking it is the one place in this design where that would be a shrug.
+        if expected.is_none() && !unverified {
+            eprintln!(
+                "fetching {source} needs --sha256, because nothing else would check what \
+                 arrived. Vendors publish a SHA256SUMS beside the image.\n\
+                 If you genuinely mean to skip it, say --unverified."
+            );
+            return ExitCode::FAILURE;
+        }
+        match crate::boot::fetch::fetch(
+            source,
+            catalog.dir(),
+            name.as_deref(),
+            expected.map(String::as_str),
+        ) {
+            Ok(fetched) => {
+                eprintln!(
+                    "fetched {} via {}{}",
+                    human(fetched.bytes),
+                    fetched.via,
+                    if expected.is_some() {
+                        ", digest verified"
+                    } else {
+                        " — UNVERIFIED"
+                    }
+                );
+                fetched.path
+            }
+            Err(e) => {
+                eprintln!("{e}");
+                return ExitCode::FAILURE;
+            }
+        }
+    } else {
+        std::path::PathBuf::from(source)
+    };
+
+    if !path.is_file() {
+        eprintln!("{} is not a file", path.display());
+        return ExitCode::FAILURE;
+    }
+
+    // A file already on disk is registered where it lies: nothing is copied, so
+    // registering one outside the directory would record a digest for a file the
+    // listener cannot serve.
+    let inside = path
+        .parent()
+        .map(|p| same_directory(p, catalog.dir()))
+        .unwrap_or(false);
+    if !inside {
+        eprintln!(
+            "{} is not in {} — put the image there first, then register it, or give a \
+             URL and let the server fetch it.\n\
+             Nothing is copied: the catalogue serves the file where it lies.",
+            path.display(),
+            catalog.dir().display()
+        );
+        return ExitCode::FAILURE;
+    }
+
+    let id = path
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    if !crate::store::valid_id(&id) {
+        eprintln!("{id:?} is not a usable identifier — it becomes part of a URL");
+        return ExitCode::FAILURE;
+    }
+    if crate::boot::catalog::RESERVED_IDS.contains(&id.as_str()) {
+        eprintln!(
+            "{id:?} is a reserved name — the media listener answers /{id} itself, so an \
+             entry called that could never be reached. Rename the file."
+        );
+        return ExitCode::FAILURE;
+    }
+
+    // Progress, because a minute of silence reads as a hang.
+    eprintln!("hashing {} …", path.display());
+    let mut last = 0u64;
+    let digest = match crate::boot::sha256::file(&path, |done, total| {
+        // No total means no progress to report, so call it finished rather than dividing.
+        let percent = (done * 100).checked_div(total).unwrap_or(100);
+        if percent >= last + 10 {
+            last = percent - percent % 10;
+            eprintln!("  {last}% ({} of {})", human(done), human(total));
+        }
+    }) {
+        Ok(digest) => digest,
+        Err(e) => {
+            eprintln!("cannot read {}: {e}", path.display());
+            return ExitCode::FAILURE;
+        }
+    };
+
+    if let Some(expected) = expected
+        && !expected.eq_ignore_ascii_case(&digest)
+    {
+        // Loud and fatal. A mismatch here is either a truncated download or the wrong
+        // file, and both install the wrong thing on every machine that asks.
+        eprintln!("digest mismatch — nothing was recorded");
+        eprintln!("  expected {expected}");
+        eprintln!("  found    {digest}");
+        return ExitCode::FAILURE;
+    }
+
+    let probed = match crate::boot::probe::probe(&path) {
+        Ok(probed) => probed,
+        Err(e) => {
+            // Still registrable: an image nothing places can be served whole, and that
+            // is a normal thing to want.
+            eprintln!("note: cannot read {} as an image ({e})", path.display());
+            Default::default()
+        }
+    };
+
+    let sidecar = crate::boot::catalog::Sidecar::path_for(&path);
+    if let Err(e) = std::fs::write(
+        &sidecar,
+        crate::boot::catalog::Sidecar::render(&digest, &probed),
+    ) {
+        eprintln!("cannot write {}: {e}", sidecar.display());
+        return ExitCode::FAILURE;
+    }
+
+    println!("{id}  {digest}");
+    println!(
+        "  {} {}",
+        probed
+            .family
+            .map(|f| f.label().to_string())
+            .unwrap_or_else(|| "unknown".to_string()),
+        probed.version.clone().unwrap_or_default()
+    );
+    match (&probed.kernel, &probed.initrd) {
+        (Some(kernel), Some(initrd)) => {
+            println!("  kernel {kernel}");
+            println!("  initrd {initrd}");
+            if probed.external {
+                println!("  (both beside the image — this looks like `prepare-iso --pxe` output)");
+            }
+            if probed.zstd_initrd {
+                // The assistant's own source says "iPXE does not support a
+                // zstd-compressed initrd" when it recompresses to gzip. Whether that
+                // binds through our chain is a bench question; saying so is not.
+                println!(
+                    "  note: the initrd is zstd-compressed. The Proxmox assistant recompresses\n\
+                     \x20       it to gzip when it splits an image, on the grounds that iPXE does\n\
+                     \x20       not support zstd. If a loader refuses it, run:\n\
+                     \x20       proxmox-auto-install-assistant prepare-iso {} --pxe --output DIR",
+                    path.display()
+                );
+            }
+        }
+        _ => println!("  no kernel or initrd found — servable whole, but not as a boot stanza"),
+    }
+    println!("  wrote {}", sidecar.display());
+    ExitCode::SUCCESS
+}
+
+/// `media check` — re-verify what was recorded. Its exit code is a contract, like
+/// `check`'s: `deploy.sh` keys on it.
+#[cfg(feature = "boot")]
+fn media_check(catalog: &crate::boot::catalog::Catalog) -> ExitCode {
+    let listing = match catalog.listing() {
+        Ok(listing) => listing,
+        Err(e) => {
+            println!("cannot read {}: {e}", catalog.dir().display());
+            return ExitCode::FAILURE;
+        }
+    };
+    println!("checking {}", catalog.describe());
+
+    let mut failures = listing.problems.len();
+    for problem in &listing.problems {
+        println!("  problem: {problem}");
+    }
+
+    let mut pinned = 0usize;
+    let mut unpinned: Vec<&str> = Vec::new();
+    for entry in &listing.entries {
+        let Some(recorded) = &entry.digest else {
+            unpinned.push(&entry.id);
+            continue;
+        };
+        match crate::boot::sha256::file(&entry.path, |_, _| {}) {
+            Ok(digest) if digest.eq_ignore_ascii_case(recorded) => pinned += 1,
+            Ok(digest) => {
+                // An image that changed under a recorded digest is the one failure that
+                // silently installs something nobody reviewed.
+                println!(
+                    "  FAIL {}: the image no longer matches what was recorded",
+                    entry.id
+                );
+                println!("       recorded {recorded}");
+                println!("       found    {digest}");
+                failures += 1;
+            }
+            Err(e) => {
+                println!("  FAIL {}: {e}", entry.id);
+                failures += 1;
+            }
+        }
+        if entry.probed.zstd_initrd {
+            println!(
+                "  note: {}'s initrd is zstd — `prepare-iso --pxe` recompresses to gzip",
+                entry.id
+            );
+        }
+    }
+
+    println!(
+        "  {} image(s), {pinned} verified against a recorded digest",
+        listing.entries.len()
+    );
+    for id in &unpinned {
+        println!("  note: {id} has no recorded digest — `media add` records one");
+    }
+
+    if failures == 0 {
+        println!("  ok — everything recorded still matches");
+        ExitCode::SUCCESS
+    } else {
+        println!("  {failures} problem(s)");
+        ExitCode::FAILURE
+    }
+}
+
+/// `media ipxe ID` — **print a script; do not install one.**
+///
+/// The output is an ordinary `.ipxe` answer document. Saved into the answers directory
+/// it goes through the existing selection, layering and templating unchanged, which is
+/// the altitude that keeps the model intact: the server does not become clever about
+/// booting, it gains a generator.
+///
+/// stdout is the script and stderr is everything else, so `media ipxe … > file` works.
+#[cfg(feature = "boot")]
+fn media_ipxe(cfg: &Config, catalog: &crate::boot::catalog::Catalog, id: &str) -> ExitCode {
+    let entry = match catalog.get(id) {
+        Ok(Some(entry)) => entry,
+        Ok(None) => {
+            eprintln!("no image called {id:?} — `rescriptum media list` shows what there is");
+            return ExitCode::FAILURE;
+        }
+        Err(e) => {
+            eprintln!("cannot read {}: {e}", catalog.dir().display());
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let (host, derived) = cfg.public_host();
+    if derived {
+        eprintln!(
+            "# warning: RESCRIPTUM_PUBLIC_HOST is not set, so this script names {host}, \
+             derived by asking the routing table. Set it if that is not the address the \
+             machines can reach."
+        );
+    }
+    match crate::boot::stanza::ipxe(&entry, &cfg.endpoints()) {
+        Ok(script) => {
+            eprintln!(
+                "# {}",
+                crate::boot::stanza::where_the_answer_goes(entry.family())
+            );
+            print!("{script}");
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("{e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// `media prepare ID` — the one command that removes the last external tool.
+///
+/// It writes a **sidecar**, not an image: two hundred bytes standing in for 1.5 GB. The
+/// source is never modified, never copied, and its published digest stays verifiable;
+/// the injection happens on the wire, and changing the answer URL later rewrites those
+/// two hundred bytes rather than a gigabyte.
+#[cfg(feature = "boot")]
+fn media_prepare(
+    cfg: &Config,
+    catalog: &crate::boot::catalog::Catalog,
+    args: &[String],
+) -> ExitCode {
+    let mut id: Option<&String> = None;
+    let mut name: Option<String> = None;
+    let mut url: Option<String> = None;
+    let mut fingerprint: Option<String> = None;
+    let mut token: Option<String> = None;
+    let mut rest = args.iter();
+    while let Some(arg) = rest.next() {
+        let mut take = |what: &str| -> Option<String> {
+            match rest.next() {
+                Some(value) => Some(value.clone()),
+                None => {
+                    eprintln!("{what} wants a value");
+                    None
+                }
+            }
+        };
+        match arg.as_str() {
+            "--as" => match take("--as") {
+                Some(v) => name = Some(v),
+                None => return ExitCode::FAILURE,
+            },
+            "--url" => match take("--url") {
+                Some(v) => url = Some(v),
+                None => return ExitCode::FAILURE,
+            },
+            "--cert-fingerprint" => match take("--cert-fingerprint") {
+                Some(v) => fingerprint = Some(v),
+                None => return ExitCode::FAILURE,
+            },
+            "--token" => match take("--token") {
+                Some(v) => token = Some(v),
+                None => return ExitCode::FAILURE,
+            },
+            other if id.is_none() && !other.starts_with('-') => id = Some(arg),
+            other => {
+                eprintln!("unexpected argument {other:?}");
+                return ExitCode::FAILURE;
+            }
+        }
+    }
+
+    let Some(id) = id else {
+        eprintln!("usage: rescriptum media prepare ID [--as NAME] [--url URL]");
+        return ExitCode::FAILURE;
+    };
+    let entry = match catalog.get(id) {
+        Ok(Some(entry)) => entry,
+        Ok(None) => {
+            eprintln!("no image called {id:?} — `rescriptum media list` shows what there is");
+            return ExitCode::FAILURE;
+        }
+        Err(e) => {
+            eprintln!("cannot read {}: {e}", catalog.dir().display());
+            return ExitCode::FAILURE;
+        }
+    };
+    if entry.family() != crate::boot::probe::Family::Proxmox {
+        // Every other family takes the answer's URL on the kernel command line, where
+        // `media ipxe` already puts it. Injecting a file they never read would be a
+        // no-op that looks like a step.
+        eprintln!(
+            "{id} is {}, and only Proxmox reads its answer's location from inside the image.              For every other family the URL goes on the kernel command line, which              `rescriptum media ipxe {id}` already writes.",
+            entry.family().label()
+        );
+        return ExitCode::FAILURE;
+    }
+
+    let url = url.unwrap_or_else(|| format!("{}/proxmox", cfg.endpoints().answer));
+    let derived = name.unwrap_or_else(|| format!("{id}-http"));
+    if !crate::store::valid_id(&derived)
+        || crate::boot::catalog::RESERVED_IDS.contains(&derived.as_str())
+    {
+        eprintln!("{derived:?} is not a usable identifier — it becomes part of a URL");
+        return ExitCode::FAILURE;
+    }
+
+    // Plan it now rather than at request time, so a refusal is reported to the person
+    // who can act on it instead of to a machine at 3am.
+    let mode = crate::boot::patch::mode_file(&url, fingerprint.as_deref(), token.as_deref());
+    let plan = match crate::boot::patch::add_file(
+        &entry.path,
+        "auto-installer-mode.toml",
+        mode.as_bytes(),
+    ) {
+        Ok(plan) => plan,
+        Err(e) => {
+            eprintln!("{e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let mut sidecar = String::from(
+        "# rescriptum prepared entry — written by `media prepare`.\n         # Two hundred bytes standing in for an image: nothing was copied, and the\n         # source is untouched. The file is injected on the wire, so changing the URL\n         # below is all it takes to point this at a different answer endpoint.\n",
+    );
+    sidecar.push_str(&format!("source = {id}\n"));
+    sidecar.push_str(&format!("prepare-url = {url}\n"));
+    if let Some(fingerprint) = &fingerprint {
+        sidecar.push_str(&format!("prepare-cert-fingerprint = {fingerprint}\n"));
+    }
+    if let Some(token) = &token {
+        sidecar.push_str(&format!("prepare-token = {token}\n"));
+    }
+    // The length the offsets were computed against. A source that changed underneath
+    // would be patched in the wrong place, and the catalogue refuses rather than
+    // serving an image that mounts and is wrong.
+    sidecar.push_str(&format!("source-bytes = {}\n", entry.size));
+    if let Some(digest) = &entry.digest {
+        sidecar.push_str(&format!("sha256 = {digest}\n"));
+    }
+
+    let path = catalog.dir().join(format!(
+        "{derived}.{}",
+        crate::boot::catalog::SIDECAR_EXTENSION
+    ));
+    if let Err(e) = std::fs::write(&path, sidecar) {
+        eprintln!("cannot write {}: {e}", path.display());
+        return ExitCode::FAILURE;
+    }
+
+    println!("{derived}  prepared from {id}");
+    println!("  answer   {url}");
+    println!(
+        "  injects  /auto-installer-mode.toml ({} bytes)",
+        mode.len()
+    );
+    println!(
+        "  image    {} bytes (source {} + {} appended)",
+        plan.len(),
+        entry.size,
+        plan.len() - entry.size
+    );
+    println!("  wrote    {}", path.display());
+    println!();
+    println!("Nothing was copied. Serve it as /{derived}/iso, or write it to a stick with");
+    println!("  rescriptum media export {derived} /tmp/{derived}.iso");
+    ExitCode::SUCCESS
+}
+
+/// `media export ID FILE` — materialise what the listener would have served.
+///
+/// **One code path with the streaming one.** A stick written from a different code path
+/// than the one a machine downloads is a second implementation to keep honest, and the
+/// difference would only show on somebody's desk.
+#[cfg(feature = "boot")]
+fn media_export(catalog: &crate::boot::catalog::Catalog, id: &str, to: &str) -> ExitCode {
+    let entry = match catalog.get(id) {
+        Ok(Some(entry)) => entry,
+        Ok(None) => {
+            eprintln!("no image called {id:?}");
+            return ExitCode::FAILURE;
+        }
+        Err(e) => {
+            eprintln!("cannot read {}: {e}", catalog.dir().display());
+            return ExitCode::FAILURE;
+        }
+    };
+    let Some(prepared) = &entry.prepared else {
+        eprintln!(
+            "{id} is not a prepared entry — it is the image itself, so copy it.              `rescriptum media prepare {id}` makes one that needs exporting."
+        );
+        return ExitCode::FAILURE;
+    };
+
+    let mode = crate::boot::patch::mode_file(
+        &prepared.url,
+        prepared.fingerprint.as_deref(),
+        prepared.token.as_deref(),
+    );
+    let plan = match crate::boot::patch::add_file(
+        &entry.path,
+        "auto-installer-mode.toml",
+        mode.as_bytes(),
+    ) {
+        Ok(plan) => plan,
+        Err(e) => {
+            eprintln!("{e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    eprintln!("writing {} bytes to {to} …", plan.len());
+    if let Err(e) = plan.materialise(std::path::Path::new(to)) {
+        eprintln!("cannot write {to}: {e}");
+        return ExitCode::FAILURE;
+    }
+    println!("{to}");
+    ExitCode::SUCCESS
+}
+
+/// Whether two paths name the same directory, resolving symlinks where it can. A media
+/// directory reached as `/srv/media` and as `./media` is the same directory.
+#[cfg(feature = "boot")]
+fn same_directory(a: &std::path::Path, b: &std::path::Path) -> bool {
+    match (a.canonicalize(), b.canonicalize()) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => a == b,
+    }
+}
+
+#[cfg(feature = "boot")]
+fn human(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "K", "M", "G", "T"];
+    let mut size = bytes as f64;
+    let mut unit = 0;
+    while size >= 1024.0 && unit + 1 < UNITS.len() {
+        size /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{bytes}{}", UNITS[0])
+    } else {
+        format!("{size:.1}{}", UNITS[unit])
+    }
+}
+
+#[cfg(feature = "boot")]
+fn truncate(text: &str, width: usize) -> String {
+    if text.chars().count() <= width {
+        return text.to_string();
+    }
+    let kept: String = text.chars().take(width.saturating_sub(1)).collect();
+    format!("{kept}…")
+}
+
+// ---- boot -----------------------------------------------------------------
+
+#[cfg(not(feature = "boot"))]
+pub fn boot(_cfg: &Config, _args: &[String]) -> ExitCode {
+    eprintln!("this binary was built without the `boot` feature, so it has no boot commands");
+    ExitCode::FAILURE
+}
+
+/// `boot dhcp-snippet` / `boot check` / `boot bootstrap` / `boot menu`.
+#[cfg(feature = "boot")]
+pub fn boot(cfg: &Config, args: &[String]) -> ExitCode {
+    match args.split_first() {
+        Some((cmd, rest)) if cmd == "dhcp-snippet" => boot_snippet(cfg, rest),
+        Some((cmd, rest)) if cmd == "check" && rest.is_empty() => boot_check(cfg),
+        Some((cmd, rest)) if cmd == "bootstrap" && rest.is_empty() => {
+            print!(
+                "{}",
+                crate::boot::menu::bootstrap(&cfg.endpoints(), cfg.unclaimed_boots_local())
+            );
+            ExitCode::SUCCESS
+        }
+        Some((cmd, rest)) if cmd == "menu" && rest.is_empty() => boot_menu(cfg),
+        _ => {
+            eprintln!(
+                "usage: rescriptum boot dhcp-snippet [--format F] [--one-loader]\n\
+                 \x20      rescriptum boot check\n\
+                 \x20      rescriptum boot bootstrap\n\
+                 \x20      rescriptum boot menu\n\
+                 \n\
+                 \x20      --format: dnsmasq | isc | kea | powershell | pfsense | mikrotik"
+            );
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// The DHCP configuration an operator pastes into a server we do not speak to.
+///
+/// stdout is the snippet and stderr is everything else, so redirecting it produces a
+/// file that can be included as-is.
+#[cfg(feature = "boot")]
+fn boot_snippet(cfg: &Config, args: &[String]) -> ExitCode {
+    use crate::boot::dhcp;
+
+    let mut format = dhcp::Format::Dnsmasq;
+    let mut one_loader = false;
+    let mut rest = args.iter();
+    while let Some(arg) = rest.next() {
+        match arg.as_str() {
+            "--one-loader" => one_loader = true,
+            "--format" => match rest.next().map(|f| dhcp::Format::parse(f)) {
+                Some(Some(parsed)) => format = parsed,
+                Some(None) => {
+                    eprintln!(
+                        "unknown --format. Known: {}",
+                        dhcp::Format::ALL
+                            .iter()
+                            .map(|f| f.label())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    );
+                    return ExitCode::FAILURE;
+                }
+                None => {
+                    eprintln!("--format wants a name");
+                    return ExitCode::FAILURE;
+                }
+            },
+            other => {
+                eprintln!("unexpected argument {other:?}");
+                return ExitCode::FAILURE;
+            }
+        }
+    }
+
+    let (host, derived) = cfg.public_host();
+    if derived {
+        eprintln!(
+            "# warning: RESCRIPTUM_PUBLIC_HOST is not set, so this snippet points machines \
+             at {host}, derived by asking the routing table. A DHCP server handing out an \
+             address the machines cannot reach is the hardest failure here to diagnose."
+        );
+    }
+    print!(
+        "{}",
+        dhcp::snippet(
+            format,
+            &dhcp::Handoff {
+                host,
+                media: cfg.endpoints().media,
+                version: env!("CARGO_PKG_VERSION"),
+                one_loader,
+            }
+        )
+    );
+    ExitCode::SUCCESS
+}
+
+#[cfg(feature = "boot")]
+fn boot_menu(cfg: &Config) -> ExitCode {
+    let Some(dir) = &cfg.media_dir else {
+        eprintln!("there is no media directory: RESCRIPTUM_MEDIA_DIR names one, and nothing does");
+        return ExitCode::FAILURE;
+    };
+    let catalog = crate::boot::catalog::Catalog::new(dir);
+    let listing = match catalog.listing() {
+        Ok(listing) => listing,
+        Err(e) => {
+            eprintln!("cannot read {}: {e}", dir.display());
+            return ExitCode::FAILURE;
+        }
+    };
+    let style = crate::boot::menu::Style {
+        title: cfg
+            .boot_title
+            .clone()
+            .unwrap_or_else(crate::boot::menu::Style::default_title),
+        timeout_millis: cfg.boot_timeout_millis(),
+    };
+    print!(
+        "{}",
+        crate::boot::menu::menu(&listing, &cfg.endpoints(), &style)
+    );
+    ExitCode::SUCCESS
+}
+
+/// `boot check` — is the boot chain actually complete?
+///
+/// **The failure this exists for is silent at the ROM.** A generated snippet names a
+/// loader; if that file is not on disk, the machine asks for it, gets nothing, and
+/// stops with no message anybody sees. Nothing else in the chain will notice.
+#[cfg(feature = "boot")]
+fn boot_check(cfg: &Config) -> ExitCode {
+    use crate::boot::loaders;
+    use crate::boot::tftp::ProbeResult;
+
+    let mut failures = 0usize;
+    let mut notes: Vec<String> = Vec::new();
+
+    let Some(dir) = &cfg.boot_dir else {
+        println!("boot assets are off — RESCRIPTUM_BOOT_DIR names a directory, and nothing does");
+        println!("  nothing to check; TFTP is not running either");
+        return ExitCode::SUCCESS;
+    };
+    println!("checking boot assets in {}", dir.display());
+
+    // Every loader the table can hand out, plus the `snp` variants that exist because
+    // the plain UEFI build cannot always see the NIC.
+    for loader in loaders::loaders() {
+        let path = dir.join(loader);
+        if path.is_file() {
+            let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+            println!("  ok   {loader} ({})", human(size));
+        } else {
+            // Named by a snippet, absent from the disk: the silent failure.
+            println!(
+                "  MISSING {loader} — every machine the snippet sends here will ask for it, \
+                 get nothing, and stop"
+            );
+            failures += 1;
+        }
+        for variant in loaders::variants(loader) {
+            if variant != loader && !dir.join(&variant).is_file() {
+                notes.push(format!(
+                    "{variant} is absent — it is the one to reach for when the plain UEFI \
+                     build cannot see a NIC"
+                ));
+            }
+        }
+    }
+
+    // **Can a loader actually be handed over?** Everything above is about the files
+    // being on disk; this is about anything reaching them over UDP, which is the first
+    // question a booting machine asks and the one nothing else here answers.
+    //
+    // **Binding is not the check, and finding that out cost a test.** A bind that
+    // *succeeds* means nothing is listening — the degraded state, not the healthy one —
+    // and a bind that fails cannot tell this server apart from another daemon squatting
+    // the port, because both are `AddrInUse`. So the probe is a real read request: what
+    // comes back is what a machine would get.
+    match cfg.tftp_addr() {
+        None => notes.push(
+            "TFTP is off (RESCRIPTUM_TFTP_ADDR) — the loaders above are served over HTTP \
+             at /boot/ and something else has to hand one over on port 69"
+                .to_string(),
+        ),
+        Some(addr) => {
+            // Ask for a loader that is actually here, so `Refused` means what it says.
+            let wanted = loaders::loaders()
+                .iter()
+                .find(|l| dir.join(l).is_file())
+                .copied()
+                .unwrap_or("ipxe-undionly.kpxe");
+            match crate::boot::tftp::probe(&addr, wanted, std::time::Duration::from_secs(2)) {
+                ProbeResult::Served => println!("  ok   {addr} handed over {wanted}"),
+                ProbeResult::Refused => {
+                    println!(
+                        "  BROKEN a TFTP server answered on {addr} but would not serve \
+                         {wanted} — it is not this one, or not rooted at {}",
+                        dir.display()
+                    );
+                    failures += 1;
+                }
+                // Silence splits on whether the port is even obtainable, and the two
+                // halves are different problems. Cannot bind: something else holds it,
+                // or the privilege is missing — the DSM case, where an upgrade drops the
+                // `setcap` and the server warns and carries on. Can bind: nothing is
+                // there at all, which is simply what "the server is not running" looks
+                // like from a command run before starting it, so it is a note.
+                ProbeResult::Silent => match std::net::UdpSocket::bind(&addr) {
+                    Ok(_) => notes.push(format!(
+                        "nothing is listening on {addr} — expected if the server is not \
+                         running; if it is, it failed to bind and said so at startup"
+                    )),
+                    Err(e) => {
+                        println!(
+                            "  BROKEN nothing answers on {addr} and it cannot be bound \
+                             either: {e}{} — the server still answers and still serves \
+                             media, but a machine sent here by DHCP asks for a loader and \
+                             gets nothing",
+                            if addr.ends_with(":69") {
+                                ". Port 69 is privileged: run as root and set \
+                                 RESCRIPTUM_USER to drop afterwards, or grant the binary \
+                                 cap_net_bind_service with setcap"
+                            } else {
+                                ""
+                            }
+                        );
+                        failures += 1;
+                    }
+                },
+            }
+        }
+    }
+
+    // The embedded script in every loader already shipped chains to a fixed port, and
+    // it can read no configuration — it is baked in before any deployment exists.
+    let media = cfg.media_addr();
+    let port = media.rsplit_once(':').map(|(_, p)| p).unwrap_or("");
+    let expected = crate::config::DEFAULT_MEDIA_ADDR
+        .rsplit_once(':')
+        .map(|(_, p)| p)
+        .unwrap_or("8001");
+    if port != expected {
+        println!(
+            "  WARNING the media listener is on port {port}, but every loader already shipped \
+             embeds a script chaining to :{expected}. The generated autoexec.ipxe and the \
+             script's own relative fallback are the recovery; moving it back is the fix."
+        );
+        failures += 1;
+    }
+
+    // The logo, which the menu asks for and tolerates the absence of.
+    if !dir.join("logo.png").is_file() {
+        notes.push(
+            "logo.png is absent — the menu's `console --picture` tolerates that and falls \
+             back to the text console, so this is cosmetic"
+                .to_string(),
+        );
+    }
+
+    let (host, derived) = cfg.public_host();
+    if derived {
+        notes.push(format!(
+            "RESCRIPTUM_PUBLIC_HOST is not set; generated scripts will name {host}"
+        ));
+    }
+
+    println!(
+        "  {} loader(s) the table can hand out",
+        loaders::loaders().len()
+    );
+    for note in &notes {
+        println!("  note: {note}");
+    }
+
+    if failures == 0 {
+        println!("  ok — the loaders a snippet names are all here");
+        ExitCode::SUCCESS
+    } else {
+        println!("  {failures} problem(s)");
+        ExitCode::FAILURE
+    }
+}
+
 // ---- config ---------------------------------------------------------------
 
 /// `config` / `config --json` / `config set KEY=VALUE` / `config unset KEY`
@@ -424,21 +1667,14 @@ fn copy(
 /// The exit code is a contract, like `check`'s: **zero when the configuration would
 /// start**, one when it would not, or when a write was refused.
 pub fn config(args: &[String]) -> ExitCode {
-    let path = std::env::var(crate::envfile::ENV_FILE)
-        .ok()
-        .map(|v| v.trim().to_string())
-        .filter(|v| !v.is_empty());
+    let named = Named::from_environment();
 
     match args.split_first() {
-        None => show(path.as_deref(), false),
-        Some((flag, rest)) if flag == "--json" && rest.is_empty() => show(path.as_deref(), true),
-        Some((flag, rest)) if flag == "--value" && rest.len() == 1 => {
-            value(path.as_deref(), &rest[0])
-        }
-        Some((cmd, rest)) if cmd == "set" && !rest.is_empty() => edit(path.as_deref(), rest, true),
-        Some((cmd, rest)) if cmd == "unset" && !rest.is_empty() => {
-            edit(path.as_deref(), rest, false)
-        }
+        None => show(&named, false),
+        Some((flag, rest)) if flag == "--json" && rest.is_empty() => show(&named, true),
+        Some((flag, rest)) if flag == "--value" && rest.len() == 1 => value(&named, &rest[0]),
+        Some((cmd, rest)) if cmd == "set" && !rest.is_empty() => edit(&named, rest, true),
+        Some((cmd, rest)) if cmd == "unset" && !rest.is_empty() => edit(&named, rest, false),
         _ => {
             eprintln!(
                 "usage: rescriptum config\n\
@@ -452,16 +1688,89 @@ pub fn config(args: &[String]) -> ExitCode {
     }
 }
 
+/// The configuration files, **as named** — never discovered. Either, both or neither may
+/// be set; a container configures the environment directly and names none.
+struct Named {
+    toml: Option<String>,
+    env: Option<String>,
+}
+
+impl Named {
+    fn from_environment() -> Named {
+        let named = |var: &str| {
+            std::env::var(var)
+                .ok()
+                .map(|v| v.trim().to_string())
+                .filter(|v| !v.is_empty())
+        };
+        Named {
+            toml: named(crate::tomlconfig::CONFIG_FILE),
+            env: named(crate::envfile::ENV_FILE),
+        }
+    }
+
+    /// Where a write lands. **The TOML file when both are named**, because that is the
+    /// one the server reads first — writing the other would produce a change that
+    /// silently does nothing, which is the failure this whole area exists to remove.
+    fn target(&self) -> Option<&str> {
+        self.toml.as_deref().or(self.env.as_deref())
+    }
+}
+
+/// Both files, loaded: what they set, what is worth saying about them, and — separately —
+/// the reason one of them could not be read at all.
+///
+/// A file that will not parse still **prints**, rather than being a single error line:
+/// seeing the other settings next to the reason the file is broken is what makes this
+/// usable. The failure is returned apart from the warnings because it is not one — an
+/// unreadable file is a startup *error*, so it has to reach the exit code.
+struct Loaded {
+    env: Option<crate::envfile::EnvFile>,
+    toml: Option<crate::tomlconfig::TomlFile>,
+    warnings: Vec<String>,
+    unreadable: Option<String>,
+}
+
+fn load_files(named: &Named) -> Loaded {
+    let mut loaded = Loaded {
+        env: None,
+        toml: None,
+        warnings: Vec::new(),
+        unreadable: None,
+    };
+    if let Some(path) = &named.toml {
+        match crate::tomlconfig::TomlFile::load(path.as_str()) {
+            Ok(file) => {
+                loaded.warnings.extend(file.warnings.clone());
+                loaded.toml = Some(file);
+            }
+            Err(e) => loaded.unreadable = Some(e),
+        }
+    }
+    if let Some(path) = &named.env {
+        match crate::envfile::EnvFile::load(path.as_str()) {
+            Ok(file) => {
+                loaded.warnings.extend(file.warnings.clone());
+                loaded.env = Some(file);
+            }
+            // The first failure is the one reported: two broken files is one problem to
+            // fix at a time, and the TOML file is the one the server reads first.
+            Err(e) => loaded.unreadable = loaded.unreadable.or(Some(e)),
+        }
+    }
+    loaded
+}
+
 /// One value, on stdout, for a script that wants it.
 ///
-/// The alternative is a shell reading the env file with `sed`, which gets the *defaults*
+/// The alternative is a shell reading the file with `sed`, which gets the *defaults*
 /// wrong: a variable absent from the file is not unset, it is whatever this program falls
-/// back to. Precedence goes the same way — the environment beats the file — and neither is
-/// visible to something grepping a file.
+/// back to. Precedence goes the same way — the environment beats both files — and none of
+/// it is visible to something grepping a file.
 ///
 /// **A secret is never printed**, whatever is asked. Exit code one means "no such value",
 /// so `if v=$(rescriptum config --value KEY)` reads correctly.
-fn value(path: Option<&str>, key: &str) -> ExitCode {
+fn value(named: &Named, key: &str) -> ExitCode {
     let Some(known) = crate::config::KNOWN.iter().find(|k| k.key == key) else {
         eprintln!("{key} is not a variable this program reads");
         return ExitCode::FAILURE;
@@ -471,12 +1780,12 @@ fn value(path: Option<&str>, key: &str) -> ExitCode {
         return ExitCode::FAILURE;
     }
 
-    let (file, _, unreadable) = load_file(path);
-    if let Some(reason) = unreadable {
+    let loaded = load_files(named);
+    if let Some(reason) = loaded.unreadable {
         eprintln!("{reason}");
         return ExitCode::FAILURE;
     }
-    match crate::config::settings(file.as_ref(), from_environment)
+    match crate::config::settings(loaded.env.as_ref(), loaded.toml.as_ref(), from_environment)
         .into_iter()
         .find(|s| s.key == key)
         .and_then(|s| s.value)
@@ -489,63 +1798,63 @@ fn value(path: Option<&str>, key: &str) -> ExitCode {
     }
 }
 
-/// Load the named file, if one is named at all.
-///
-/// A file that will not parse still **prints**, rather than being a single error line:
-/// seeing the other twelve variables next to the reason the file is broken is what makes
-/// this usable. It is returned separately from the warnings because it is not one — an
-/// unreadable env file is a startup *error*, so it has to reach the exit code.
-fn load_file(path: Option<&str>) -> (Option<crate::envfile::EnvFile>, Vec<String>, Option<String>) {
-    match path {
-        None => (None, Vec::new(), None),
-        Some(p) => match crate::envfile::EnvFile::load(p) {
-            Ok(file) => {
-                let warnings = file.warnings.clone();
-                (Some(file), warnings, None)
-            }
-            Err(e) => (None, Vec::new(), Some(e)),
-        },
-    }
-}
-
 /// The environment as `settings` and `Config` both want to read it.
 fn from_environment(key: &str) -> Option<String> {
     std::env::var(key).ok()
 }
 
-/// Rebuild the configuration exactly as the server would, from a file plus the real
+/// Rebuild the configuration exactly as the server would, from both files plus the real
 /// environment, so that what this command reports is what would actually happen.
-fn effective(file: Option<&crate::envfile::EnvFile>) -> Config {
+fn effective(loaded: &Loaded) -> Config {
     Config::from_lookup(|key| {
         std::env::var(key)
             .ok()
             .filter(|v| !v.trim().is_empty())
-            .or_else(|| file.and_then(|f| f.get(key)))
+            .or_else(|| loaded.toml.as_ref().and_then(|f| f.get(key)))
+            .or_else(|| loaded.env.as_ref().and_then(|f| f.get(key)))
     })
 }
 
-fn show(path: Option<&str>, as_json: bool) -> ExitCode {
-    let (file, problems, unreadable) = load_file(path);
-    let settings = crate::config::settings(file.as_ref(), from_environment);
+fn show(named: &Named, as_json: bool) -> ExitCode {
+    let loaded = load_files(named);
+    let settings =
+        crate::config::settings(loaded.env.as_ref(), loaded.toml.as_ref(), from_environment);
     // Either of these stops a server starting, so either of them is the answer here.
     // A file that cannot be read comes first: it is the more basic failure, and the
     // configuration `validate` would inspect is not the one the operator wrote.
-    let refusal = unreadable.or_else(|| effective(file.as_ref()).validate().err());
+    let refusal = loaded
+        .unreadable
+        .clone()
+        .or_else(|| effective(&loaded).validate().err());
 
     if as_json {
         println!(
             "{}",
-            as_json_text(path, &settings, &problems, refusal.as_deref())
+            as_json_text(named, &settings, &loaded.warnings, refusal.as_deref())
         );
     } else {
-        match path {
-            Some(p) => println!("env file: {p}"),
+        match (&named.toml, &named.env) {
             // Not an error. Plenty of deployments configure a container or a unit file
             // and have nothing for this to edit; saying so beats an empty line.
-            None => println!(
-                "env file: none — {} names one, and nothing does",
+            (None, None) => println!(
+                "config file: none — {} and {} name one, and nothing does",
+                crate::tomlconfig::CONFIG_FILE,
                 crate::envfile::ENV_FILE
             ),
+            (toml, env) => {
+                if let Some(path) = toml {
+                    println!("toml file: {path}");
+                }
+                if let Some(path) = env {
+                    println!("env file: {path}");
+                }
+                // Only worth a line when it could actually change an answer above.
+                if toml.is_some() && env.is_some() {
+                    println!(
+                        "(the toml file wins where they disagree; the environment wins over both)"
+                    );
+                }
+            }
         }
         println!();
 
@@ -559,7 +1868,7 @@ fn show(path: Option<&str>, as_json: bool) -> ExitCode {
             println!("  {:<width$}  {:<32}  {}", s.key, shown, s.source.label());
         }
 
-        for problem in &problems {
+        for problem in &loaded.warnings {
             eprintln!("warning: {problem}");
         }
         if let Some(reason) = &refusal {
@@ -574,7 +1883,7 @@ fn show(path: Option<&str>, as_json: bool) -> ExitCode {
 }
 
 fn as_json_text(
-    path: Option<&str>,
+    named: &Named,
     settings: &[crate::config::Setting],
     problems: &[String],
     refusal: Option<&str>,
@@ -592,13 +1901,21 @@ fn as_json_text(
                 "default": s.default,
                 "secret": s.secret,
                 "help": s.help,
+                // The name this setting has in a TOML file, so a panel can show the line
+                // somebody would edit by hand rather than only the environment name.
+                "path": crate::tomlconfig::path_for(s.key),
             })
         })
         .collect();
 
     serde_json::json!({
-        "env_file": path,
-        "writable": path.is_some_and(writable),
+        // Kept under its old name: the DSM panel reads it, and the env file is still the
+        // file a packaged install writes.
+        "env_file": named.env,
+        "toml_file": named.toml,
+        // Which of them a write would land in — the only one `writable` can be about.
+        "target": named.target(),
+        "writable": named.target().is_some_and(writable),
         "settings": rows,
         "warnings": problems,
         "starts": refusal.is_none(),
@@ -632,14 +1949,19 @@ fn writable(path: &str) -> bool {
     }
 }
 
-fn edit(path: Option<&str>, args: &[String], setting: bool) -> ExitCode {
-    let Some(path) = path else {
+fn edit(named: &Named, args: &[String], setting: bool) -> ExitCode {
+    let Some(path) = named.target() else {
         eprintln!(
-            "there is no file to edit: {} names one, and nothing does",
+            "there is no file to edit: {} and {} name one, and nothing does",
+            crate::tomlconfig::CONFIG_FILE,
             crate::envfile::ENV_FILE
         );
         return ExitCode::FAILURE;
     };
+    // The format follows the variable that named the file, not the extension: a
+    // deployment that calls its TOML file `rescriptum.conf` is still writing TOML, and
+    // guessing from a suffix is how a file gets rewritten in the wrong language.
+    let toml = named.toml.is_some();
 
     let mut changes: std::collections::BTreeMap<String, Option<String>> = Default::default();
     for arg in args {
@@ -658,7 +1980,17 @@ fn edit(path: Option<&str>, args: &[String], setting: bool) -> ExitCode {
         // A misspelled name would otherwise be written, read back as a stranger, and
         // warned about only at the next start — by which time nobody connects the two.
         if !crate::envfile::KNOWN_KEYS.contains(&key.as_str()) {
-            eprintln!("{key} is not a variable this program reads — check the spelling");
+            // Somebody reading the TOML file types the name they see there. Answer with
+            // the one that works rather than with "no such setting".
+            match crate::tomlconfig::key_for(&key) {
+                Some(env_key) => eprintln!(
+                    "{key} is what this setting is called inside the file; on the command \
+                     line it is {env_key}"
+                ),
+                None => {
+                    eprintln!("{key} is not a variable this program reads — check the spelling")
+                }
+            }
             return ExitCode::FAILURE;
         }
         if changes.insert(key.clone(), value).is_some() {
@@ -679,12 +2011,22 @@ fn edit(path: Option<&str>, args: &[String], setting: bool) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    if let Err(e) = crate::envfile::parse(&text) {
+    let sound = if toml {
+        crate::tomlconfig::parse(&text).map(|_| ())
+    } else {
+        crate::envfile::parse(&text).map(|_| ())
+    };
+    if let Err(e) = sound {
         eprintln!("{path} does not parse, so it will not be edited: {e}");
         return ExitCode::FAILURE;
     }
 
-    let rewritten = match crate::envfile::rewrite(&text, &changes) {
+    let rewritten = if toml {
+        crate::tomlconfig::rewrite(&text, &changes)
+    } else {
+        crate::envfile::rewrite(&text, &changes)
+    };
+    let rewritten = match rewritten {
         Ok(text) => text,
         Err(e) => {
             eprintln!("{e}");
@@ -695,18 +2037,30 @@ fn edit(path: Option<&str>, args: &[String], setting: bool) -> ExitCode {
     // **A write may never leave a server that cannot start.** The same reasoning as the
     // admin API's rollback: the panel doing the writing is reached over the very service
     // this would stop, so getting it wrong costs somebody an SSH session at best.
-    let parsed = match crate::envfile::parse(&rewritten) {
+    let parsed = if toml {
+        crate::tomlconfig::parse(&rewritten).map(|(vars, _)| vars)
+    } else {
+        crate::envfile::parse(&rewritten)
+    };
+    let parsed = match parsed {
         Ok(vars) => vars,
         Err(e) => {
             eprintln!("refusing to write a file this program could not read back: {e}");
             return ExitCode::FAILURE;
         }
     };
+    // The *other* file still applies underneath this one, so the question is what the
+    // server would make of both together — not of this file alone.
+    let other = load_files(&Named {
+        toml: None,
+        env: named.env.clone().filter(|_| toml),
+    });
     let would = Config::from_lookup(|key| {
         std::env::var(key)
             .ok()
             .filter(|v| !v.trim().is_empty())
             .or_else(|| parsed.get(key).cloned())
+            .or_else(|| other.env.as_ref().and_then(|f| f.get(key)))
     });
     if let Err(reason) = would.validate() {
         eprintln!("refused: this would leave a server that cannot start — {reason}");

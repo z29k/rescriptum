@@ -57,8 +57,13 @@ and then the package:
 
 ## What the package does not do
 
-Four things worth knowing before they surprise you.
+Five things worth knowing before they surprise you.
 
+- **It cannot bind port 69 on its own.** DSM 7 does not let an unsigned package run as
+  root, so TFTP takes one root command from you, once — see
+  [TFTP needs one root command](#tftp-needs-one-root-command). Until it is given, the
+  server warns, keeps answering and keeps serving media, and only the loader handoff is
+  down.
 - **It does not open the firewall.** Registering the port makes *rescriptum* appear by name
   in the rule editor instead of you typing a number. If your firewall is on with a
   default-deny rule, you still have to create the rule.
@@ -209,6 +214,141 @@ the firewall entry, which does not follow by itself:
 ```console
 $ sudo /usr/syno/sbin/synopkghelper update rescriptum port-config
 ```
+
+## Serving installer media, and PXE
+
+The package can also serve the installer itself — kernels, initrds and images — from the
+same NAS that decides the answer. It is off until you turn it on:
+
+1. Uncomment `RESCRIPTUM_MEDIA_DIR` in the env file and restart the package.
+2. Drop an ISO into the `rescriptum` share's `media` folder, over File Station or SMB.
+3. Register it, so it is verified and probed once rather than per request:
+
+```console
+$ rescriptum-cli media add /volume1/rescriptum/media/proxmox-ve_8.4-1.iso \
+    --sha256 9f86d081884c7d65…
+$ rescriptum-cli media list
+```
+
+The media listener is on **port 8001**, already registered with the firewall alongside
+the answer port — you still have to create the rule.
+
+**No image ships with the package**, and none ever will: an ISO is somebody else's
+artefact, gigabytes, on its own schedule. That folder is where you keep them, and it is
+**the archive** — nothing here modifies an image after it lands. Preparing a Proxmox
+image produces a two-hundred-byte sidecar and an injection applied on the wire, so the
+bytes on disk stay exactly what Proxmox published and their checksum stays verifiable
+against Proxmox's own. See [Serving boot media](./media.md).
+
+### TFTP needs one root command
+
+**rescriptum is the TFTP server here, not DSM.** Port 69 is privileged and DSM 7 refuses
+to let an unsigned package run as root, so the package cannot grant itself the port — but
+it does not need root to *use* it, only to be given permission once:
+
+```console
+$ sudo setcap cap_net_bind_service=+ep /volume1/@appstore/rescriptum/bin/rescriptum
+$ sudo synopkg restart rescriptum
+```
+
+After that the package binds `udp/69` as its own unprivileged `rescriptum` user, alongside
+8000 and 8001. All three are registered with the firewall.
+
+**Make it durable, because an upgrade drops it.** Installing a new version replaces the
+binary, and file capabilities belong to the file — so the capability goes with the old one.
+Control Panel → **Task Scheduler** → Create → Triggered Task → User-defined script, user
+`root`, event **Boot-up**, with the `setcap` line as the script. Run it once from that page
+after every upgrade, or reboot.
+
+**Nothing else breaks while it is missing.** A TFTP port that cannot be bound is the one
+listener in this server whose failure is not fatal, deliberately: answers are the product,
+and an upgrade must not take a fleet's installs down to report that a second port could not
+be opened. What you get instead is a warning in the log, a `tftp:` line in the settings
+panel's **Status** tab, and:
+
+```console
+$ rescriptum-cli boot check
+  BROKEN nothing answers on 0.0.0.0:69 and it cannot be bound either: Permission denied.
+  Port 69 is privileged: run as root and set RESCRIPTUM_USER to drop afterwards, or grant
+  the binary cap_net_bind_service with setcap — the server still answers and still serves
+  media, but a machine sent here by DHCP asks for a loader and gets nothing
+```
+
+Note it asks the port for a loader rather than trying to bind it. Binding proves the
+opposite of what it looks like: a bind that *succeeds* means nothing is listening.
+
+**The loaders are in the package.** The share's `boot` folder arrives filled the first
+time you start it, and an upgrade refreshes them — there is no second download. They are
+iPXE, GPLv2, separate files served alongside rather than linked into anything, and the
+`NOTICE` beside them names the exact upstream commit they were built from.
+
+```console
+$ rescriptum-cli boot check
+  ok   0.0.0.0:69 handed over ipxe-undionly.kpxe
+```
+
+Replacing them is possible but not by editing that folder — an upgrade rewrites the
+filenames this package ships. Point `RESCRIPTUM_BOOT_DIR` somewhere else instead, and
+nothing here will ever write to it.
+
+Then point DHCP at this NAS — **Control Panel → DHCP Server → PXE** if the NAS serves DHCP,
+or your own server with what this prints:
+
+```console
+$ rescriptum-cli boot dhcp-snippet --format dnsmasq
+```
+
+#### If you would rather not use setcap
+
+`RESCRIPTUM_TFTP_ADDR` takes an unprivileged port, which needs no capability at all — your
+DHCP server has to be told, since a PXE ROM has 69 burned into it and only a chainloading
+first stage can be redirected. Or set it to `off` and let another daemon on this NAS hand
+the loader over; DSM has its own TFTP server under Control Panel → File Services →
+Advanced, pointed at the share's `boot` folder. Both are workarounds for a deployment that
+wants them, not what the package expects.
+
+### The Images tab
+
+The application has a fourth tab, and it is where installer images are managed without
+touching a terminal: what is held, a catalogue to pick from, and a URL field for anything
+the catalogue does not offer.
+
+**The catalogue is not a list this package ships.** Each entry names the checksum index the
+vendor already publishes beside its own images; picking one reads that index over the
+network, so the versions offered are whatever the vendor has today and the digest that gets
+verified is theirs. That also means the tab needs the NAS to reach the internet — the only
+part of this package that does.
+
+A download of a 1.5 GB image cannot be held open by a web request, so the tab starts it and
+follows it: `media add` writes into a `.part` file beside its destination and renames it
+only once the digest checks out, so the partial file's size *is* the progress and its
+disappearance *is* the completion. Closing the window does not stop the download.
+
+**Preparing a Proxmox image is a button there too.** Every other family takes its answer's
+URL on the kernel command line, so there is nothing to prepare and the tab says so rather
+than offering a step that would do nothing.
+
+### One setting worth filling in
+
+```
+RESCRIPTUM_PUBLIC_HOST=192.168.1.10
+```
+
+Every generated script names this address. Left empty it is derived by asking the routing
+table, and the settings panel shows what that came out as rather than an empty box — so on
+a NAS with one interface there is nothing here to fill in.
+
+**A NAS with two is the case worth reading.** The derived answer is one of them, and the
+startup log names the others beside it:
+
+```
+warning: RESCRIPTUM_PUBLIC_HOST is not set — derived 192.168.1.10, which is what every
+generated URL will name. This host also has 10.0.0.10. If the machines reach it on one of
+those instead, set it explicitly.
+```
+
+Getting it wrong produces a machine that boots, chains, and hangs on an address that does
+not exist, which is a slow thing to diagnose from the machine's end.
 
 ## The log
 

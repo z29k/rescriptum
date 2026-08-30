@@ -28,7 +28,7 @@ use std::path::{Path, PathBuf};
 pub const ENV_FILE: &str = "RESCRIPTUM_ENV_FILE";
 
 /// Every variable this program reads, so a typo can be reported rather than ignored.
-pub const KNOWN_KEYS: [&str; 13] = [
+pub const KNOWN_KEYS: [&str; 30] = [
     "RESCRIPTUM_STORE",
     "RESCRIPTUM_ANSWERS_DIR",
     "RESCRIPTUM_DB_PATH",
@@ -42,6 +42,23 @@ pub const KNOWN_KEYS: [&str; 13] = [
     "RESCRIPTUM_CAPTURE_DIR",
     "RESCRIPTUM_LOG",
     "RESCRIPTUM_LOG_FILE",
+    "RESCRIPTUM_PUBLIC_HOST",
+    "RESCRIPTUM_MEDIA_DIR",
+    "RESCRIPTUM_MEDIA_ADDR",
+    "RESCRIPTUM_MEDIA_TIMEOUT_SECS",
+    "RESCRIPTUM_MEDIA_MAX_CONNECTIONS",
+    "RESCRIPTUM_BOOT_ALLOW",
+    "RESCRIPTUM_BOOT_DIR",
+    "RESCRIPTUM_TFTP_ADDR",
+    "RESCRIPTUM_BOOT_TIMEOUT_SECS",
+    "RESCRIPTUM_INSTALLED_TOKEN",
+    "RESCRIPTUM_TFTP_PORT_RANGE",
+    "RESCRIPTUM_TFTP_BLKSIZE",
+    "RESCRIPTUM_BOOT_UNCLAIMED",
+    "RESCRIPTUM_BOOT_LOGO",
+    "RESCRIPTUM_BOOT_TITLE",
+    "RESCRIPTUM_USER",
+    "RESCRIPTUM_GROUP",
 ];
 
 /// A loaded file: the values it set, and anything worth saying about it out loud.
@@ -115,14 +132,14 @@ impl EnvFile {
 /// `0o600` and friends return `None`; anything a group or the world can read returns the
 /// mode, so it can be named in the warning.
 #[cfg(unix)]
-fn readable_by_others(path: &Path) -> Option<u32> {
+pub(crate) fn readable_by_others(path: &Path) -> Option<u32> {
     use std::os::unix::fs::PermissionsExt;
     let mode = std::fs::metadata(path).ok()?.permissions().mode() & 0o777;
     (mode & 0o077 != 0).then_some(mode)
 }
 
 #[cfg(not(unix))]
-fn readable_by_others(_path: &Path) -> Option<u32> {
+pub(crate) fn readable_by_others(_path: &Path) -> Option<u32> {
     None
 }
 

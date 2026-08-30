@@ -1,0 +1,21 @@
+# A QEMU machine with its NIC on the rig's isolated network, and nothing else.
+#
+# **It must pass under TCG**, because the development machine is a Mac: /dev/kvm makes
+# this fast, not possible. Ten times slower is a long boot, not a wall.
+FROM debian:bookworm-slim
+
+# `iproute2` is not optional here and its absence is not obvious: without `ip` the
+# script cannot bridge eth0, and QEMU would silently fall back to nothing rather than
+# to a working network. The first run of this rig died on exactly that.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      qemu-system-x86 nasm ovmf iproute2 \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /rig
+COPY packaging/boot-rig/local-disk.asm /rig/local-disk.asm
+COPY packaging/boot-rig/boot-client.sh /rig/boot-client.sh
+RUN nasm -f bin /rig/local-disk.asm -o /rig/local-disk.img \
+    && test "$(stat -c%s /rig/local-disk.img)" = 512 \
+    && chmod +x /rig/boot-client.sh
+
+ENTRYPOINT ["/rig/boot-client.sh"]

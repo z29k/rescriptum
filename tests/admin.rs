@@ -1,6 +1,8 @@
 //! The admin API, against the real binary: authentication, writes, and the promise that
 //! a write can never leave the answer set broken.
 
+mod common;
+
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
@@ -48,10 +50,9 @@ impl Server {
     fn start_seeded(files: &[(&str, &str)]) -> Server {
         let dir = scratch("seeded");
         let answers = dir.join("answers");
+        fs::create_dir_all(&answers).expect("answers dir");
         for (name, contents) in files {
-            let path = answers.join(name);
-            fs::create_dir_all(path.parent().expect("a parent")).expect("subdirectory");
-            fs::write(&path, contents).expect("fixture");
+            common::seed(&answers, name, contents);
         }
         let imported = Command::new(env!("CARGO_BIN_EXE_rescriptum"))
             .env("RESCRIPTUM_STORE", "sqlite")

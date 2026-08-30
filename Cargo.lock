@@ -310,12 +310,14 @@ dependencies = [
 
 [[package]]
 name = "rescriptum"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
+ "libc",
  "quick-xml",
+ "rescriptum",
  "rusqlite",
  "serde_json",
  "serde_yaml_ng",

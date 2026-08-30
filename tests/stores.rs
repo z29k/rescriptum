@@ -7,6 +7,8 @@
 //!
 //! Anything store-specific (atomic renames, the schema) is tested at the bottom.
 
+mod common;
+
 use rescriptum::facts::Facts;
 use rescriptum::select::{Answers, Resolution};
 use rescriptum::store::{FileStore, SqliteStore, Store, StoreWrite};
@@ -370,9 +372,224 @@ fn matching_is_deterministic_whatever_the_store_order() {
     });
 }
 
+/// The names the layout keeps for itself, refused by **both** stores.
+///
+/// A machine called `groups` is a directory called `groups`, which is where the racks
+/// live. The database could hold one happily — and that is the trap: it would then
+/// `export` into a directory that cannot represent it, and `export` is the way out of
+/// the database. So the refusal belongs to both.
+#[test]
+fn a_machine_cannot_take_a_name_the_layout_reserves() {
+    for_each_store(|label, store| {
+        for reserved in ["groups", "default", "GROUPS", "Default"] {
+            let refused = store.put_machine(reserved, "toml", "marker = \"x\"\n");
+            assert!(
+                refused.is_err(),
+                "{label}: {reserved:?} was accepted as a machine id"
+            );
+            let message = refused.unwrap_err().to_string();
+            assert!(
+                message.contains("reserved"),
+                "{label}: {reserved:?} was refused, but not for the reason an operator \
+                 needs to hear: {message}"
+            );
+        }
+        // A *group* may still be called `default` — nothing is reserved down there.
+        store
+            .put_group("default", "toml", "members = [\"98:fa:9b:50:d8:10\"]\n")
+            .unwrap_or_else(|e| panic!("{label}: a group called default: {e}"));
+    });
+}
+
+/// One machine, one directory, several operating systems — the whole point of the
+/// layout, asserted through the endpoint that has to tell them apart.
+#[test]
+fn one_machine_answers_in_every_format_it_holds() {
+    for_each_store(|label, store| {
+        for (format, body) in [
+            ("toml", "marker = \"proxmox\"\n"),
+            ("preseed", "d-i marker string debian\n"),
+            ("ks", "# marker rhel\n"),
+            ("ipxe", "#!ipxe\n# marker boot\n"),
+        ] {
+            store
+                .put_machine("98fa9b50d810", format, body)
+                .unwrap_or_else(|e| panic!("{label}: put .{format}: {e}"));
+        }
+
+        for (segment, expected) in [
+            ("/proxmox/answer", "proxmox"),
+            ("/debian/preseed", "debian"),
+            ("/rhel/ks", "rhel"),
+            ("/ipxe/boot", "boot"),
+        ] {
+            let facts =
+                Facts::from_request(Some(segment), None, body("98:fa:9b:50:d8:10").as_bytes());
+            let r = answers(store)
+                .resolve(&facts)
+                .expect("resolve")
+                .unwrap_or_else(|| panic!("{label}: {segment} answered nothing"));
+            assert!(
+                r.body.contains(expected),
+                "{label}: {segment} served the wrong document: {}",
+                r.body
+            );
+        }
+    });
+}
+
 // ---------------------------------------------------------------------------
 // Store-specific
 // ---------------------------------------------------------------------------
+
+/// The layout before this one, met head on.
+///
+/// An upgrade finds these, and the one thing that must not happen is half-serving them:
+/// a machine whose answer silently moved between two files is the failure this server
+/// exists to make impossible. So it is reported, by name, with the destination spelled
+/// out — and it answers nothing in the meantime.
+#[test]
+fn the_file_store_reports_a_document_left_in_the_old_flat_layout() {
+    let dir = scratch("flat");
+    fs::create_dir_all(dir.join("groups")).unwrap();
+    fs::write(dir.join("98fa9b50d810.toml"), "marker = \"flat\"\n").unwrap();
+    fs::write(dir.join("groups/rack-a.toml"), "[global]\nx = 1\n").unwrap();
+    // Not everything flat is a mistake: a README beside the answers is ordinary.
+    fs::write(dir.join("README.md"), "notes\n").unwrap();
+
+    let store = FileStore::new(&dir);
+    let snapshot = store.snapshot().unwrap();
+    assert!(snapshot.machines.is_empty(), "a flat file was served");
+    assert!(snapshot.groups.is_empty(), "a flat group was served");
+    assert_eq!(snapshot.problems.len(), 2, "{:?}", snapshot.problems);
+
+    let reported = snapshot.problems.join("\n");
+    // The destination, not just a complaint — this is read by somebody mid-upgrade.
+    assert!(
+        reported.contains("98fa9b50d810/proxmox.toml"),
+        "the machine's new path has to be in the message:\n{reported}"
+    );
+    assert!(
+        reported.contains("groups/rack-a/proxmox.toml"),
+        "the group's new path has to be in the message:\n{reported}"
+    );
+    assert!(
+        reported.contains("rescriptum migrate"),
+        "the way out has to be named:\n{reported}"
+    );
+    assert!(
+        !reported.contains("README"),
+        "an unservable file is not a problem:\n{reported}"
+    );
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// Two documents of one format in one directory.
+///
+/// The stem means nothing, so there is no rule that picks between them an operator could
+/// have predicted. Sorted order decides — anything else would depend on readdir — and
+/// the loser is *reported*, because silently serving one of two is how the wrong
+/// operating system gets installed.
+#[test]
+fn the_file_store_reports_two_documents_of_one_format_and_takes_the_first() {
+    let dir = scratch("duplicate");
+    let machine = dir.join("98fa9b50d810");
+    fs::create_dir_all(&machine).unwrap();
+    fs::write(machine.join("zzz-second.toml"), "marker = \"second\"\n").unwrap();
+    fs::write(machine.join("aaa-first.toml"), "marker = \"first\"\n").unwrap();
+    // A different format in the same directory is not a duplicate at all.
+    fs::write(machine.join("debian.preseed"), "d-i marker string x\n").unwrap();
+
+    let store = FileStore::new(&dir);
+    let snapshot = store.snapshot().unwrap();
+    let toml: Vec<_> = snapshot
+        .machines
+        .iter()
+        .filter(|m| m.format == "toml")
+        .collect();
+    assert_eq!(toml.len(), 1, "both documents claimed the format");
+    assert!(toml[0].body.contains("first"), "{:?}", toml[0].body);
+    assert_eq!(
+        snapshot.machines.len(),
+        2,
+        "the preseed is a second answer, not a duplicate"
+    );
+    assert!(
+        snapshot.problems.iter().any(|p| p.contains("zzz-second")),
+        "the ignored document has to be named: {:?}",
+        snapshot.problems
+    );
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// A write replaces the document that is there, whatever the operator called it.
+///
+/// The alternative is a second file under the canonical name, which turns one answer
+/// into two of one format — the state the check above reports. A write must not be able
+/// to create it.
+#[test]
+fn the_file_store_overwrites_a_document_under_the_name_it_already_has() {
+    let dir = scratch("rename");
+    let machine = dir.join("98fa9b50d810");
+    fs::create_dir_all(&machine).unwrap();
+    fs::write(machine.join("pve9.toml"), "marker = \"original\"\n").unwrap();
+
+    let store = FileStore::new(&dir);
+    store
+        .put_machine("98fa9b50d810", "toml", "marker = \"updated\"\n")
+        .expect("put over an operator's own name");
+
+    assert_eq!(
+        fs::read_to_string(machine.join("pve9.toml")).unwrap(),
+        "marker = \"updated\"\n",
+        "the write went somewhere else"
+    );
+    assert!(
+        !machine.join("proxmox.toml").exists(),
+        "a second .toml was created beside the first"
+    );
+    assert!(store.snapshot().unwrap().problems.is_empty());
+
+    // And a format that is not there yet does get the canonical name.
+    store
+        .put_machine("98fa9b50d810", "ipxe", "#!ipxe\n")
+        .expect("put a new format");
+    assert!(machine.join("boot.ipxe").is_file());
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// A machine with nothing left in it is not a machine.
+#[test]
+fn the_file_store_takes_the_directory_away_with_the_last_document() {
+    let dir = scratch("empty");
+    let store = FileStore::new(&dir);
+    store
+        .put_machine("98fa9b50d810", "toml", "x = 1\n")
+        .unwrap();
+    store
+        .put_machine("98fa9b50d810", "ipxe", "#!ipxe\n")
+        .unwrap();
+
+    assert!(store.delete_machine("98fa9b50d810", "toml").unwrap());
+    assert!(
+        dir.join("98fa9b50d810").is_dir(),
+        "the directory went while it still held an answer"
+    );
+    assert!(store.delete_machine("98fa9b50d810", "ipxe").unwrap());
+    assert!(
+        !dir.join("98fa9b50d810").exists(),
+        "an empty identity directory was left behind"
+    );
+
+    // Anything else in there keeps it — a note an operator left is not ours to delete.
+    store
+        .put_machine("aabbccddeeff", "toml", "x = 1\n")
+        .unwrap();
+    fs::write(dir.join("aabbccddeeff/NOTES.md"), "why this box\n").unwrap();
+    assert!(store.delete_machine("aabbccddeeff", "toml").unwrap());
+    assert!(dir.join("aabbccddeeff/NOTES.md").is_file());
+    let _ = fs::remove_dir_all(&dir);
+}
 
 #[test]
 fn the_file_store_ignores_what_a_mac_leaves_in_a_shared_folder() {
@@ -384,24 +601,32 @@ fn the_file_store_ignores_what_a_mac_leaves_in_a_shared_folder() {
     // body that is binary. The machine that was being configured then gets a parse error
     // instead of its answer. Found on a real NAS.
     let dir = scratch("appledouble");
-    fs::create_dir_all(dir.join("groups")).unwrap();
-    fs::write(
-        dir.join("98-fa-9b-50-d8-10.toml"),
-        "[global]\nfqdn = \"m\"\n",
-    )
-    .unwrap();
-    fs::write(
-        dir.join("groups/rack.toml"),
+    common::seed(&dir, "98-fa-9b-50-d8-10.toml", "[global]\nfqdn = \"m\"\n");
+    common::seed(
+        &dir,
+        "groups/rack.toml",
         "members = [\"98:fa:9b:50:d8:10\"]\n\n[global]\nkeyboard = \"fr\"\n",
-    )
-    .unwrap();
+    );
     fs::write(dir.join(".DS_Store"), b"Mac OS X\x00\x02binary").unwrap();
+    // **Beside the document, inside the machine's own directory** — which is worse than
+    // it was when answers were flat. `._proxmox.toml` is a second `.toml` in a directory
+    // that may hold only one, and it sorts *before* the real one, so a rule that picked
+    // the first would hand every request a binary body.
     fs::write(
-        dir.join("._98-fa-9b-50-d8-10.toml"),
+        dir.join("98-fa-9b-50-d8-10/._proxmox.toml"),
         b"Mac OS X\x00\x02binary",
     )
     .unwrap();
-    fs::write(dir.join("groups/._rack.toml"), b"Mac OS X\x00\x02binary").unwrap();
+    fs::write(
+        dir.join("98-fa-9b-50-d8-10/.DS_Store"),
+        b"Mac OS X\x00\x02binary",
+    )
+    .unwrap();
+    fs::write(
+        dir.join("groups/rack/._proxmox.toml"),
+        b"Mac OS X\x00\x02binary",
+    )
+    .unwrap();
 
     let store = FileStore::new(&dir);
     let snapshot = store.snapshot().unwrap();
@@ -412,6 +637,17 @@ fn the_file_store_ignores_what_a_mac_leaves_in_a_shared_folder() {
         "hidden files were taken for answer documents"
     );
     assert_eq!(snapshot.groups.len(), 1, "hidden files reached the groups");
+    // Not merely excluded — not even *reported* as a second document of one format.
+    assert!(
+        snapshot.problems.is_empty(),
+        "litter was reported as a conflict: {:?}",
+        snapshot.problems
+    );
+    assert!(
+        snapshot.machines[0].body.contains("fqdn"),
+        "the AppleDouble answered instead of the document: {:?}",
+        snapshot.machines[0].body
+    );
     let _ = fs::remove_dir_all(&dir);
 }
 
@@ -427,15 +663,105 @@ fn the_file_store_writes_atomically_and_leaves_no_scratch_files() {
         .unwrap();
 
     // A reader must never meet a half-written answer, so nothing temporary survives.
-    let stray: Vec<_> = fs::read_dir(&dir)
-        .unwrap()
-        .flatten()
-        .map(|e| e.file_name().to_string_lossy().to_string())
-        .filter(|n| n.contains("tmp"))
-        .collect();
+    // Swept recursively: the scratch file is written beside the document, which is one
+    // level down now — a check of the top directory alone would pass without looking.
+    let mut stray = Vec::new();
+    let mut walk = vec![dir.clone()];
+    while let Some(next) = walk.pop() {
+        for entry in fs::read_dir(&next).unwrap().flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if entry.path().is_dir() {
+                walk.push(entry.path());
+            } else if name.contains("tmp") {
+                stray.push(entry.path().display().to_string());
+            }
+        }
+    }
     assert!(stray.is_empty(), "left temporary files behind: {stray:?}");
-    assert!(dir.join("98fa9b50d810.toml").is_file());
-    assert!(dir.join("groups/rack-a.toml").is_file());
+    assert!(dir.join("98fa9b50d810/proxmox.toml").is_file());
+    assert!(dir.join("groups/rack-a/proxmox.toml").is_file());
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// A document holds a root password hash and SSH keys, so a rewrite must never widen
+/// its permissions.
+///
+/// The admin API has always run as the service, so this never mattered in process. A
+/// command run by hand — over SSH, quite possibly not as the service user — is a
+/// different process with a different umask, and `0600` coming back `0644` would be a
+/// security regression introduced by a convenience.
+///
+/// **Watched failing:** drop the `preserve` call in `write_atomic` and the rewritten
+/// document comes back `0644` under the default umask.
+#[cfg(unix)]
+#[test]
+fn the_file_store_keeps_a_documents_mode_when_it_rewrites_it() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = scratch("modes");
+    let store = FileStore::new(&dir);
+    store
+        .put_machine("98fa9b50d810", "toml", "marker = \"first\"\n")
+        .unwrap();
+    let path = dir.join("98fa9b50d810/proxmox.toml");
+
+    // A document an operator has locked down, the way a real one holding a hash would be.
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+    store
+        .put_machine("98fa9b50d810", "toml", "marker = \"second\"\n")
+        .unwrap();
+
+    let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+    assert_eq!(
+        mode, 0o600,
+        "the rewrite widened the document to {mode:04o}"
+    );
+    assert!(fs::read_to_string(&path).unwrap().contains("second"));
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// A document nobody has set a mode on is created `0600` rather than inheriting a umask.
+#[cfg(unix)]
+#[test]
+fn a_new_document_is_not_created_world_readable() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = scratch("new-mode");
+    let store = FileStore::new(&dir);
+    store
+        .put_machine("98fa9b50d810", "toml", "marker = \"x\"\n")
+        .unwrap();
+
+    let mode = fs::metadata(dir.join("98fa9b50d810/proxmox.toml"))
+        .unwrap()
+        .permissions()
+        .mode()
+        & 0o777;
+    assert_eq!(mode, 0o600, "a new document was created {mode:04o}");
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// And the identity directory takes the answers directory's mode, not the caller's
+/// umask — a `0600` document inside a directory the service cannot traverse is the same
+/// outage, arriving one restart later.
+#[cfg(unix)]
+#[test]
+fn a_new_identity_directory_inherits_the_answers_directory() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = scratch("dir-mode");
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o750)).unwrap();
+    let store = FileStore::new(&dir);
+    store
+        .put_machine("98fa9b50d810", "toml", "marker = \"x\"\n")
+        .unwrap();
+
+    let mode = fs::metadata(dir.join("98fa9b50d810"))
+        .unwrap()
+        .permissions()
+        .mode()
+        & 0o777;
+    assert_eq!(mode, 0o750, "the identity directory came out {mode:04o}");
     let _ = fs::remove_dir_all(&dir);
 }
 
@@ -1055,11 +1381,7 @@ fn an_answers_directory_that_appears_later_is_served_on_the_next_request() {
 
     // Well inside the one-second backstop, so the version change is what has to do it.
     fs::create_dir_all(&answers_dir).unwrap();
-    fs::write(
-        answers_dir.join("98fa9b50d810.toml"),
-        "marker = \"appeared\"\n",
-    )
-    .unwrap();
+    common::seed(&answers_dir, "98fa9b50d810.toml", "marker = \"appeared\"\n");
 
     let r = resolver
         .resolve(&facts_for("98:fa:9b:50:d8:10"))

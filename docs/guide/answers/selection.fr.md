@@ -13,41 +13,48 @@ ordonnées par la finesse avec laquelle elles visent une machine.
 
 ## 1. Par le nom
 
-Nommez un document d'après l'adresse MAC de la machine :
+Nommez un **répertoire** d'après l'adresse MAC de la machine, et mettez-y ses documents :
 
 ```
 answers/
-├── 98-fa-9b-50-d8-10.toml
-├── aabbccddeeff.toml
-└── default.toml
+├── 98-fa-9b-50-d8-10/
+│   └── proxmox.toml
+├── aabbccddeeff/
+│   └── proxmox.toml
+└── default/
+    └── proxmox.toml
 ```
 
 Quand une requête arrive, le serveur passe en minuscules tout ce qu'elle porte et retire
-chaque caractère non alphanumérique, fait de même avec le nom de chaque document, et sert le
-premier dont le nom apparaît **à l'intérieur** de la requête. Ainsi
-`98-fa-9b-50-d8-10.toml`, `98:fa:9b:50:d8:10.toml` et `98fa9b50d810.toml` correspondent tous
-à la même machine — vous n'avez jamais à vous soucier du style de séparateur que Proxmox
-utilise cette version-ci, ni de la façon dont il structure son JSON.
+chaque caractère non alphanumérique, fait de même avec le nom de chaque répertoire, et sert
+le premier dont le nom apparaît **à l'intérieur** de la requête. Ainsi
+`98-fa-9b-50-d8-10`, `98:fa:9b:50:d8:10` et `98fa9b50d810` nomment tous la même machine —
+vous n'avez jamais à vous soucier du style de séparateur que Proxmox utilise cette
+version-ci, ni de la façon dont il structure son JSON.
+
+L'identité est le nom du **répertoire** ; les noms de fichiers qu'il contient ne choisissent
+rien, ils ne portent que le format dans leur extension.
 
 Cette normalisation est toute l'astuce, et c'est pourquoi cela survit à un changement de
 format de corps entre versions de Proxmox : c'est un test de sous-chaîne sur des octets, pas
 un schéma.
 
-Rien n'empêche de nommer un document d'après un numéro de série, un code d'inventaire ou un
-nom d'hôte. N'importe quelle chaîne apparaissant dans ce que la machine envoie fera l'affaire.
+Rien n'empêche de nommer un répertoire d'après un numéro de série, un code d'inventaire ou
+un nom d'hôte. N'importe quelle chaîne apparaissant dans ce que la machine envoie fera
+l'affaire.
 
 ## 2. Par liste de membres
 
 Un groupe revendique un ensemble de machines en les listant :
 
 ```toml
-# answers/groups/rack-a.toml
+# answers/groups/rack-a/proxmox.toml
 members = ["98:fa:9b:50:d8:10", "98:fa:9b:50:d8:11", "98:fa:9b:50:d8:12"]
 ```
 
-Les chaînes de `members` sont normalisées exactement comme les noms de fichiers, donc le
+Les chaînes de `members` sont normalisées exactement comme les noms de répertoires, donc le
 style de séparateur n'a pas d'importance ici non plus. Une machine listée n'a besoin
-d'aucun document propre à moins d'avoir quelque chose à surcharger — voir
+d'aucun répertoire propre à moins d'avoir quelque chose à surcharger — voir
 [groupes](./grouping.md).
 
 ## 3. Par ce que la machine est
@@ -55,7 +62,7 @@ d'aucun document propre à moins d'avoir quelque chose à surcharger — voir
 Un bloc `match` revendique une machine par ses propriétés plutôt que par son identité :
 
 ```toml
-# answers/groups/dell-r620.toml
+# answers/groups/dell-r620/proxmox.toml
 [match]
 manufacturer = "Dell Inc."
 product      = "PowerEdge R620"
@@ -113,7 +120,7 @@ que la botte de foin.
 
 Normalisé en alphanumériques minuscules : la botte de foin de sous-chaînes qui fait
 fonctionner la correspondance par nom. Les valeurs de query et les segments de chemin y sont
-aussi ajoutés, donc un document nommé d'après une MAC résout que la MAC soit arrivée dans un
+aussi ajoutés, donc un répertoire nommé d'après une MAC résout que la MAC soit arrivée dans un
 corps POST ou dans une query string. Sans cela, un `GET` — qui n'a aucun corps — ne pourrait
 jamais correspondre par nom.
 

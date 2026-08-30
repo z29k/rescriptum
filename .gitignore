@@ -12,6 +12,13 @@ node_modules/
 
 # ── Build output / generated ─────────────────────────────────
 dist/
+# Scratch for a deployment's own files — answer documents carry credentials and must
+# never reach a public repository.
+tmp/
+# The built loaders. **No binaries in git, ever** — packaging/ipxe/ is the written
+# offer, and build.sh reproduces them from the pinned commit.
+packaging/ipxe/out/
+packaging/ipxe/.work/
 build/
 .astro/
 .output/

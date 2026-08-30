@@ -1,6 +1,6 @@
 ---
 title: Configuration
-description: Every environment variable, its default, and what happens when you get one wrong.
+description: Every environment variable, its default, the two file formats that can supply them, and what happens when you get one wrong.
 sidebar:
   label: Configuration
   order: 1
@@ -8,14 +8,17 @@ sidebar:
 
 # Configuration
 
-Environment variables only — and, optionally, a file to read some of them from. There is
-no configuration *format* to learn and no command line to get wrong.
+Environment variables — and, optionally, a file to read them from, in either of two
+shapes. There is no command line to get wrong, and the variables are the whole
+configuration: both file formats set exactly the same things under exactly the same
+rules, so nothing you can write in a file means anything the environment could not.
 
 ## The variables
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `RESCRIPTUM_ENV_FILE` | unset | Read defaults from this file too — see [below](#the-env-file) |
+| `RESCRIPTUM_CONFIG` | unset | Read defaults from this **TOML** file — see [below](#the-toml-file) |
+| `RESCRIPTUM_ENV_FILE` | unset | Read defaults from this `KEY=value` file — see [below](#the-env-file) |
 | `RESCRIPTUM_STORE` | `files` | `files` (a directory) or `sqlite` (a database) |
 | `RESCRIPTUM_ANSWERS_DIR` | `/srv/answers` | Directory of answer documents |
 | `RESCRIPTUM_DB_PATH` | `/srv/answers.db` | Database path, when `RESCRIPTUM_STORE=sqlite` |
@@ -29,6 +32,22 @@ no configuration *format* to learn and no command line to get wrong.
 | `RESCRIPTUM_CAPTURE_DIR` | unset | Record request bodies here. Unset means no capture |
 | `RESCRIPTUM_LOG` | `all` | `all`, `problems` or `off` — see [below](#logging) |
 | `RESCRIPTUM_LOG_FILE` | unset | A file to append to, or `stdout` / `stderr`. Unset means stderr |
+| `RESCRIPTUM_MEDIA_DIR` | unset | Installer images. **Unset means no media and no media listener** |
+| `RESCRIPTUM_MEDIA_ADDR` | `0.0.0.0:8001` | The media listener, when there is a media directory |
+| `RESCRIPTUM_MEDIA_TIMEOUT_SECS` | `600` | Whole-transfer deadline. Deliberately not the answer listener's 10 |
+| `RESCRIPTUM_MEDIA_MAX_CONNECTIONS` | `16` | Concurrent transfers. Low on purpose: each holds its permit for minutes |
+| `RESCRIPTUM_PUBLIC_HOST` | derived | The host generated URLs name. **A host, never a URL** |
+| `RESCRIPTUM_BOOT_ALLOW` | unset | Client CIDRs allowed to fetch boot media. Unset means anyone who can reach the port |
+| `RESCRIPTUM_BOOT_DIR` | unset | Loaders and menus, handed out over TFTP. **Unset means no TFTP at all** |
+| `RESCRIPTUM_TFTP_ADDR` | `0.0.0.0:69` | The TFTP listener, or **`off`** for none. Port 69 is privileged; see `RESCRIPTUM_USER` |
+| `RESCRIPTUM_TFTP_PORT_RANGE` | unset | The ports transfers answer from, as `first-last`. **A TFTP transfer leaves port 69 immediately** — the server replies from a fresh port and the client acknowledges to that — so a firewall allowing only 69 drops the acknowledgement and the machine looks like it lost interest. Pin the range so it can be opened. Unset, the kernel picks |
+| `RESCRIPTUM_TFTP_BLKSIZE` | `1468` | The largest TFTP block to agree to. 1468 fills a 1500-byte path **exactly** — 1468 payload, 4 TFTP, 8 UDP, 20 IP — so a VLAN tag or a tunnel makes the frame too big and a PXE ROM usually just stops. Lower it (1400, or 512) when a boot stalls at the first block |
+| `RESCRIPTUM_BOOT_TIMEOUT_SECS` | `15` | Seconds before the menu falls through to local boot |
+| `RESCRIPTUM_BOOT_UNCLAIMED` | `menu` | What a machine no answer claims gets. `local` hands it back to its firmware instead, which inverts what an answer file means: present is *install this one* rather than *leave this one alone* |
+| `RESCRIPTUM_INSTALLED_TOKEN` | unset | Proxmox's `[post-installation-webhook]` token. Set it and `POST /installed` exists, dropping a machine's install claim when it reports success. **Unset, there is no endpoint** |
+| `RESCRIPTUM_BOOT_LOGO` | built-in | A PNG to show behind the menu |
+| `RESCRIPTUM_BOOT_TITLE` | built-in | The menu's title bar |
+| `RESCRIPTUM_USER` / `_GROUP` | unset | Drop to these **after** binding. The other order fails on deployment |
 
 `/srv` is where the filesystem hierarchy standard puts data served by the system, which is
 what an answers directory is. Both defaults live there so that a bare `rescriptum` does
@@ -72,6 +91,96 @@ fail every install in flight in order to report that it could not report somethi
 
 Rotation is yours. Under systemd there is nothing to do, since the log goes to the journal;
 with a file, point `logrotate` at it with `copytruncate`.
+
+## The TOML file
+
+`RESCRIPTUM_CONFIG` names a file in TOML that sets the same variables in a shape meant to
+be read. Reach for it when a **person edits the file by hand** — on a NAS, in File Station
+or over SMB — which is exactly where `RESCRIPTUM_ANSWERS_DIR=…` on every line reads
+poorly and where the word "environment" sends people looking for a shell that is not
+there.
+
+```toml
+# /etc/rescriptum.toml   (chmod 600, owned by root)
+answers_dir = "/srv/answers"
+listen_addr = "0.0.0.0:8000"
+log         = "problems"          # all | problems | off
+
+[store]
+kind    = "sqlite"
+db_path = "/srv/answers.db"
+
+[server]
+workers         = 2
+max_connections = 2048
+timeout_secs    = 10
+
+[admin]
+addr  = "127.0.0.1:8001"
+token = "…"
+
+[answer]
+token       = "…"
+capture_dir = "/var/lib/rescriptum/captures"
+```
+
+```console
+$ RESCRIPTUM_CONFIG=/etc/rescriptum.toml rescriptum
+2026-08-29T12:42:02Z - reading configuration defaults from /etc/rescriptum.toml (8 set)
+```
+
+Every rule the env file has, this one has too: **never discovered, only named** (there is
+no `./rescriptum.toml`); **the real environment wins**; and **a file that was asked for and
+cannot be read is a startup error**, never a warning.
+
+**Put it outside the answers directory.** Every servable `.toml` at the top of that
+directory is an answer document, and this format shares the extension — a configuration
+file dropped in there is reported by `check` as a misplaced answer, and `migrate` offers
+to move it. `/etc` is the obvious home; on a packaged install the package chooses one.
+
+### The names
+
+The prefix goes away and tables do the grouping. Nothing else changes: each line below is
+the variable of the same name, and `rescriptum config` prints both spellings.
+
+| In the file | Variable |
+|---|---|
+| `answers_dir` | `RESCRIPTUM_ANSWERS_DIR` |
+| `listen_addr` | `RESCRIPTUM_LISTEN_ADDR` |
+| `log`, `log_file` | `RESCRIPTUM_LOG`, `RESCRIPTUM_LOG_FILE` |
+| `public_host` | `RESCRIPTUM_PUBLIC_HOST` |
+| `user`, `group` | `RESCRIPTUM_USER`, `RESCRIPTUM_GROUP` |
+| `store.kind`, `store.db_path` | `RESCRIPTUM_STORE`, `RESCRIPTUM_DB_PATH` |
+| `server.workers`, `server.max_connections`, `server.timeout_secs` | `RESCRIPTUM_WORKERS`, `RESCRIPTUM_MAX_CONNECTIONS`, `RESCRIPTUM_TIMEOUT_SECS` |
+| `admin.addr`, `admin.token` | `RESCRIPTUM_ADMIN_ADDR`, `RESCRIPTUM_ADMIN_TOKEN` |
+| `answer.token`, `answer.capture_dir` | `RESCRIPTUM_ANSWER_TOKEN`, `RESCRIPTUM_CAPTURE_DIR` |
+| `media.dir`, `media.addr`, `media.timeout_secs`, `media.max_connections` | the `RESCRIPTUM_MEDIA_*` four |
+| `boot.dir`, `boot.allow`, `boot.unclaimed`, `boot.timeout_secs`, `boot.logo`, `boot.title` | the `RESCRIPTUM_BOOT_*` six |
+| `tftp.addr`, `tftp.port_range`, `tftp.blksize` | the `RESCRIPTUM_TFTP_*` three |
+| `installed.token` | `RESCRIPTUM_INSTALLED_TOKEN` |
+
+### The format
+
+| | |
+|---|---|
+| Any TOML scalar | a number may be written as a number (`workers = 2`) or as a string; both reach the server as the same setting |
+| A `#` comment | anywhere, including at the end of a line — unlike the env file, which has no escapes and so cannot have inline comments |
+| A value with a `#`, a quote or a space | fine, quoted the way TOML quotes things, and read back unchanged |
+| `""` | **unset** — the same rule as an exported-but-empty variable, which is what lets `config unset` empty a line instead of deleting the paragraph that documents it |
+| The same key twice | refused by TOML itself, so the file does not load |
+| A key this program does not read | a warning naming it, so `admin.tokenn` is caught rather than ignored |
+| A list or a table where a value belongs | a **startup error**: unlike a misspelling it was aimed at a real setting, and serving the default while the file says otherwise would be silent |
+| A file others can read | a warning with its mode, because it may hold `admin.token` |
+
+Warnings name keys and paths, never values.
+
+### Both files at once
+
+Naming both is a transition rather than a steady state, so nothing is refused and the
+order is stated at startup: **the environment beats the TOML file, which beats the env
+file.** `rescriptum config` shows which of the three put every value in force, and
+`config set` writes to the TOML file — the one the server reads first, so that a write
+cannot be a change that silently does nothing.
 
 ## The env file
 
@@ -122,12 +231,13 @@ Warnings name keys and paths, never values.
 
 ## Reading and editing it
 
-`rescriptum config` prints every variable, its value, and **which of the file and the
-environment put it there** — the distinction that matters, because the file supplies
+`rescriptum config` prints every variable, its value, and **which of the files and the
+environment put it there** — the distinction that matters, because the files supply
 defaults and the real environment wins. `config set` edits the file the way you would want
-it edited: comments kept, a commented-out setting uncommented in place rather than
-duplicated, and a change that would leave a server unable to start refused before anything
-is written. It is documented in the [command line reference](./cli.md#config), and it is
+it edited, in either format: comments kept, a commented-out setting uncommented in place
+rather than duplicated (in the env file) or the value replaced where it stands (in TOML),
+and a change that would leave a server unable to start refused before anything is
+written. It is documented in the [command line reference](./cli.md#config), and it is
 what the [DSM application](../operations/synology.md#the-desktop-application) drives
 underneath.
 
@@ -139,7 +249,8 @@ underneath.
 | Whitespace-only | same, and values are trimmed |
 | A zero or unparseable number | falls back to the **default**, rather than starting a server that accepts connections and never answers |
 | `RESCRIPTUM_STORE` set to anything else | a warning, and `files` is used |
-| `RESCRIPTUM_ENV_FILE` naming a missing, unreadable or malformed file | a startup **error** |
+| `RESCRIPTUM_ENV_FILE` or `RESCRIPTUM_CONFIG` naming a missing, unreadable or malformed file | a startup **error** |
+| A TOML setting given a list or a table | a startup **error**, unlike a misspelled key, which warns |
 | `RESCRIPTUM_STORE=sqlite` on a binary built without the feature | a startup **error** |
 
 ## Startup errors
@@ -153,6 +264,12 @@ These stop the server rather than warning, because starting anyway would be wors
 | `RESCRIPTUM_ADMIN_TOKEN` under 16 characters | short enough to guess |
 | The listen address cannot be bound | nothing to do |
 | The store cannot be opened | nothing to serve |
+| `RESCRIPTUM_MEDIA_ADDR` set with no `RESCRIPTUM_MEDIA_DIR` | a listener with nothing to serve |
+| `RESCRIPTUM_MEDIA_ADDR` equal to the answer or admin address | the second bind loses, and which one depends on start order |
+| `RESCRIPTUM_PUBLIC_HOST` carrying a scheme, a port or a path | it is written into URLs for two listeners; one port in the value pins every generated script to one of them |
+| `RESCRIPTUM_TFTP_ADDR` set with no `RESCRIPTUM_BOOT_DIR` | a listener with no loaders to hand out |
+| The boot directory cannot be resolved | every path check compares against it |
+| `RESCRIPTUM_USER` names an account that does not exist | nothing to become |
 
 ## Startup warnings
 
@@ -166,12 +283,27 @@ These are printed and the server carries on:
 | Admin API not on loopback | `warning: the admin API is not bound to loopback — …` |
 | `RESCRIPTUM_ANSWER_TOKEN` under 16 characters | a warning, **not** an error — refusing to start would leave a fleet unable to install |
 | Any problem in the answer set | one `warning:` line each, the same set `check` reports |
+| `RESCRIPTUM_PUBLIC_HOST` unset | The routing table's answer, or the sole interface address when there is no default route. Logged either way, as a warning **naming the other addresses** when there are any. A NAT host still gets it wrong silently |
+| TFTP cannot bind | `warning: cannot bind TFTP on … ` — **the one listener whose failed bind is not fatal.** Port 69 is the only privileged port in the design, so it is the only bind that can fail for something nobody configured; answers are the product, and dying would fail every install in flight to report that a second port could not be opened. `boot check` exits non-zero and the message names the ways to have the port |
+| Media directory missing or unlistable | one `warning: media: …` line — a fleet must never be unable to install because one image is odd |
 
 ## Compile-time options
 
 | Feature | Default | Effect |
 |---|---|---|
-| `sqlite` | on | The SQLite store and the admin API. `cargo build --no-default-features` drops both — 944,928 bytes instead of 2,103,456 on ARMv7 |
+| `sqlite` | on | The SQLite store and the admin API |
+| `boot` | on | The media catalogue, the ISO reader and the media listener |
+
+Measured on ARMv7 (gnueabihf, glibc floor 2.17), all four in one sitting on 2026-08-29.
+Re-measure rather than quoting these: they moved by about 375 KB when that target changed
+from musl, and the set they replace here had drifted about 200 KB out of date.
+
+| Build | Bytes |
+|---|---|
+| both (default) | 2,813,712 |
+| `sqlite` only | 2,557,592 |
+| `boot` only | 1,649,048 |
+| neither | 1,392,544 |
 
 ## Fixed limits
 

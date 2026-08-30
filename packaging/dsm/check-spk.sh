@@ -198,6 +198,19 @@ check_one() {
     [ -x "$work/target/bin/rescriptum" ] || bad "the payload's binary is not executable"
     ok "the payload carries the binary, the wrapper, the .sc file and the logrotate stanza"
 
+    # **The loaders, because a TFTP server with nothing to hand out boots nothing.** They
+    # are iPXE, GPLv2, separate files never linked into our binary — mere aggregation —
+    # and the NOTICE naming the upstream commit is the written offer that has to travel
+    # with them. A package without it would be a licence problem, not just an omission.
+    if [ -f "$work/target/boot/ipxe-undionly.kpxe" ]; then
+        ok "and the loaders it hands out ($(ls "$work/target/boot" | wc -l | tr -d ' ') files)"
+        [ -s "$work/target/boot/NOTICE" ] &&
+            ok "with the GPLv2 written offer beside them" ||
+            bad "the loaders ship without a NOTICE — that is the written offer GPLv2 requires"
+    else
+        bad "no loaders in the payload — the package would install a TFTP server with nothing to hand out"
+    fi
+
     # The stanza's whole point: log::init opens the file once and never reopens it, so a
     # rotation without copytruncate silently ends logging.
     grep -q '^[[:space:]]*copytruncate' "$work/target/logrotate/rescriptum" &&
@@ -209,6 +222,13 @@ check_one() {
     grep -q '^\[rescriptum\]' "$work/target/port_conf/rescriptum.sc" &&
         ok "port_conf/rescriptum.sc declares [rescriptum]" ||
         bad "port_conf/rescriptum.sc does not declare [rescriptum]"
+
+    # Both listeners. postinst rewrites this line with the wizard's port, but a template
+    # that lost the media one would produce a firewall entry an operator cannot find
+    # rescriptum in once they enable boot media — and nothing else would say so.
+    grep -q '^dst.ports=.*8001/tcp' "$work/target/port_conf/rescriptum.sc" &&
+        ok "and registers the media port beside the answer one" ||
+        bad "port_conf/rescriptum.sc does not register the media port"
 
     # ── the desktop application ────────────────────────────────────────────────
     local uidir appname

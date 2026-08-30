@@ -293,6 +293,24 @@ impl Answers {
             .collect())
     }
 
+    /// Drop the cached listing, so the next read goes back to the store.
+    ///
+    /// **This exists for `admin::guarded`, and the rollback depends on it.** The guard
+    /// compares `problems()` before and after a write, but over the file store `version()`
+    /// is the answers directory's mtime — which does not move when a document is written
+    /// *inside* an existing identity's directory, and which a coarse-granularity
+    /// filesystem may not move even for a new one within the same second. Either way the
+    /// listing is served from cache for up to `RELOAD_BACKSTOP`, so a write that broke the
+    /// answer set would compare equal to itself, pass the guard, and be kept.
+    ///
+    /// Which side is forced matters, and only one of them has to be: a stale `after` is a
+    /// rollback that never runs and fails **open**, while a stale `before` blames this
+    /// write for a pre-existing problem and fails **closed**. The guard forces both, since
+    /// the safe direction is cheap to buy twice.
+    pub fn invalidate(&self) {
+        let mut guard = self.cache.lock().unwrap_or_else(|e| e.into_inner());
+        *guard = None;
+    }
     /// A group's selector criteria, if it has any.
     pub fn group_matchers(&self, name: &str) -> io::Result<Vec<(String, String)>> {
         Ok(self
@@ -596,9 +614,12 @@ fn build(snapshot: Snapshot) -> Listing {
         .machines
         .into_iter()
         .filter_map(|m| {
-            let kind = kind_of(&m.format, &m.id, &mut problems)?;
+            let kind = kind_of(&m.format, &m.origin, &mut problems)?;
             let format = m.format.clone();
-            let doc = Doc::parse(kind, &m.body, &m.id);
+            // The origin, not the id: with a directory per identity the filename is the
+            // operator's to choose, so "98fa9b50d810" would not say which document in it
+            // failed to parse.
+            let doc = Doc::parse(kind, &m.body, &m.origin);
             if let Err(e) = &doc {
                 problems.push(e.clone());
             }
@@ -644,7 +665,7 @@ fn build(snapshot: Snapshot) -> Listing {
         .fallbacks
         .into_iter()
         .filter_map(|d| {
-            let what = format!("default.{}", d.format);
+            let what = d.origin.clone();
             let kind = kind_of(&d.format, &what, &mut problems)?;
             let doc = Doc::parse(kind, &d.body, &what);
             match &doc {
@@ -696,20 +717,53 @@ mod tests {
             &self.0
         }
 
+        /// Write one document, named the way a test thinks of it — `<id>.<ext>` — into
+        /// the directory the layout actually stores it in.
+        ///
+        /// The translation lives here rather than in every test because what these
+        /// fixtures are about is *which machine, in which format*; the filename inside
+        /// the directory is not a thing any of them mean to assert.
         fn write(&self, name: &str, contents: &str) -> PathBuf {
-            let p = self.0.join(name);
-            fs::write(&p, contents).expect("write fixture");
-            p
+            self.document(&self.0, name)
+                .tap(|p| fs::write(p, contents).expect("write fixture"))
         }
 
         fn group(&self, name: &str, contents: &str) -> PathBuf {
             let dir = self.0.join(crate::store::file::GROUPS_DIR);
-            fs::create_dir_all(&dir).expect("create groups dir");
-            let p = dir.join(format!("{name}.toml"));
-            fs::write(&p, contents).expect("write group fixture");
-            p
+            self.document(&dir, &format!("{name}.toml"))
+                .tap(|p| fs::write(p, contents).expect("write group fixture"))
+        }
+
+        /// `<stem>.<ext>` under `parent` becomes `<parent>/<stem>/<canonical>.<ext>`.
+        fn document(&self, parent: &Path, name: &str) -> PathBuf {
+            let named = Path::new(name);
+            let (identity, file) = match (named.file_stem(), named.extension()) {
+                (Some(stem), Some(ext)) => {
+                    let ext = ext.to_str().expect("utf-8 extension");
+                    (
+                        stem.to_str().expect("utf-8 stem").to_string(),
+                        format!("{}.{ext}", crate::format::canonical_stem(ext)),
+                    )
+                }
+                // No extension at all: the whole name is the identity, and the document
+                // inside carries it too — so "this is not a candidate" still holds for
+                // the same reason it did.
+                _ => (name.to_string(), name.to_string()),
+            };
+            let dir = parent.join(identity);
+            fs::create_dir_all(&dir).expect("create identity dir");
+            dir.join(file)
         }
     }
+
+    /// Do something with a value and hand it back. Keeps a fixture one expression.
+    trait Tap: Sized {
+        fn tap(self, f: impl FnOnce(&Self)) -> Self {
+            f(&self);
+            self
+        }
+    }
+    impl Tap for PathBuf {}
 
     impl Drop for TempDir {
         fn drop(&mut self) {
@@ -1111,7 +1165,7 @@ mod tests {
     }
 
     #[test]
-    fn a_removed_file_stops_being_served() {
+    fn a_removed_machine_stops_being_served() {
         let dir = TempDir::new();
         let answers = Answers::from_dir(dir.path());
         let path = dir.write("98fa9b50d810.toml", "[global]\nx = 1\n");
@@ -1123,12 +1177,91 @@ mod tests {
                 .unwrap()
                 .is_some()
         );
-        fs::remove_file(&path).expect("remove fixture");
+        // The whole identity, which is what removing a machine now means. Its directory
+        // leaving the answers directory moves that directory's mtime, so this is picked
+        // up at once rather than at the backstop.
+        fs::remove_dir_all(path.parent().unwrap()).expect("remove fixture");
         assert!(
             answers
                 .resolve(&Facts::new(None, body.as_bytes()))
                 .unwrap()
                 .is_none()
+        );
+    }
+
+    /// One document leaving a machine that keeps others — the case the mtime cannot see.
+    ///
+    /// A directory's mtime moves when an entry is added or removed *in it*, and this
+    /// happens one level down, inside the machine's own directory. So the answers
+    /// directory looks untouched and only `RELOAD_BACKSTOP` notices, exactly as it
+    /// already did for a file edited in place. Worth a slow test: the alternative is a
+    /// stat per machine on every request, which is what the cache exists to avoid.
+    #[test]
+    fn a_document_removed_from_a_machine_stops_being_served_within_the_backstop() {
+        let dir = TempDir::new();
+        let answers = Answers::from_dir(dir.path());
+        let path = dir.write("98fa9b50d810.toml", "[global]\nx = 1\n");
+        dir.write("98fa9b50d810.ipxe", "#!ipxe\nchain x\n");
+        let body = body_with("98:fa:9b:50:d8:10");
+        // Asked for on the Proxmox endpoint, so the machine's `.ipxe` cannot stand in
+        // for the document that was removed.
+        let toml = || Facts::from_request(Some("/proxmox/answer"), None, body.as_bytes());
+
+        assert!(answers.resolve(&toml()).unwrap().is_some());
+        fs::remove_file(&path).expect("remove fixture");
+
+        // Poll rather than sleep exactly once, so a slow machine does not make this
+        // flaky and a fast one does not make it slow.
+        let deadline = Instant::now() + RELOAD_BACKSTOP * 3;
+        while Instant::now() < deadline {
+            if answers.resolve(&toml()).unwrap().is_none() {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        panic!("the removed document was still being served after the backstop");
+    }
+
+    /// The cache hides a write made *inside* an existing machine's directory — which is
+    /// exactly what `admin::guarded` compares across.
+    ///
+    /// Without the invalidation the guard snapshots `problems()`, writes, reads the same
+    /// cached answer back, sees no difference and keeps a write that broke the answer set.
+    /// Over SQLite that cannot happen (its `version` is an atomic bumped by every write);
+    /// over files the version is the answers directory's mtime, and nothing was added or
+    /// removed *in it*.
+    ///
+    /// **Watched failing:** empty the body of `Answers::invalidate` and the last assertion
+    /// goes red while the middle one stays green.
+    #[test]
+    fn a_write_inside_an_identity_directory_is_invisible_until_the_cache_is_dropped() {
+        let dir = TempDir::new();
+        let answers = Answers::from_dir(dir.path());
+        dir.write("98fa9b50d810.toml", "[global]\nkeyboard = \"fr\"\n");
+
+        // Populates the cache, and is the state `guarded` would keep as `before`.
+        assert!(answers.problems().expect("problems").is_empty());
+
+        // A second document of the same format in the same directory is a reported
+        // problem — and one level down, so the mtime the cache watches does not move.
+        fs::write(
+            dir.path().join("98fa9b50d810").join("second.toml"),
+            "[global]\nkeyboard = \"us\"\n",
+        )
+        .expect("write the conflicting document");
+
+        // Asserted rather than assumed: if the cache ever stops hiding this, the
+        // invalidation below is dead weight and someone should find that out here.
+        assert!(
+            answers.problems().expect("problems").is_empty(),
+            "expected the cached listing to hide a write one level down"
+        );
+
+        answers.invalidate();
+        let problems = answers.problems().expect("problems");
+        assert!(
+            !problems.is_empty(),
+            "dropping the cache must reveal the conflict, got {problems:?}"
         );
     }
 

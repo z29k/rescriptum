@@ -16,7 +16,7 @@
 
 match:
   # cloud-init fetches several named files from one URL; this is the one that carries
-  # the install. See ubuntu-meta.yaml for the other required half.
+  # the install. See groups/ubuntu-meta/ for the other required half.
   file: "user-data"
   product: "PowerEdge R6*"
 

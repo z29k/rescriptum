@@ -27,6 +27,9 @@ ROOT="${RESCRIPTUM_PKG_ROOT:-/var/packages/${SYNOPKG_PKGNAME:-$PKG}}"
 DEST="${SYNOPKG_PKGDEST:-$ROOT/target}"
 VAR="${SYNOPKG_PKGVAR:-$ROOT/var}"
 ETC="$ROOT/etc"
+# The data share DSM created. `shares/` is a symlink into the volume; the package root
+# is the fixed path, which is why it is derived from ROOT rather than from DEST.
+SHARE="$ROOT/shares/$PKG"
 
 BIN="$DEST/bin/$PKG"
 ENV_FILE="$ETC/$PKG.env"
@@ -93,6 +96,55 @@ start() {
             say "could not create $answers — if its volume is encrypted, unlock it and restart the package"
         elif [ ! -r "$answers" ]; then
             say "$answers is not readable by $(id -u -n 2>/dev/null || echo "$PKG") — check the shared folder's permissions"
+        fi
+    fi
+
+    # The media and boot folders, made whether or not the env file names them yet. An
+    # operator who uncomments RESCRIPTUM_MEDIA_DIR should find somewhere to drop an ISO
+    # already there — and a folder that only appears after a setting is enabled is one
+    # nobody discovers. Both are inside the share DSM created, so this costs nothing
+    # when they are unused, and neither may abort the start.
+    for extra in media boot; do
+        dir="$SHARE/$extra"
+        [ -d "$dir" ] || mkdir -p "$dir" 2>/dev/null || true
+    done
+
+    # **Seed the boot folder with the loaders the package carries.** A TFTP server with
+    # nothing to hand out boots nothing, so an install that leaves this folder empty is an
+    # appliance that does not work until somebody finds a second download. The loaders come
+    # from $DEST/boot, which the payload put there.
+    #
+    # **The stamp is what makes an upgrade correct.** Copying only what is missing would
+    # freeze the loaders at whatever the first install shipped, and the pinned iPXE commit
+    # is exactly the kind of thing that has to be able to move. So: when the stamp does not
+    # name this version, refresh our own filenames and rewrite it. Anything else in the
+    # folder — a logo.png, a loader somebody added — is never touched.
+    #
+    # It follows that replacing one of *our* filenames does not survive an upgrade. That is
+    # deliberate and documented: an operator who manages loaders themselves points
+    # RESCRIPTUM_BOOT_DIR somewhere else, and then nothing here writes to it at all.
+    if [ -d "$DEST/boot" ] && [ -d "$SHARE/boot" ]; then
+        stamp="$SHARE/boot/.loaders"
+        # Read from the package's own INFO rather than trusted to an environment
+        # variable: SYNOPKG_PKGVER is set for the lifecycle scripts, and this script also
+        # runs at boot, where it is not. An unreadable INFO leaves this empty, which just
+        # means the stamp never matches and the loaders are refreshed every start —
+        # wasteful, never wrong.
+        want=$(sed -n 's/^version="\(.*\)"$/\1/p' "$ROOT/INFO" 2>/dev/null)
+        if [ "$(cat "$stamp" 2>/dev/null)" != "$want" ] || [ -z "$want" ]; then
+            copied=0
+            for f in "$DEST"/boot/*; do
+                [ -f "$f" ] || continue
+                if cp "$f" "$SHARE/boot/$(basename "$f")" 2>/dev/null; then
+                    copied=$((copied + 1))
+                fi
+            done
+            if [ "$copied" -gt 0 ]; then
+                echo "$want" >"$stamp" 2>/dev/null || true
+                say "put $copied boot file(s) into $SHARE/boot"
+            else
+                say "could not write the loaders into $SHARE/boot — TFTP will have nothing to hand out"
+            fi
         fi
     fi
 

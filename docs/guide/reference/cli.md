@@ -19,15 +19,18 @@ With no arguments, `rescriptum` runs the server. Everything else is a subcommand
 | `rescriptum check` | render everything in the configured store and report what breaks |
 | `rescriptum import <dir>` | copy a directory of documents into the configured store |
 | `rescriptum export <dir>` | write the configured store out as a directory of documents |
+| `rescriptum migrate [<dir>]` | show what a flat answers directory would become |
+| `rescriptum migrate --apply` | move those documents into a directory each |
 | `rescriptum config` | show the configuration, and where each value comes from |
 | `rescriptum config --json` | the same, for a settings panel |
 | `rescriptum config --value KEY` | one value, for a script — never a credential |
-| `rescriptum config set K=V …` | edit the file `RESCRIPTUM_ENV_FILE` names |
-| `rescriptum config unset KEY …` | comment a setting back out of it |
+| `rescriptum config set K=V …` | edit the file `RESCRIPTUM_CONFIG` or `RESCRIPTUM_ENV_FILE` names |
+| `rescriptum config unset KEY …` | take a setting back out of it |
 | `rescriptum --help` | usage and the environment variables |
 
 All of them read the same [environment variables](./configuration.md), including
-[`RESCRIPTUM_ENV_FILE`](./configuration.md#the-env-file) — which is resolved first, so a
+[`RESCRIPTUM_CONFIG`](./configuration.md#the-toml-file) and
+[`RESCRIPTUM_ENV_FILE`](./configuration.md#the-env-file) — which are resolved first, so a
 file that cannot be read stops any command that needs configuration. `--help` and
 `--version` are answered before it is read, because they are what you reach for when
 something is wrong. There are no global flags.
@@ -75,8 +78,34 @@ $ RESCRIPTUM_STORE=sqlite RESCRIPTUM_DB_PATH=/srv/answers.db rescriptum export /
 ```
 
 `import` reads a **directory** and writes into the configured store; `export` does the
-reverse. The round trip is byte-identical. Neither runs `check` for you — the output says
-to.
+reverse. The round trip is byte-identical, paths included. Neither runs `check` for you —
+the output says to.
+
+## `migrate`
+
+Answers used to be files at the top of the answers directory — `98fa9b50d810.toml` beside
+`98fa9b50d810.preseed`. They are now a directory each, and a document left flat is
+**reported and not served**. This moves them:
+
+```console
+$ rescriptum migrate
+migrating /srv/answers
+  98fa9b50d810.toml -> 98fa9b50d810/proxmox.toml
+  98fa9b50d810.ipxe -> 98fa9b50d810/boot.ipxe
+  groups/rack-a.toml -> groups/rack-a/proxmox.toml
+  default.toml -> default/proxmox.toml
+  4 document(s) to move — nothing has been changed. Re-run with --apply.
+```
+
+**It shows by default and moves only when told to.** The answers directory is what a rack
+installs from; typing the command to find out what it would do must not rearrange it.
+
+`--apply` performs the moves, each a `rename` within the same directory, so no document is
+ever rewritten. If any destination is already taken, **nothing moves at all** — including
+the documents that could have — and the collisions are named: a half-migrated directory is
+the state nobody can reason about. It takes a directory as an argument, defaulting to
+`RESCRIPTUM_ANSWERS_DIR`, and running it on an already-migrated directory says there is
+nothing to move.
 
 ## `config`
 
@@ -95,9 +124,14 @@ env file: /var/packages/rescriptum/etc/rescriptum.env
   RESCRIPTUM_ADMIN_TOKEN      (set)                             file
 ```
 
-The third column is the point. The file supplies **defaults** and the real environment
-wins, so a value marked `environment` cannot be changed by editing the file — and `config
-set` says so rather than letting you write something the running server will ignore.
+The third column is the point. The files supply **defaults** and the real environment
+wins, so a value marked `environment` cannot be changed by editing a file — and `config
+set` says so rather than letting you write something the running server will ignore. With
+a TOML file the column reads `toml file`, and naming both files prints both paths plus the
+order they win in.
+
+**`config set` writes the TOML file when both are named**, because it is the one the server
+reads first: writing the other would be a change that silently does nothing.
 
 **A credential is never printed**, by any form of this command. A token shows as `(set)` or
 `(not set)`; `--value` refuses outright.
@@ -109,7 +143,10 @@ wrote /var/packages/rescriptum/etc/rescriptum.env
 
 Writing keeps the file as it is otherwise: comments stay, a setting is replaced where it
 stands, and one that is commented out is **uncommented in place** rather than appended
-below — which matters when the comment above it is the only documentation the file has.
+below — which matters when the comment above it is the only documentation the file has. In
+a TOML file the same care applies to the document: the value is replaced where it stands,
+its trailing comment survives, and `config unset` **empties the value rather than deleting
+the line**, so the paragraph explaining the setting stays where it was.
 
 Two refusals are deliberate:
 
@@ -122,6 +159,57 @@ Two refusals are deliberate:
 Unlike every other subcommand, this one works when the configuration is too broken to start
 a server — a file that will not parse, a token one character short. That is the state
 people run it *to get out of*.
+
+## `media`
+
+Boot media: the installer images this server holds. Every one of these needs
+`RESCRIPTUM_MEDIA_DIR`; without it they say so and exit `1`. See
+[Serving boot media](../operations/media.md).
+
+```console
+$ rescriptum media list                    # what is held: family, architecture, version, digest
+$ rescriptum media add FILE [--sha256 D]   # register one already in the directory
+$ rescriptum media add URL --sha256 D      # fetch one into it, then register it
+$ rescriptum media check                   # re-verify every recorded digest
+$ rescriptum media ipxe ID                 # print the .ipxe answer that boots one image
+$ rescriptum media prepare ID [--url URL]  # a Proxmox image with its answer URL inside
+$ rescriptum media export ID FILE          # materialise a prepared entry, for a stick
+```
+
+`media add` takes a file **already inside the media directory** — nothing is downloaded
+and nothing is copied. It hashes it with progress, probes it, and writes a `.media`
+sidecar beside it. `--sha256` is checked before anything is recorded: a mismatch writes
+nothing and exits `1`.
+
+`media check`'s exit status is a contract, like `check`'s. `deploy.sh` keys on it.
+
+`media ipxe` prints to **stdout** and puts everything else on stderr, so
+`rescriptum media ipxe pve-8.4 > groups/rack-a/boot.ipxe` produces a usable answer document —
+which is all it is. It prints a script; it does not install one.
+
+## `boot`
+
+The netboot half: TFTP's loaders, the generated DHCP configuration, and the two scripts
+a machine executes. See [Netbooting a machine](../operations/netboot.md).
+
+```console
+$ rescriptum boot dhcp-snippet [--format F] [--one-loader]
+$ rescriptum boot check        # are the loaders a snippet names actually on disk?
+$ rescriptum boot bootstrap    # print the stage-two script
+$ rescriptum boot menu         # print the built-in menu
+```
+
+`--format` is `dnsmasq` (the default), `isc`, `kea`, `powershell`, `pfsense` or
+`mikrotik`. The snippet goes to **stdout** and warnings to stderr, so
+`boot dhcp-snippet > dhcpd.conf` produces a file that can be included as-is.
+
+`boot check`'s exit status is a contract, like `check`'s. What it catches is the least
+diagnosable failure in the chain: **a snippet naming a loader that is not on disk fails
+silently at the ROM**, with nothing on any console. It also warns when the media listener
+has moved off the port shipped loaders embed.
+
+`boot bootstrap` and `boot menu` print what a machine will execute, for the same reason
+`render` prints an answer: everything a rack runs should be readable by a human first.
 
 ## Exit statuses
 

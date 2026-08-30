@@ -49,8 +49,101 @@ jobs:
         run: cargo test --all-features
 
       # The smallest build has to keep working, or the NAS target rots unnoticed.
-      - name: Build without SQLite
+      # Both features off, and then each on its own: the combination that ships is not
+      # the only one that has to compile.
+      - name: Build without SQLite or boot media
         run: cargo build --release --no-default-features
+
+      - name: Build with boot media but no SQLite
+        run: cargo build --release --no-default-features --features boot
+
+  loaders:
+    name: Branded iPXE loaders
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # A C toolchain and the ARM64 cross binutils. iPXE's EFI targets need the
+      # architecture's own `ld` and `objcopy`; the BIOS ones build with the host's.
+      - name: Toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential liblzma-dev mtools xorriso isolinux gcc-aarch64-linux-gnu
+          aarch64-linux-gnu-ld --version | head -1
+
+      - name: Build the loaders
+        run: packaging/ipxe/build.sh --out "$GITHUB_WORKSPACE/loaders"
+
+      # **The chain of custody.** What the rig boots and what a release publishes have to
+      # be the same bytes, never a rebuild of them — a loader rebuilt after the run that
+      # proved it is a loader nobody has booted.
+      - name: What was built
+        run: |
+          ls -la "$GITHUB_WORKSPACE/loaders"
+          cat "$GITHUB_WORKSPACE/loaders/SHA256SUMS"
+
+      # Ask the server whether the directory satisfies the table it serves from. A
+      # snippet naming a loader that is not here fails silently at the ROM, and this is
+      # the only thing that catches it.
+      # `RESCRIPTUM_TFTP_ADDR=off` because the question here is whether the *directory*
+      # satisfies the table, not whether a listener is up: `boot check` also probes the
+      # TFTP port, and on a runner where port 69 is neither bound nor bindable that is a
+      # problem it would rightly report and wrongly fail this job over. The rig is what
+      # proves a loader actually gets handed over.
+      - name: Does the server agree the set is complete?
+        run: |
+          cargo build --release
+          RESCRIPTUM_BOOT_DIR="$GITHUB_WORKSPACE/loaders" \
+          RESCRIPTUM_TFTP_ADDR=off \
+          RESCRIPTUM_PUBLIC_HOST=192.0.2.10 \
+            ./target/release/rescriptum boot check
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ipxe-loaders
+          path: ${{ github.workspace }}/loaders
+          if-no-files-found: error
+
+  rig:
+    name: The boot chain, end to end
+    runs-on: ubuntu-latest
+    # **The tripwire, not the contract.** The dev rig is what decides; this re-proves the
+    # BIOS chain on every push without a single real machine. GitHub's runners are
+    # somebody else's machines with somebody else's limits, so it is sized so it cannot
+    # fail for capacity reasons — BIOS only, TCG, one claimed and one unclaimed client,
+    # no OS image, a few minutes. If it ever needs hardware virtualisation to pass, it
+    # has grown too big.
+    #
+    # Runners are x86_64, so this is native rather than the emulation a Mac does — and
+    # there is still no /dev/kvm, which is exactly the constraint the rig is built for.
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the rig
+        run: docker build -f packaging/boot-rig/Dockerfile.rig -t rescriptum-rig:one .
+
+      # Four markers: the DHCP handoff answered from our own generated snippet, a loader
+      # fetched over TFTP, an unclaimed machine on its own disk, and a claimed machine at
+      # its own answer.
+      - name: Boot a claimed and an unclaimed machine
+        run: |
+          docker run --rm --cap-add NET_ADMIN --device /dev/net/tun \
+            -e UNCLAIMED_SECONDS=180 -e CLAIMED_SECONDS=180 \
+            rescriptum-rig:one bios
+
+      # **Watched failing, in CI as well as by hand.** A green rig that has never been
+      # red proves nothing, and the cheapest way to keep that true is to break one link
+      # on every run and require the break to show.
+      - name: And it must go red when a loader is missing
+        run: |
+          if docker run --rm --cap-add NET_ADMIN --device /dev/net/tun \
+               --entrypoint sh rescriptum-rig:one \
+               -c 'rm /srv/boot/ipxe-undionly.kpxe && exec /rig/rig-in-one.sh bios'; then
+            echo "the rig passed with a loader missing — it is not testing what it claims" >&2
+            exit 1
+          fi
 
   docs:
     name: Documentation
@@ -112,6 +205,9 @@ jobs:
   cross:
     name: Cross-compile for the NAS, and package it
     runs-on: ubuntu-latest
+    # The packages carry the loaders now, and they come from the job that built them —
+    # so this waits rather than rebuilding iPXE a second time.
+    needs: loaders
     # This is where a C dependency breaks first: SQLite is compiled from source, and
     # armv7-musl is the least forgiving target we ship. Catching it here beats catching
     # it while cutting a release. The DSM packages are assembled on the same job for the
@@ -175,9 +271,18 @@ jobs:
       # Packaging breaks on the PR that breaks it, rather than at tag time. This is the
       # cheap half of "does this package work"; the other half is installing it, which
       # only a DSM machine can answer.
+      # The loaders the package ships, from the job that already built and verified them
+      # — never a rebuild here. What `check-spk.sh` and the lifecycle harness look at has
+      # to be the same bytes the `loaders` job proved satisfy the table.
+      - uses: actions/download-artifact@v4
+        with:
+          name: ipxe-loaders
+          path: packaging/ipxe/out
+
       - name: Assemble the DSM packages
         run: |
           set -euo pipefail
+          ls packaging/ipxe/out
           packaging/dsm/make-spk.sh armv7
           packaging/dsm/make-spk.sh x86_64
 

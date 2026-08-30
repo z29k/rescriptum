@@ -59,7 +59,25 @@ backend proves half of what it claims.
 
 ## The file store
 
-A flat directory, plus `groups/`. `version()` is the directory's mtime:
+**One directory per identity.** A machine is a directory named after it, holding one
+document per format; `groups/` holds the same shape for groups, and `default/` the
+fallbacks. Both names are reserved, so a machine cannot claim them — `valid_machine_id`
+refuses them in *both* stores, because a database that accepted one would export into a
+directory that cannot hold it.
+
+Inside a directory, **the extension is the format and the stem is nothing at all**. That is
+the rule that makes two documents of one format in one directory a *reported problem* rather
+than a resolved one: there is no tiebreak an operator could have predicted. Sorted order
+decides which of the two answers, so the choice at least does not depend on readdir — and
+the loser is named in `problems()`.
+
+A servable document left at the top of the answers directory — the layout that came before —
+is **reported and not served**, with its destination spelled out. Half-reading an old layout
+would mean a machine whose answer moved silently between two files. `pending_moves()` is the
+same knowledge exposed for `migrate`, so the command and the reader cannot disagree about
+where a document belongs.
+
+`version()` is the directory's mtime:
 
 ```rust
 fs::metadata(&self.dir).ok()
@@ -71,9 +89,18 @@ fs::metadata(&self.dir).ok()
 One `stat` replaces a whole directory walk — see
 [the listing cache](./selection.md#the-listing-cache).
 
-> The directory's mtime moves when a file is **added or removed**, not when one is
-> **edited**. The 1-second reload backstop is what covers editing, and an integration
-> test covers exactly that.
+> The directory's mtime moves when an entry is **added or removed** *in it*, not when one
+> is **edited**, and not when something changes one level down. So a machine's whole
+> directory appearing or leaving is seen at once, while a document added or edited *inside*
+> one waits for the 1-second reload backstop — which is what already covered a file edited
+> in place. A unit test pins each half.
+
+> **What the layout costs on a read.** A full reload is now a `readdir` per identity on top
+> of the file it already opened. Measured at 2,000 machines on an M1 Pro: **28 ms flat,
+> 63 ms with a directory each**. It is amortised over a second's worth of requests, and
+> end-to-end throughput did not move measurably — but it is a real 2.2× on the one operation
+> the backstop guarantees will run every second, and it is the reason to reach for a group
+> before a directory per machine.
 
 **Writes go through a temporary file plus `rename`**, which is atomic within a directory
 on POSIX, so a reader never meets a half-written answer. The temporary name carries the
@@ -125,13 +152,16 @@ $ rescriptum export <dir>    # the configured store → a directory
 ```
 
 Both go through `Snapshot`, so they share every rule. **The round trip is byte-identical**
-— import a directory, export it again, `diff -r` reports nothing. That is what makes the
+— import a directory, export it again, `diff -r` reports nothing, paths included. A test
+compares both sides at the same path for exactly that reason: `export` writing a document
+somewhere `import` would not look for it is what would make the database unsafe to leave. That is what makes the
 database safe to adopt *and* safe to leave, and it is worth keeping true.
 
-## Identifiers become filenames
+## Identifiers become directory names
 
 ```rust
-pub fn valid_id(id: &str) -> bool   // letters, digits, - _ . : and no path separators
+pub fn valid_id(id: &str) -> bool           // letters, digits, - _ . : and no separators
+pub fn valid_machine_id(id: &str) -> bool   // …and not `groups` or `default`
 ```
 
 Enforced at the admin API boundary **and** in both stores. The store is the layer that
